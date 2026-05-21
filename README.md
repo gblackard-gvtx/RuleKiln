@@ -4,6 +4,8 @@
 
 # RuleKiln
 
+> **⚠️ Work in Progress** — This project is under active development. The `main` branch is not yet stable or fully functional. APIs, configuration, and behaviour may change without notice. Not recommended for production use.
+
 A prompt compiler that turns labelled cases into tested, versioned, auditable system prompts.
 
 RuleKiln runs a full distillation pipeline: it extracts micro-rules from your cases, clusters them into coherent groups, synthesises rule sets, compiles deterministic prompts, evaluates both DBSCAN and HDBSCAN strategies against your cases, applies quality gates, selects the best strategy, and surfaces the winner as a ready-to-use system prompt with a full MLflow audit trail.
