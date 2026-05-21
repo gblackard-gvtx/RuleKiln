@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "develop"]
+  pull_request:
+    branches: ["main", "develop"]
+
+jobs:
+  lint-and-typecheck:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run Ruff (lint)
+        run: uv run ruff check src/ tests/
+
+      - name: Run Ruff (format check)
+        run: uv run ruff format --check src/ tests/
+
+      - name: Run Pyright (type check)
+        run: uv run pyright
+
+  test:
+    name: Offline Tests
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: "sqlite+aiosqlite://"
+      MLFLOW_TRACKING_URI: "file:///tmp/mlflow-ci"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Run offline tests (exclude @external)
+        run: uv run pytest -m "not external" --tb=short -q
+
+      - name: Upload coverage (optional)
+        if: always()
+        run: uv run pytest -m "not external" --cov=src/rulekiln --cov-report=xml -q || true
+
+  docker-build:
+    name: Docker Build (T058A)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image (no credentials required)
+        run: docker build --tag rulekiln:ci .
+
+  docker-compose-validate:
+    name: Docker Compose Config (T058B)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml (no services started)
+        run: docker compose config --quiet

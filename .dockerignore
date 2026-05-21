@@ -1,0 +1,27 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.env
+*.env.local
+
+# Test and coverage artifacts
+.coverage
+.pytest_cache/
+htmlcov/
+*.log
+
+# Local run artifacts (never bake into image)
+.rulekiln/
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
