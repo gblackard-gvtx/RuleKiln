@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="rulekilnlogo.png" alt="RuleKiln" width="320" />
+</p>
+
 # RuleKiln
 
 A prompt compiler that turns labelled cases into tested, versioned, auditable system prompts.
@@ -103,6 +107,28 @@ PROVIDER_PROFILES__BEDROCK_PRIMARY__PROVIDER=bedrock
 PROVIDER_PROFILES__BEDROCK_PRIMARY__REGION=us-east-1
 PROVIDER_PROFILES__BEDROCK_PRIMARY__SUPPORTS_CHAT=true
 ```
+
+**Anthropic**:
+```env
+PROVIDER_PROFILES__ANTHROPIC_DEFAULT__PROVIDER=anthropic
+PROVIDER_PROFILES__ANTHROPIC_DEFAULT__SUPPORTS_CHAT=true
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+**Google Vertex Gemini** *(stub — not yet implemented)*:
+```env
+PROVIDER_PROFILES__VERTEX_DEFAULT__PROVIDER=vertex_gemini
+PROVIDER_PROFILES__VERTEX_DEFAULT__SUPPORTS_CHAT=true
+```
+
+**Azure OpenAI** *(stub — not yet implemented)*:
+```env
+PROVIDER_PROFILES__AZURE_DEFAULT__PROVIDER=azure_openai
+PROVIDER_PROFILES__AZURE_DEFAULT__BASE_URL=https://<resource>.openai.azure.com/
+PROVIDER_PROFILES__AZURE_DEFAULT__SUPPORTS_CHAT=true
+```
+
+Stub providers raise `ProviderNotImplementedError` immediately — they never silently fall back to another provider.
 
 ### Default quality gates
 
@@ -233,3 +259,27 @@ uv run alembic upgrade head
 ```
 
 See [Docs/dev/docker.md](Docs/dev/docker.md) for the full Docker Compose development guide.
+
+---
+
+## Citation
+
+RuleKiln implements the **Prompt-Level Distillation (PLD)** method introduced in:
+
+> Sanket Badhe, Deep Shah.  
+> **Prompt-Level Distillation: A Non-Parametric Alternative to Model Fine-Tuning for Efficient Reasoning.**  
+> arXiv:2602.21103 [cs.CL], February 2026.  
+> <https://doi.org/10.48550/arXiv.2602.21103>
+
+```bibtex
+@misc{badhe2026promptleveldistillationnonparametric,
+  title   = {Prompt-Level Distillation: A Non-Parametric Alternative to
+             Model Fine-Tuning for Efficient Reasoning},
+  author  = {Sanket Badhe and Deep Shah},
+  year    = {2026},
+  eprint  = {2602.21103},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  url     = {https://doi.org/10.48550/arXiv.2602.21103}
+}
+```

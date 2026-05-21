@@ -19,7 +19,7 @@ def get_chat_client(config: ProviderConfig) -> ChatModelClient:
             from rulekiln.providers.chat.bedrock_chat import BedrockChatClient
             return BedrockChatClient()
         case "anthropic":
-            from rulekiln.providers.chat.stubs import AnthropicChatClient
+            from rulekiln.providers.chat.anthropic_chat import AnthropicChatClient
             return AnthropicChatClient()
         case "vertex_gemini":
             from rulekiln.providers.chat.stubs import VertexGeminiChatClient
