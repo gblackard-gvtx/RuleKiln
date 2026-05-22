@@ -128,7 +128,7 @@ async def ui_root() -> RedirectResponse:
 async def job_list(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     jobs = await list_recent_jobs(session, limit=50)
     items: list[JobListItemView] = [
         JobListItemView(
@@ -154,7 +154,7 @@ async def job_list(
 async def new_job_form(
     request: Request,
     settings: Annotated[AppSettings, Depends(get_settings)],
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     profile_names = sorted(settings.provider_profiles.keys())
     return templates.TemplateResponse(
         request, "jobs/new.html", {"profile_names": profile_names}
@@ -170,7 +170,7 @@ async def preview_job(
     form: Annotated[NewJobForm, Depends(NewJobForm)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[AppSettings, Depends(get_settings)],
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -401,7 +401,7 @@ async def job_detail(
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[AppSettings, Depends(get_settings)],
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -437,7 +437,7 @@ async def job_status_fragment(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -463,7 +463,7 @@ async def job_results(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -519,7 +519,7 @@ async def job_prompt(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -542,7 +542,7 @@ async def job_rules(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -564,7 +564,7 @@ async def job_eval_report(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -582,7 +582,7 @@ async def job_failures(
     settings: Annotated[AppSettings, Depends(get_settings)],
     failure_class: str | None = None,
     split: str | None = None,
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -630,7 +630,7 @@ async def job_artifacts(
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[AppSettings, Depends(get_settings)],
-) -> HTMLResponse:
+) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
