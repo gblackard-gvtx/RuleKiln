@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block title %} — Results{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-3 mb-2">
+  <a href="/ui/jobs/{{ summary.job_id }}" class="text-gray-400 hover:text-gray-600 text-sm">
+    ← Job detail
+  </a>
+</div>
+
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Results Summary</h1>
+
+<p class="text-sm text-gray-500 mb-4">
+  Primary metric: <span class="font-medium text-gray-700">{{ summary.primary_metric }}</span>
+</p>
+
+{# ── Metric cards ─────────────────────────────────────────── #}
+<div class="flex flex-wrap gap-4 mb-6">
+  {% set metric_label = "Baseline" %}{% set metric_value = summary.baseline_score %}
+  {% include "components/metric_card.html" %}
+  {% set metric_label = "DBSCAN" %}{% set metric_value = summary.dbscan_score %}
+  {% include "components/metric_card.html" %}
+  {% set metric_label = "HDBSCAN" %}{% set metric_value = summary.hdbscan_score %}
+  {% include "components/metric_card.html" %}
+  {% set metric_label = "Selected" %}{% set metric_value = summary.selected_score %}
+  {% include "components/metric_card.html" %}
+  {% if summary.metric_delta is not none %}
+  <div class="metric-card">
+    <div class="metric-label">Δ vs Baseline</div>
+    <div class="metric-value {% if summary.metric_delta >= 0 %}text-green-700{% else %}text-red-700{% endif %}">
+      {{ "%+.4f" | format(summary.metric_delta) }}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{# ── Summary table ────────────────────────────────────────── #}
+<div class="card mb-6">
+  <h2 class="text-lg font-semibold mb-3">Details</h2>
+  <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+    <dt class="text-gray-500">Selected strategy</dt>
+    <dd>
+      {% if summary.selected_strategy %}
+        <span class="badge badge-running">{{ summary.selected_strategy }}</span>
+      {% else %}—{% endif %}
+    </dd>
+    <dt class="text-gray-500">Quality gates</dt>
+    <dd>
+      {% if summary.quality_gates_passed is not none %}
+        {% if summary.quality_gates_passed %}
+        <span class="badge badge-completed">Passed</span>
+        {% else %}
+        <span class="badge badge-failed">Failed</span>
+        {% endif %}
+      {% else %}—{% endif %}
+    </dd>
+    <dt class="text-gray-500">Malformed output rate</dt>
+    <dd>{{ "%.4f" | format(summary.malformed_output_rate) if summary.malformed_output_rate is not none else "—" }}</dd>
+    <dt class="text-gray-500">Golden failures</dt>
+    <dd>{{ summary.golden_failures if summary.golden_failures is not none else "—" }}</dd>
+    <dt class="text-gray-500">Fixed cases</dt>
+    <dd>{{ summary.fixed_count if summary.fixed_count is not none else "—" }}</dd>
+    <dt class="text-gray-500">Broken cases</dt>
+    <dd>{{ summary.broken_count if summary.broken_count is not none else "—" }}</dd>
+  </dl>
+</div>
+
+<div class="flex gap-3">
+  <a href="/ui/jobs/{{ summary.job_id }}/artifacts"
+     class="border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm font-medium
+            px-4 py-2 rounded-md">
+    Download artifacts
+  </a>
+  <a href="/ui/jobs/{{ summary.job_id }}/eval-report"
+     class="border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm font-medium
+            px-4 py-2 rounded-md">
+    Full eval report
+  </a>
+</div>
+{% endblock %}

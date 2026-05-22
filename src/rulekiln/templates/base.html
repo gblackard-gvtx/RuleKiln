@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RuleKiln{% block title %}{% endblock %}</title>
+
+  {# Tailwind CSS (play CDN — no build step required) #}
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  {# HTMX #}
+  <script src="https://unpkg.com/htmx.org@2.0.4/dist/htmx.min.js" crossorigin="anonymous"></script>
+
+  {# Alpine.js (defer so DOM is ready) #}
+  <script defer src="https://unpkg.com/alpinejs@3.14.1/dist/cdn.min.js" crossorigin="anonymous"></script>
+
+  {# Custom styles #}
+  <link rel="stylesheet" href="/static/app.css" />
+
+  {% block head %}{% endblock %}
+</head>
+<body class="bg-gray-50 text-gray-900 min-h-screen flex flex-col">
+
+  {# ── Top navigation ─────────────────────────────────────────────────── #}
+  <nav class="bg-white border-b border-gray-200 shadow-sm">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center h-14 gap-6">
+      <a href="/ui/jobs" class="font-bold text-lg tracking-tight text-indigo-700 hover:text-indigo-900">
+        RuleKiln
+      </a>
+      <div class="flex items-center gap-5 text-sm font-medium">
+        <a href="/ui/jobs"
+           class="text-gray-600 hover:text-gray-900 {% if request.url.path.startswith('/ui/jobs') and not request.url.path.endswith('/new') %}text-gray-900 underline underline-offset-4{% endif %}">
+          Jobs
+        </a>
+        <a href="/ui/jobs/new"
+           class="text-gray-600 hover:text-gray-900 {% if request.url.path.endswith('/new') %}text-gray-900 underline underline-offset-4{% endif %}">
+          New Job
+        </a>
+      </div>
+    </div>
+  </nav>
+
+  {# ── Flash messages ──────────────────────────────────────────────────── #}
+  <div class="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 mt-4">
+    {% include "components/flash.html" %}
+  </div>
+
+  {# ── Page content ────────────────────────────────────────────────────── #}
+  <main class="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-6 flex-1">
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer class="border-t border-gray-200 mt-auto py-4">
+    <p class="text-center text-xs text-gray-400">RuleKiln</p>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

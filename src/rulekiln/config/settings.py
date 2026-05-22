@@ -68,6 +68,8 @@ class AppSettings(BaseSettings):
     mlflow_tracking_uri: str = Field(alias="MLFLOW_TRACKING_URI")
     artifact_root: str = Field(default=".rulekiln/runs", alias="ARTIFACT_ROOT")
     enable_pgvector: bool = Field(default=False, alias="ENABLE_PGVECTOR")
+    mlflow_ui_base_url: str | None = Field(default=None, alias="MLFLOW_UI_BASE_URL")
+    max_upload_size_bytes: int = Field(default=10 * 1024 * 1024, alias="MAX_UPLOAD_SIZE_BYTES")
 
     # Optional API keys — providers read their own key from env by name
     openai_api_key: SecretStr | None = Field(default=None, alias="OPENAI_API_KEY")

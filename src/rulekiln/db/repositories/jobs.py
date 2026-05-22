@@ -29,6 +29,19 @@ async def get_job(session: AsyncSession, job_id: str) -> DistillationJob | None:
     return result.scalar_one_or_none()
 
 
+async def list_recent_jobs(
+    session: AsyncSession,
+    limit: int = 50,
+) -> list[DistillationJob]:
+    """Return the most recent jobs ordered by created_at descending."""
+    result = await session.execute(
+        select(DistillationJob)
+        .order_by(DistillationJob.created_at.desc())
+        .limit(limit)
+    )
+    return list(result.scalars().all())
+
+
 async def update_job_status(
     session: AsyncSession,
     job_id: str,

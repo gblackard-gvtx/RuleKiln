@@ -35,6 +35,7 @@ class DistillationJob(Base):
     task_mode: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="created")
     stage: Mapped[str | None] = mapped_column(String, nullable=True)
+    selected_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
     request_json: Mapped[dict] = mapped_column(JSON, nullable=False)  # pyright: ignore[reportArgumentType]
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     mlflow_run_id: Mapped[str | None] = mapped_column(String, nullable=True)

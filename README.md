@@ -201,6 +201,41 @@ GET /v1/jobs/{job_id}/eval-report   # evaluation metrics
 
 ---
 
+## Operator UI
+
+A lightweight server-rendered UI for managing distillation jobs without the API. Start the server as usual, then open:
+
+```
+http://localhost:8000/ui/jobs/new
+```
+
+### Workflow
+
+1. **New Job** — upload a `task.yaml` and `cases.jsonl`, choose provider profiles and model IDs.
+2. **Preview** — validate files, review split counts, estimated API calls, and provider routes before committing.
+3. **Run Pipeline** — submit the validated job; the pipeline runs as a background task.
+4. **Monitor** — the job detail page polls live status every 2 seconds via HTMX until the job finishes.
+5. **Review results** — navigate to Results, Prompt, Rules, Eval Report, Failures, or Artifacts from the detail page.
+
+### Environment variables for the UI
+
+| Variable | Description |
+|----------|-------------|
+| `DATABASE_URL` | Required — same as the API |
+| `MLFLOW_TRACKING_URI` | Required — same as the API |
+| `PROVIDER_PROFILES__*` | Required — define at least one chat and one embedding profile |
+| `MLFLOW_UI_BASE_URL` | Optional — e.g. `http://localhost:5000`. Enables direct links to MLflow runs from the job detail page. |
+
+### Running UI tests
+
+```bash
+DATABASE_URL="sqlite+aiosqlite://" \
+MLFLOW_TRACKING_URI="file:///tmp/mlflow-ci" \
+uv run pytest tests/ui/ --tb=short -q
+```
+
+---
+
 ## Tests
 
 ```bash

@@ -1,0 +1,5 @@
+{#
+  Renders a coloured status badge.
+  Required context variable: `status` (str)
+#}
+<span class="badge badge-{{ status }}">{{ status | replace("_", " ") | title }}</span>

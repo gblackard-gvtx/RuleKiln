@@ -1,0 +1,14 @@
+{#
+  Renders a small metric card.
+  Required context variables:
+    `metric_label` (str)  — display label
+    `metric_value`        — numeric or text value; None renders as "—"
+#}
+<div class="metric-card">
+  <div class="metric-label">{{ metric_label }}</div>
+  {% if metric_value is none %}
+    <div class="metric-value null-value">—</div>
+  {% else %}
+    <div class="metric-value">{{ metric_value }}</div>
+  {% endif %}
+</div>
