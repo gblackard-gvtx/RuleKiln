@@ -8,7 +8,7 @@
 
 A prompt compiler that turns labelled cases into tested, versioned, auditable system prompts.
 
-RuleKiln runs a full distillation pipeline: it extracts micro-rules from your cases, clusters them into coherent groups, synthesises rule sets, compiles deterministic prompts, evaluates both DBSCAN and HDBSCAN strategies against your cases, applies quality gates, selects the best strategy, and surfaces the winner as a ready-to-use system prompt with a full MLflow audit trail.
+RuleKiln runs a full distillation pipeline: it extracts micro-rules from your cases, clusters them into coherent groups, synthesises rule sets, reviews each rule for logical conflicts, prunes the rule set to fit token and quality budgets, compiles deterministic prompts, evaluates both DBSCAN and HDBSCAN strategies against your cases, applies quality gates, selects the best strategy, and surfaces the winner as a ready-to-use system prompt with a full MLflow audit trail.
 
 ---
 
@@ -33,6 +33,11 @@ uv run alembic upgrade head
 
 # 4. Start the API
 uv run uvicorn src.rulekiln.api.app:app --host 0.0.0.0 --port 8000 --reload
+
+# 5. Start the queue worker (separate terminal — required for postgres_queue mode)
+uv run python -m rulekiln.workers.queue_worker
+# or, if installed as a script:
+uv run rulekiln-worker
 ```
 
 API docs available at <http://localhost:8000/docs>.
@@ -57,6 +62,7 @@ This starts:
 | OpenAPI docs | <http://localhost:8000/docs> |
 | MLflow UI | <http://localhost:5000> |
 | PostgreSQL | `localhost:5432` |
+| Queue worker | *(background process, no UI)* |
 
 ```bash
 # Stop the stack
@@ -75,6 +81,28 @@ Copy `.env.example` to `.env` and adjust values. The key variables are:
 | `MLFLOW_TRACKING_URI` | MLflow server URI or `file:///path/to/local` |
 | `ARTIFACT_ROOT` | Local path for job artifact output (default: `.rulekiln/runs`) |
 | `ENABLE_PGVECTOR` | Enable pgvector for embedding storage (default: `false`) |
+| `EXECUTION_BACKEND` | `postgres_queue` (default) or `background_tasks` — see [Execution backends](#execution-backends) |
+| `WORKER_POLL_INTERVAL_SECONDS` | How often the queue worker polls for new jobs (default: `2`) |
+| `WORKER_LEASE_SECONDS` | Job lease duration in seconds before a crashed worker's job is reclaimed (default: `1800`) |
+| `DEFAULT_PROVIDER_MAX_CONCURRENCY` | Max concurrent in-flight calls per provider config (default: `3`) |
+| `DEFAULT_PROVIDER_RATE_LIMIT_RPM` | Global default requests-per-minute cap (default: unset) |
+| `DEFAULT_PROVIDER_RATE_LIMIT_TPM` | Global default tokens-per-minute cap (default: unset) |
+| `DEFAULT_MAX_RULES` | Maximum synthesised rules included in a compiled prompt (default: `40`) |
+| `DEFAULT_MIN_RULE_SUPPORT_COUNT` | Minimum case-support threshold for a rule to survive pruning (default: `2`) |
+| `DEFAULT_MAX_PROMPT_TOKENS` | Approximate token budget for the compiled rule policy section (default: `8000`) |
+
+### Execution backends
+
+RuleKiln supports two job execution modes, controlled by `EXECUTION_BACKEND`:
+
+| Mode | Description |
+|------|-------------|
+| `postgres_queue` | **(default)** Jobs are queued in PostgreSQL. The `worker` process polls, claims, and runs them with lease-based crash recovery and automatic retry (up to `max_attempts`). Scale by running multiple workers. |
+| `background_tasks` | Jobs run in the FastAPI process via `BackgroundTasks`. Simpler for local dev or single-server deploys. No separate worker needed, but no crash recovery or retry. |
+
+In `postgres_queue` mode, `POST /v1/jobs/` returns `status: "pending"` and the API returns immediately. The worker picks the job up within `WORKER_POLL_INTERVAL_SECONDS`.
+
+In `background_tasks` mode, the job starts in the same process and `POST /v1/jobs/` returns `status: "created"`.
 
 ### Provider profiles
 
@@ -93,6 +121,13 @@ PROVIDER_PROFILES__OPENAI_DEFAULT__PROVIDER=openai
 PROVIDER_PROFILES__OPENAI_DEFAULT__SUPPORTS_CHAT=true
 PROVIDER_PROFILES__OPENAI_DEFAULT__SUPPORTS_EMBEDDINGS=true
 OPENAI_API_KEY=sk-...
+```
+
+Per-profile rate limiting (applied after `DEFAULT_PROVIDER_RATE_LIMIT_*` defaults, and overridden by per-request `ModelRoute` values):
+```env
+PROVIDER_PROFILES__OPENAI_DEFAULT__RATE_LIMIT_RPM=60
+PROVIDER_PROFILES__OPENAI_DEFAULT__RATE_LIMIT_TPM=100000
+PROVIDER_PROFILES__OPENAI_DEFAULT__MAX_CONCURRENCY=5
 ```
 
 **OpenAI-compatible** (Ollama, vLLM, LiteLLM proxy):
@@ -145,7 +180,7 @@ DEFAULT_QUALITY_GATE__MAX_PROMPT_TOKENS=8000
 DEFAULT_QUALITY_GATE__REQUIRE_HUMAN_APPROVAL=true
 ```
 
-Per-task overrides in `task.quality_gates` take precedence.
+Per-task overrides in `task.quality_gates` take precedence. Per-task rule budget settings (`max_rules`, `max_prompt_tokens`, `min_rule_support_count`, `preserve_golden_rules`) are set inside the `task` object of the distillation request and override the corresponding `DEFAULT_*` environment values.
 
 ---
 
@@ -176,7 +211,12 @@ Content-Type: application/json
 }
 ```
 
-Response `202 Accepted`:
+Response `202 Accepted` (`postgres_queue` mode):
+```json
+{"job_id": "...", "status": "pending"}
+```
+
+Response `202 Accepted` (`background_tasks` mode):
 ```json
 {"job_id": "...", "status": "created"}
 ```
@@ -188,8 +228,10 @@ GET /v1/jobs/{job_id}
 ```
 
 ```json
-{"job_id": "...", "status": "running", "stage": "clustering_rules", "error_message": null}
+{"job_id": "...", "status": "running", "stage": "reviewing_rule_conflicts", "error_message": null}
 ```
+
+Pipeline stages in order: `validating_project` → `extracting_rules` → `embedding_rules` → `clustering_rules` → `synthesizing_rules` → `reviewing_rule_conflicts` → `pruning_rules` → `compiling_prompts` → `evaluating_baseline` → `evaluating_distilled` → `selecting_strategy` → `analyzing_failures` → `checking_quality_gates` → `logging_artifacts` → `exporting_artifacts` → `completed`.
 
 ### Retrieve outputs (once `status == "completed"`)
 

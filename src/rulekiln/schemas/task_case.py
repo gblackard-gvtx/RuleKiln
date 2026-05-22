@@ -10,6 +10,9 @@ class ModelRoute(BaseModel):
 
     provider_profile: str
     model: str
+    rate_limit_rpm: int | None = None
+    rate_limit_tpm: int | None = None
+    max_concurrency: int | None = None
 
 
 TaskMode = Literal[
@@ -41,6 +44,12 @@ class RuleKilnTask(BaseModel):
         ModelRoute,
     ] = Field(default_factory=dict)
     quality_gates: dict[str, Any] = Field(default_factory=dict)
+
+    # ── Rule pruning budget ───────────────────────────────────────────────
+    max_rules: int = 40
+    max_prompt_tokens: int = 8000
+    min_rule_support_count: int = 2
+    preserve_golden_rules: bool = True
 
 
 AssertionType = Literal[

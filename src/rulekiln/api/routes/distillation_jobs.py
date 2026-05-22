@@ -35,6 +35,7 @@ async def create_distillation_job(
         ) from exc
 
     job_id = str(uuid.uuid4())
+    queue_status = "pending" if settings.execution_backend == "postgres_queue" else "created"
     job = DistillationJob(
         id=job_id,
         task_id=payload.task.task_id,
@@ -42,13 +43,23 @@ async def create_distillation_job(
         task_mode=payload.task.task_mode,
         status="created",
         stage=None,
+        queue_status=queue_status,
         request_json=payload.model_dump(mode="json"),
     )
     await create_job(session, job)
-    logger.info("job_created", job_id=job_id, task_id=payload.task.task_id)
+    logger.info(
+        "job_created",
+        job_id=job_id,
+        task_id=payload.task.task_id,
+        execution_backend=settings.execution_backend,
+    )
 
-    background_tasks.add_task(run_distillation_pipeline, job_id, payload)
-    return CreateJobResponse(job_id=job_id, status="created")
+    if settings.execution_backend == "background_tasks":
+        background_tasks.add_task(run_distillation_pipeline, job_id, payload)
+        return CreateJobResponse(job_id=job_id, status="created")
+
+    # postgres_queue: job is persisted with queue_status='pending'; worker picks it up
+    return CreateJobResponse(job_id=job_id, status="pending")
 
 
 @router.get("/{job_id}", response_model=JobStatusResponse)

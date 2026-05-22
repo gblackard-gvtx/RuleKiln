@@ -47,6 +47,9 @@ dev = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[project.scripts]
+rulekiln-worker = "rulekiln.workers.queue_worker:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/rulekiln"]
 

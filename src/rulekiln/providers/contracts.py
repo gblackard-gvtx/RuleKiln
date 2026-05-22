@@ -26,6 +26,11 @@ class ProviderConfig(BaseModel):
     timeout_seconds: int = 60
     max_retries: int = 3
 
+    # Effective rate limits (resolved from route override → profile → app default)
+    rate_limit_rpm: int | None = None
+    rate_limit_tpm: int | None = None
+    max_concurrency: int = 3
+
 
 class ProviderNotImplementedError(NotImplementedError):
     """Raised when a provider adapter is a stub and not yet implemented."""

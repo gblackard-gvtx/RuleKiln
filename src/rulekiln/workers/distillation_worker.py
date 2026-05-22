@@ -7,6 +7,7 @@ from enum import StrEnum
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from rulekiln.agents.rule_conflict_review import review_rule_for_conflicts
 from rulekiln.agents.rule_extraction import extract_rules_for_case
 from rulekiln.agents.rule_synthesis import synthesize_cluster
 from rulekiln.config.settings import get_settings
@@ -24,6 +25,7 @@ from rulekiln.db.repositories.jobs import (
     bulk_insert_rule_clusters,
     bulk_insert_synthesized_rules,
     get_micro_rules_for_job,
+    get_selected_synthesized_rules_for_job,
     get_synthesized_rules_for_job,
     insert_eval_run,
     insert_prompt_version,
@@ -31,6 +33,8 @@ from rulekiln.db.repositories.jobs import (
     mark_prompt_version_selected,
     mark_stage_complete,
     update_job_status,
+    update_synthesized_rule_conflict,
+    update_synthesized_rule_pruning,
 )
 from rulekiln.db.session import get_session_factory
 from rulekiln.observability.logging import get_logger
@@ -39,6 +43,7 @@ from rulekiln.pipeline.evaluator import evaluate_prompt
 from rulekiln.pipeline.failure_analysis import analyze_failures
 from rulekiln.pipeline.prompt_compiler import compile_prompt, count_tokens_approx
 from rulekiln.pipeline.quality_gates import check_quality_gates
+from rulekiln.pipeline.rule_pruning import prune_rules
 from rulekiln.pipeline.strategy_selection import build_strategy_comparison
 from rulekiln.providers.chat import get_chat_client
 from rulekiln.providers.embedding import get_embedding_client
@@ -64,6 +69,8 @@ class PipelineStage(StrEnum):
     EMBEDDING_RULES = "embedding_rules"
     CLUSTERING_RULES = "clustering_rules"
     SYNTHESIZING_RULES = "synthesizing_rules"
+    REVIEWING_RULE_CONFLICTS = "reviewing_rule_conflicts"
+    PRUNING_RULES = "pruning_rules"
     COMPILING_PROMPTS = "compiling_prompts"
     EVALUATING_BASELINE = "evaluating_baseline"
     EVALUATING_DISTILLED = "evaluating_distilled"
@@ -186,12 +193,92 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         await bulk_insert_synthesized_rules(session, synth_rules)
         await mark_stage_complete(session, job_id, PipelineStage.SYNTHESIZING_RULES, strategy=strategy)
 
+    # ── Stage: reviewing_rule_conflicts ──────────────────────────────────
+    total_train_cases = len([c for c in cases if c.split in ("train", "validation")])
+    for strategy in ("dbscan", "hdbscan"):
+        if await is_stage_complete(session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy):
+            continue
+        await _set_stage(session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS)
+        db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
+        for synth_rule in db_synth:
+            schema = _db_synth_to_schema(synth_rule)
+            # Compute support_count/ratio and golden_case_backed before conflict review
+            support = len(schema.source_case_ids)
+            ratio = support / total_train_cases if total_train_cases > 0 else 0.0
+            golden_backed = bool(
+                task.quality_gates and
+                any(cid in set(schema.source_case_ids) for cid in [])
+            )
+            token_count = count_tokens_approx(
+                f"{schema.topic} {' '.join(schema.applies_when)}"
+            )
+            await update_synthesized_rule_pruning(
+                session, synth_rule.id,
+                is_pruned=False, pruning_reason=None,
+                support_count=support, support_ratio=ratio,
+                golden_case_backed=golden_backed, estimated_token_count=token_count,
+            )
+            # Build micro rule schemas for this synthesized rule
+            cluster_micro = [
+                MicroRuleSchema(
+                    topic=rule_map[rid].topic, condition=rule_map[rid].condition,
+                    expected_outcome=rule_map[rid].expected_outcome, output_path=rule_map[rid].output_path,
+                    rationale_summary=rule_map[rid].rationale_summary, rule_type=rule_map[rid].rule_type,
+                    positive_cues=list(rule_map[rid].positive_cues or []),
+                    negative_cues=list(rule_map[rid].negative_cues or []),
+                )
+                for rid in (schema.source_micro_rule_ids or []) if rid in rule_map
+            ]
+            review = await review_rule_for_conflicts(
+                task, schema, cluster_micro, teacher_chat, teacher_config,
+            )
+            # Fold resolved rules back into conflict flags
+            has_conflicts = review.has_conflicts and review.resolution in ("discard",)
+            await update_synthesized_rule_conflict(
+                session, synth_rule.id,
+                has_conflicts=has_conflicts,
+                conflict_summary=review.conflict_summary,
+                conflicting_micro_rule_ids=review.conflicting_micro_rule_ids,
+            )
+        await mark_stage_complete(session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy)
+        logger.info("conflict_review_done", job_id=job_id, strategy=strategy, reviewed=len(db_synth))
+
+    # ── Stage: pruning_rules ──────────────────────────────────────────────
+    for strategy in ("dbscan", "hdbscan"):
+        if await is_stage_complete(session, job_id, PipelineStage.PRUNING_RULES, strategy=strategy):
+            continue
+        await _set_stage(session, job_id, PipelineStage.PRUNING_RULES)
+        db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
+        schemas = [_db_synth_to_schema(r) for r in db_synth]
+        pruning_result = prune_rules(
+            schemas,
+            max_rules=task.max_rules,
+            max_prompt_tokens=task.max_prompt_tokens,
+            min_rule_support_count=task.min_rule_support_count,
+            preserve_golden_rules=task.preserve_golden_rules,
+        )
+        selected_ids = {r.id for r in pruning_result.selected}
+        for record in pruning_result.pruned:
+            await update_synthesized_rule_pruning(
+                session, record.rule.id,
+                is_pruned=True, pruning_reason=record.reason,
+                support_count=record.rule.support_count,
+                support_ratio=record.rule.support_ratio,
+                golden_case_backed=record.rule.golden_case_backed,
+                estimated_token_count=record.rule.estimated_token_count,
+            )
+        logger.info(
+            "pruning_done", job_id=job_id, strategy=strategy,
+            selected=len(selected_ids), pruned=len(pruning_result.pruned),
+        )
+        await mark_stage_complete(session, job_id, PipelineStage.PRUNING_RULES, strategy=strategy)
+
     # ── Stage: compiling_prompts ──────────────────────────────────────────
     for strategy in ("dbscan", "hdbscan"):
         if await is_stage_complete(session, job_id, PipelineStage.COMPILING_PROMPTS, strategy=strategy):
             continue
         await _set_stage(session, job_id, PipelineStage.COMPILING_PROMPTS)
-        db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
+        db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
         schemas = [_db_synth_to_schema(r) for r in db_synth]
         prompt_text, prompt_hash = compile_prompt(task, schemas, strategy)
         pv = PromptVersion(
@@ -219,7 +306,7 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         if await is_stage_complete(session, job_id, PipelineStage.EVALUATING_DISTILLED, strategy=strategy):
             continue
         await _set_stage(session, job_id, PipelineStage.EVALUATING_DISTILLED)
-        db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
+        db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
         schemas = [_db_synth_to_schema(r) for r in db_synth]
         prompt_text, _ = compile_prompt(task, schemas, strategy)
         ev = await evaluate_prompt(
@@ -237,7 +324,7 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         if await is_stage_complete(session, job_id, PipelineStage.CHECKING_QUALITY_GATES, strategy=strategy):
             continue
         await _set_stage(session, job_id, PipelineStage.CHECKING_QUALITY_GATES)
-        db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
+        db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
         schemas = [_db_synth_to_schema(r) for r in db_synth]
         prompt_text, _ = compile_prompt(task, schemas, strategy)
         gate = check_quality_gates(
@@ -254,7 +341,7 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         await _set_stage(session, job_id, PipelineStage.SELECTING_STRATEGY)
         token_counts: dict[str, int] = {}
         for strategy in ("dbscan", "hdbscan"):
-            db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
+            db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
             schemas = [_db_synth_to_schema(r) for r in db_synth]
             pt, _ = compile_prompt(task, schemas, strategy)
             token_counts[strategy] = count_tokens_approx(pt)
@@ -277,9 +364,12 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
     # ── Stage: analyzing_failures ─────────────────────────────────────────
     if not await is_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES):
         await _set_stage(session, job_id, PipelineStage.ANALYZING_FAILURES)
-        selected_eval = eval_map.get("hdbscan") or eval_map.get("dbscan")
+        selected_strategy = "hdbscan" if "hdbscan" in eval_map else "dbscan"
+        selected_eval = eval_map.get(selected_strategy)
         if selected_eval:
-            analyze_failures(baseline_eval, selected_eval)
+            db_synth = await get_selected_synthesized_rules_for_job(session, job_id, selected_strategy)
+            selected_schemas = [_db_synth_to_schema(r) for r in db_synth]
+            analyze_failures(baseline_eval, selected_eval, selected_schemas)
         await mark_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES)
 
     # ── Late stages ───────────────────────────────────────────────────────
@@ -322,21 +412,33 @@ def _to_db_cluster(job_id: str, c: RuleClusterSchema) -> RuleCluster:
 
 def _synth_to_db(job_id: str, strategy: str, rule: SynthesizedRuleSchema) -> SynthesizedRule:
     return SynthesizedRule(
-        id=str(uuid.uuid4()), job_id=job_id, strategy=strategy, topic=rule.topic,
+        id=str(uuid.uuid4()), job_id=job_id, strategy=strategy,
+        rule_type=rule.rule_type, topic=rule.topic,
         applies_when=rule.applies_when,
         outcome_conditions={k: v.model_dump() for k, v in rule.outcome_conditions.items()},
         tie_breakers=rule.tie_breakers, priority=rule.priority,
         source_case_ids=rule.source_case_ids, source_micro_rule_ids=rule.source_micro_rule_ids,
+        has_conflicts=rule.has_conflicts, conflict_summary=rule.conflict_summary,
+        conflicting_micro_rule_ids=rule.conflicting_micro_rule_ids,
+        support_count=rule.support_count, support_ratio=rule.support_ratio,
+        golden_case_backed=rule.golden_case_backed,
+        estimated_token_count=rule.estimated_token_count,
     )
 
 
 def _db_synth_to_schema(r: SynthesizedRule) -> SynthesizedRuleSchema:
     oc = {k: OutcomeCondition.model_validate(v) for k, v in (r.outcome_conditions or {}).items()}
     return SynthesizedRuleSchema(
+        id=r.id, rule_type=r.rule_type,
         topic=r.topic, applies_when=list(r.applies_when or []), outcome_conditions=oc,
         tie_breakers=list(r.tie_breakers or []), priority=r.priority,
         source_case_ids=list(r.source_case_ids or []),
         source_micro_rule_ids=list(r.source_micro_rule_ids or []),
+        has_conflicts=r.has_conflicts, conflict_summary=r.conflict_summary,
+        conflicting_micro_rule_ids=list(r.conflicting_micro_rule_ids or []),
+        support_count=r.support_count, support_ratio=r.support_ratio,
+        golden_case_backed=r.golden_case_backed,
+        estimated_token_count=r.estimated_token_count,
     )
 
 

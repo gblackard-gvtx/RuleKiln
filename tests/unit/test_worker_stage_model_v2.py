@@ -1,4 +1,4 @@
-"""Unit tests for PipelineStage enum contract (T029)."""
+"""Unit tests for PipelineStage enum — updated to include new stages."""
 
 from rulekiln.workers.distillation_worker import PipelineStage
 
@@ -25,19 +25,18 @@ def test_all_required_stages_present() -> None:
         "failed",
     }
     actual = {s.value for s in PipelineStage}
-    assert expected == actual, f"Missing stages: {expected - actual}"
+    assert expected == actual, f"Missing: {expected - actual}, Extra: {actual - expected}"
 
 
 def test_stage_count() -> None:
     assert len(PipelineStage) == 18
 
 
+def test_new_stages_present() -> None:
+    assert PipelineStage.REVIEWING_RULE_CONFLICTS == "reviewing_rule_conflicts"
+    assert PipelineStage.PRUNING_RULES == "pruning_rules"
+
+
 def test_terminal_stages() -> None:
-    assert PipelineStage.COMPLETED != PipelineStage.FAILED
     assert PipelineStage.COMPLETED.value == "completed"
     assert PipelineStage.FAILED.value == "failed"
-
-
-def test_string_coercion() -> None:
-    """StrEnum values compare equal to plain strings."""
-    assert PipelineStage.EXTRACTING_RULES == "extracting_rules"

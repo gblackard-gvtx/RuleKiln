@@ -49,6 +49,17 @@ class DistillationJob(Base):
         nullable=False,
     )
 
+    # ── Queue fields ──────────────────────────────────────────────────────
+    queue_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    locked_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    next_run_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
     cases: Mapped[list["Case"]] = relationship("Case", back_populates="job")
     micro_rules: Mapped[list["MicroRule"]] = relationship("MicroRule", back_populates="job")
     rule_clusters: Mapped[list["RuleCluster"]] = relationship("RuleCluster", back_populates="job")
@@ -132,6 +143,7 @@ class SynthesizedRule(Base):
         UUID(as_uuid=False), ForeignKey("distillation_jobs.id"), nullable=False
     )
     strategy: Mapped[str] = mapped_column(String, nullable=False)
+    rule_type: Mapped[str] = mapped_column(String, nullable=False, default="decision")
     topic: Mapped[str] = mapped_column(Text, nullable=False)
     applies_when: Mapped[list] = mapped_column(JSON, nullable=False)  # pyright: ignore[reportArgumentType]
     outcome_conditions: Mapped[dict] = mapped_column(JSON, nullable=False)  # pyright: ignore[reportArgumentType]
@@ -139,6 +151,19 @@ class SynthesizedRule(Base):
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     source_case_ids: Mapped[list] = mapped_column(JSON, nullable=False)  # pyright: ignore[reportArgumentType]
     source_micro_rule_ids: Mapped[list] = mapped_column(JSON, nullable=False)  # pyright: ignore[reportArgumentType]
+
+    # ── Conflict fields ───────────────────────────────────────────────────
+    has_conflicts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    conflict_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conflicting_micro_rule_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)  # pyright: ignore[reportArgumentType]
+
+    # ── Pruning / support fields ──────────────────────────────────────────
+    support_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    support_ratio: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    golden_case_backed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    estimated_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_pruned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pruning_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
     job: Mapped[DistillationJob] = relationship(
         "DistillationJob", back_populates="synthesized_rules"

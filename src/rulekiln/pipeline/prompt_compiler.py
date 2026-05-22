@@ -72,7 +72,12 @@ def compile_prompt(
 
     # Rules
     if sorted_rules:
-        sections.append("## Decision Rules\n")
+        total_rules = len(sorted_rules)
+        sections.append(
+            "## Distilled Rule Policy\n"
+            f"The following {total_rules} rule(s) are distilled from observed examples. "
+            "Apply them strictly and in order of priority.\n"
+        )
         for i, rule in enumerate(sorted_rules, start=1):
             sections.append(_render_rule(i, rule))
 
