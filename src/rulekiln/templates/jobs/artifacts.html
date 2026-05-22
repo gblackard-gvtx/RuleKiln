@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %} — Artifacts{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-3 mb-2">
+  <a href="/ui/jobs/{{ manifest.job_id }}" class="text-gray-400 hover:text-gray-600 text-sm">
+    ← Job detail
+  </a>
+</div>
+
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Artifacts</h1>
+
+{% if manifest.files %}
+<div class="card divide-y divide-gray-100">
+  {% for f in manifest.files %}
+  {% set artifact_filename = f.filename %}
+  {% set artifact_download_url = f.download_url %}
+  {% set artifact_content_type = f.content_type %}
+  {% include "components/artifact_link.html" %}
+  {% endfor %}
+</div>
+{% else %}
+<div class="card text-center py-12 text-gray-400">
+  No artifact files are available yet.
+</div>
+{% endif %}
+{% endblock %}

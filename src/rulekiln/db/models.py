@@ -4,12 +4,12 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Double,
     ForeignKey,
     Integer,
-    JSON,
     String,
     Text,
     func,
@@ -35,6 +35,7 @@ class DistillationJob(Base):
     task_mode: Mapped[str] = mapped_column(String, nullable=False)
     status: Mapped[str] = mapped_column(String, nullable=False, default="created")
     stage: Mapped[str | None] = mapped_column(String, nullable=True)
+    selected_strategy: Mapped[str | None] = mapped_column(String, nullable=True)
     request_json: Mapped[dict] = mapped_column(JSON, nullable=False)  # pyright: ignore[reportArgumentType]
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     mlflow_run_id: Mapped[str | None] = mapped_column(String, nullable=True)
@@ -46,6 +47,19 @@ class DistillationJob(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+    # ── Queue fields ──────────────────────────────────────────────────────
+    queue_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
+    locked_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
+    next_run_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     cases: Mapped[list["Case"]] = relationship("Case", back_populates="job")
@@ -131,6 +145,7 @@ class SynthesizedRule(Base):
         UUID(as_uuid=False), ForeignKey("distillation_jobs.id"), nullable=False
     )
     strategy: Mapped[str] = mapped_column(String, nullable=False)
+    rule_type: Mapped[str] = mapped_column(String, nullable=False, default="decision")
     topic: Mapped[str] = mapped_column(Text, nullable=False)
     applies_when: Mapped[list] = mapped_column(JSON, nullable=False)  # pyright: ignore[reportArgumentType]
     outcome_conditions: Mapped[dict] = mapped_column(JSON, nullable=False)  # pyright: ignore[reportArgumentType]
@@ -138,6 +153,19 @@ class SynthesizedRule(Base):
     priority: Mapped[int] = mapped_column(Integer, nullable=False, default=100)
     source_case_ids: Mapped[list] = mapped_column(JSON, nullable=False)  # pyright: ignore[reportArgumentType]
     source_micro_rule_ids: Mapped[list] = mapped_column(JSON, nullable=False)  # pyright: ignore[reportArgumentType]
+
+    # ── Conflict fields ───────────────────────────────────────────────────
+    has_conflicts: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    conflict_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    conflicting_micro_rule_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)  # pyright: ignore[reportArgumentType]
+
+    # ── Pruning / support fields ──────────────────────────────────────────
+    support_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    support_ratio: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+    golden_case_backed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    estimated_token_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    is_pruned: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    pruning_reason: Mapped[str | None] = mapped_column(String, nullable=True)
 
     job: Mapped[DistillationJob] = relationship(
         "DistillationJob", back_populates="synthesized_rules"
@@ -163,9 +191,7 @@ class PromptVersion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    job: Mapped[DistillationJob] = relationship(
-        "DistillationJob", back_populates="prompt_versions"
-    )
+    job: Mapped[DistillationJob] = relationship("DistillationJob", back_populates="prompt_versions")
     eval_runs: Mapped[list["EvalRun"]] = relationship("EvalRun", back_populates="prompt_version")
 
 

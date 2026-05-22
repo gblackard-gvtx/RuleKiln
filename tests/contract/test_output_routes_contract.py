@@ -54,8 +54,6 @@ async def client(db_factory, test_settings):
         yield c
 
 
-import uuid
-
 # Use UUIDs with hex letters (a-f) to prevent SQLite NUMERIC affinity coercing
 # all-decimal 32-char hex strings to integers, breaking UUID result processors.
 _JOB_1 = str(uuid.UUID("aaaaaaaa-0000-0000-0000-000000000001"))

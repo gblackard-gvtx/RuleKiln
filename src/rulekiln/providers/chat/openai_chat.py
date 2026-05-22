@@ -1,7 +1,5 @@
 """OpenAI chat provider adapter using pydantic-ai."""
 
-import os
-
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models.openai import OpenAIModel
@@ -24,11 +22,13 @@ class OpenAIChatClient(ChatModelClient):
         output_schema: type[BaseModel],
         config: ProviderConfig,
     ) -> BaseModel:
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        if not api_key:
-            raise ProviderNotConfiguredError("openai", "OPENAI_API_KEY is not set.")
+        if not config.api_key:
+            raise ProviderNotConfiguredError(
+                "openai",
+                "api_key_env_var is not set or the referenced environment variable is empty.",
+            )
 
-        model = OpenAIModel(config.model, api_key=api_key)
+        model = OpenAIModel(config.model, api_key=config.api_key)
         agent: Agent[None, BaseModel] = Agent(  # pyright: ignore[reportUnknownVariableType]
             model,
             result_type=output_schema,  # pyright: ignore[reportArgumentType]

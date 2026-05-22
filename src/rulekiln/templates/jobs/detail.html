@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block title %} — Job {{ job.job_id[:8] }}{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-3 mb-2">
+  <a href="/ui/jobs" class="text-gray-400 hover:text-gray-600 text-sm">← Jobs</a>
+</div>
+
+<div class="flex items-center justify-between mb-6">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">{{ job.task_name }}</h1>
+    <p class="text-gray-500 text-sm mt-0.5 font-mono">{{ job.job_id }}</p>
+  </div>
+  <div>
+    {% set status = job.status %}
+    {% include "components/job_status_badge.html" %}
+  </div>
+</div>
+
+{# ── HTMX live status ──────────────────────────────────────── #}
+<div id="status-fragment">
+  {% set job_id = job.job_id %}
+  {% set stage = job.stage %}
+  {% set error_message = job.error_message %}
+  {% set polling = job.status in ["queued", "running", "created"] %}
+  {% include "jobs/status_fragment.html" %}
+</div>
+
+{# ── Detail cards ─────────────────────────────────────────── #}
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+  {% set metric_label = "Mode" %}{% set metric_value = job.task_mode %}
+  {% include "components/metric_card.html" %}
+  {% set metric_label = "Strategy" %}{% set metric_value = job.selected_strategy %}
+  {% include "components/metric_card.html" %}
+  {% set metric_label = "MLflow Run ID" %}{% set metric_value = job.mlflow_run_id %}
+  {% include "components/metric_card.html" %}
+  {% set metric_label = "Stage" %}{% set metric_value = job.stage %}
+  {% include "components/metric_card.html" %}
+</div>
+
+{% if job.mlflow_run_url %}
+<div class="mb-4">
+  <a href="{{ job.mlflow_run_url }}" target="_blank" rel="noopener noreferrer"
+     class="text-sm text-indigo-600 hover:underline">
+    Open MLflow run ↗
+  </a>
+</div>
+{% endif %}
+
+{# ── Sub-page navigation ──────────────────────────────────── #}
+<div class="flex flex-wrap gap-2 mb-6">
+  {% for label, path in [
+    ("Results",     "/ui/jobs/" ~ job.job_id ~ "/results"),
+    ("Prompt",      "/ui/jobs/" ~ job.job_id ~ "/prompt"),
+    ("Rules",       "/ui/jobs/" ~ job.job_id ~ "/rules"),
+    ("Eval Report", "/ui/jobs/" ~ job.job_id ~ "/eval-report"),
+    ("Failures",    "/ui/jobs/" ~ job.job_id ~ "/failures"),
+    ("Artifacts",   "/ui/jobs/" ~ job.job_id ~ "/artifacts"),
+  ] %}
+  <a href="{{ path }}"
+     class="border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm font-medium
+            px-3 py-1.5 rounded-md transition-colors">
+    {{ label }}
+  </a>
+  {% endfor %}
+</div>
+{% endblock %}

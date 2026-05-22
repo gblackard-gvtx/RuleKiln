@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %} — Failures{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-3 mb-2">
+  <a href="/ui/jobs/{{ job_id }}" class="text-gray-400 hover:text-gray-600 text-sm">← Job detail</a>
+</div>
+
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Failure Analysis</h1>
+
+{% if artifacts_pending %}
+<div class="card text-center py-12 text-gray-500">
+  <p class="text-lg mb-2">Artifact files are not yet available.</p>
+  <p class="text-sm">The job must complete before failures can be reviewed.</p>
+</div>
+{% else %}
+
+{# ── Filter controls ──────────────────────────────────────── #}
+<form class="flex flex-wrap gap-3 items-end mb-6 card"
+      hx-get="/ui/jobs/{{ job_id }}/failures"
+      hx-trigger="change"
+      hx-target="#failures-table"
+      hx-swap="outerHTML">
+  <div>
+    <label class="block text-xs font-medium text-gray-600 mb-1">Failure class</label>
+    <select name="failure_class"
+            class="rounded border border-gray-300 text-sm px-2.5 py-1.5">
+      <option value="fixed"   {% if failure_class == "fixed" %}selected{% endif %}>Fixed</option>
+      <option value="broken"  {% if failure_class == "broken" %}selected{% endif %}>Broken</option>
+    </select>
+  </div>
+  <div>
+    <label class="block text-xs font-medium text-gray-600 mb-1">Split</label>
+    <select name="split"
+            class="rounded border border-gray-300 text-sm px-2.5 py-1.5">
+      <option value=""           {% if not split_filter %}selected{% endif %}>All splits</option>
+      <option value="validation" {% if split_filter == "validation" %}selected{% endif %}>Validation</option>
+      <option value="golden"     {% if split_filter == "golden" %}selected{% endif %}>Golden</option>
+      <option value="test"       {% if split_filter == "test" %}selected{% endif %}>Test</option>
+    </select>
+  </div>
+</form>
+
+{# ── Failures table ───────────────────────────────────────── #}
+<div id="failures-table">
+{% if failures %}
+<div class="card p-0 overflow-hidden">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Case ID</th>
+        <th>Split</th>
+        <th>Class</th>
+        <th>Expected (trunc.)</th>
+        <th>Baseline (trunc.)</th>
+        <th>Distilled (trunc.)</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for f in failures %}
+      <tr x-data="{ open: false }">
+        <td class="font-mono text-xs">{{ f.case_id or "—" }}</td>
+        <td class="text-gray-500 text-sm">{{ f.split or "—" }}</td>
+        <td>
+          <span class="badge {% if f.failure_class == 'fixed' %}badge-completed{% else %}badge-failed{% endif %}">
+            {{ f.failure_class or failure_class }}
+          </span>
+        </td>
+        <td class="text-sm text-gray-600 max-w-xs truncate">{{ (f.expected | string)[:80] }}</td>
+        <td class="text-sm text-gray-600 max-w-xs truncate">{{ (f.baseline_output | string)[:80] }}</td>
+        <td class="text-sm text-gray-600 max-w-xs truncate">{{ (f.distilled_output | string)[:80] }}</td>
+        <td>
+          <button type="button" @click="open = !open"
+                  class="text-xs text-indigo-600 hover:underline">
+            <span x-text="open ? 'Hide' : 'Details'">Details</span>
+          </button>
+        </td>
+      </tr>
+      <tr x-show="open" class="bg-gray-50">
+        <td colspan="7" class="p-3 text-xs font-mono whitespace-pre-wrap break-words">
+          <strong>Expected:</strong> {{ f.expected | tojson(indent=2) }}
+          <strong class="block mt-2">Baseline output:</strong> {{ f.baseline_output | tojson(indent=2) }}
+          <strong class="block mt-2">Distilled output:</strong> {{ f.distilled_output | tojson(indent=2) }}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card text-center py-10 text-gray-400">
+  No failures found for the selected filters.
+</div>
+{% endif %}
+</div>
+{% endif %}
+{% endblock %}

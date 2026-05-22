@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %} — Preview{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto">
+  <h1 class="text-2xl font-bold text-gray-900 mb-6">Job Preview</h1>
+
+  {# ── Errors ──────────────────────────────────────────────── #}
+  {% if errors %}
+  <div class="flash-error mb-6" role="alert">
+    <p class="font-semibold mb-2">Validation errors — please fix before submitting:</p>
+    <ul class="list-disc list-inside space-y-1 text-sm">
+      {% for e in errors %}
+      <li>{{ e }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {# ── Warnings ────────────────────────────────────────────── #}
+  {% if warnings %}
+  <div class="flash-success mb-6" role="alert">
+    <p class="font-semibold mb-2">Warnings:</p>
+    <ul class="list-disc list-inside space-y-1 text-sm">
+      {% for w in warnings %}
+      <li>{{ w }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  {% if preview %}
+  {# ── Task summary ────────────────────────────────────────── #}
+  <div class="card mb-4">
+    <h2 class="text-lg font-semibold mb-3">Task</h2>
+    <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+      <dt class="text-gray-500">Task ID</dt>
+      <dd class="font-mono">{{ preview.task_id }}</dd>
+      <dt class="text-gray-500">Name</dt>
+      <dd>{{ preview.task_name }}</dd>
+      <dt class="text-gray-500">Mode</dt>
+      <dd>{{ preview.task_mode }}</dd>
+      <dt class="text-gray-500">Output schema</dt>
+      <dd>{{ "✓ Present" if preview.output_schema_present else "— Not defined" }}</dd>
+    </dl>
+  </div>
+
+  {# ── Case splits ─────────────────────────────────────────── #}
+  <div class="card mb-4">
+    <h2 class="text-lg font-semibold mb-3">Case Splits</h2>
+    <div class="flex flex-wrap gap-3">
+      {% set metric_label = "Total" %} {% set metric_value = preview.case_count %}
+      {% include "components/metric_card.html" %}
+      {% set metric_label = "Train" %} {% set metric_value = preview.train_count %}
+      {% include "components/metric_card.html" %}
+      {% set metric_label = "Validation" %} {% set metric_value = preview.validation_count %}
+      {% include "components/metric_card.html" %}
+      {% set metric_label = "Test" %} {% set metric_value = preview.test_count %}
+      {% include "components/metric_card.html" %}
+      {% set metric_label = "Golden" %} {% set metric_value = preview.golden_count %}
+      {% include "components/metric_card.html" %}
+    </div>
+  </div>
+
+  {# ── Evaluation methods ──────────────────────────────────── #}
+  <div class="card mb-4">
+    <h2 class="text-lg font-semibold mb-2">Detected Evaluation Methods</h2>
+    {% if preview.evaluation_methods %}
+    <div class="flex flex-wrap gap-2">
+      {% for m in preview.evaluation_methods %}
+      <span class="bg-gray-100 text-gray-700 text-xs font-medium px-2 py-0.5 rounded">{{ m }}</span>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-gray-400 text-sm">None detected.</p>
+    {% endif %}
+  </div>
+
+  {# ── Provider routes ─────────────────────────────────────── #}
+  <div class="card mb-4">
+    <h2 class="text-lg font-semibold mb-3">Provider Routes</h2>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Profile</th>
+          <th>Model</th>
+          <th>Chat</th>
+          <th>Embeddings</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in preview.provider_routes %}
+        <tr>
+          <td class="font-mono text-sm">{{ r.profile_name }}</td>
+          <td class="font-mono text-sm">{{ r.model_id }}</td>
+          <td>{{ "✓" if r.supports_chat else "—" }}</td>
+          <td>{{ "✓" if r.supports_embeddings else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {# ── Estimated calls ─────────────────────────────────────── #}
+  <div class="card mb-6">
+    <h2 class="text-lg font-semibold mb-3">Estimated API Calls</h2>
+    <div class="flex flex-wrap gap-3">
+      {% set metric_label = "Teacher (extraction)" %}
+      {% set metric_value = preview.estimated_teacher_calls %}
+      {% include "components/metric_card.html" %}
+      {% set metric_label = "Student (eval)" %}
+      {% set metric_value = preview.estimated_student_eval_calls %}
+      {% include "components/metric_card.html" %}
+      {% set metric_label = "Embedding" %}
+      {% set metric_value = preview.estimated_embedding_calls %}
+      {% include "components/metric_card.html" %}
+    </div>
+  </div>
+  {% endif %}
+
+  {# ── Actions ─────────────────────────────────────────────── #}
+  <div class="flex gap-3">
+    <a href="/ui/jobs/new"
+       class="border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm font-medium
+              px-5 py-2 rounded-md transition-colors">
+      ← Back
+    </a>
+    {% if not errors and draft_job_id %}
+    <form action="/ui/jobs" method="post" class="inline">
+      <input type="hidden" name="draft_job_id" value="{{ draft_job_id }}" />
+      <button type="submit"
+              class="bg-green-600 hover:bg-green-700 text-white text-sm font-semibold
+                     px-6 py-2 rounded-md transition-colors" id="run-pipeline-btn">
+        ▶ Run Pipeline
+      </button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

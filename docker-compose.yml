@@ -50,6 +50,7 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       ARTIFACT_ROOT: .rulekiln/runs
       ENABLE_PGVECTOR: "false"
+      EXECUTION_BACKEND: postgres_queue
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,6 +61,28 @@ services:
       --host 0.0.0.0
       --port 8000
       --reload
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./src:/app/src
+      - ./.rulekiln:/app/.rulekiln
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://rulekiln:rulekiln@postgres:5432/rulekiln
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      ARTIFACT_ROOT: .rulekiln/runs
+      ENABLE_PGVECTOR: "false"
+      EXECUTION_BACKEND: postgres_queue
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    command: python -m rulekiln.workers.queue_worker
 
 volumes:
   postgres_data:

@@ -27,7 +27,7 @@ def test_mask_dict_values_redacts_secrets() -> None:
     data = {"api_key": "sk-123", "token": "tok-abc", "name": "rulekiln"}
     masked = mask_dict_values(data)
     assert masked["api_key"] == "***REDACTED***"
-    assert masked["token"] == "***REDACTED***"
+    assert masked["token"] == "***REDACTED***"  # noqa: S105
     assert masked["name"] == "rulekiln"
 
 
@@ -35,5 +35,5 @@ def test_mask_dict_values_case_insensitive() -> None:
     data = {"API_KEY": "val", "Password": "pw", "normal": "ok"}
     masked = mask_dict_values(data)
     assert masked["API_KEY"] == "***REDACTED***"
-    assert masked["Password"] == "***REDACTED***"
+    assert masked["Password"] == "***REDACTED***"  # noqa: S105
     assert masked["normal"] == "ok"

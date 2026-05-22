@@ -30,9 +30,11 @@ def validate_distillation_request(
                 "is not configured in PROVIDER_PROFILES."
             )
 
-    if payload.judge is not None:
-        if payload.judge.provider_profile not in settings.provider_profiles:
-            raise RequestValidationError(
-                f"judge provider_profile '{payload.judge.provider_profile}' "
-                "is not configured in PROVIDER_PROFILES."
-            )
+    if (
+        payload.judge is not None
+        and payload.judge.provider_profile not in settings.provider_profiles
+    ):
+        raise RequestValidationError(
+            f"judge provider_profile '{payload.judge.provider_profile}' "
+            "is not configured in PROVIDER_PROFILES."
+        )

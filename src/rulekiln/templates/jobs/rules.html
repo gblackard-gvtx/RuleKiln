@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %} — Rules{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-3 mb-2">
+  <a href="/ui/jobs/{{ job_id }}" class="text-gray-400 hover:text-gray-600 text-sm">← Job detail</a>
+</div>
+
+<div class="flex items-center gap-3 mb-6">
+  <h1 class="text-2xl font-bold text-gray-900">Synthesized Rules</h1>
+  <span class="badge badge-running">{{ strategy }}</span>
+</div>
+
+{% if rules %}
+<div class="card p-0 overflow-hidden">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Topic</th>
+        <th>Type</th>
+        <th>Applies When</th>
+        <th>Priority</th>
+        <th>Source Cases</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for rule in rules %}
+      <tr x-data="{ open: false }">
+        <td class="font-medium">{{ rule.topic }}</td>
+        <td class="text-gray-500 text-xs">{{ rule.rule_type if rule.rule_type is defined else "—" }}</td>
+        <td class="text-sm text-gray-600">
+          {% if rule.applies_when %}
+          <ul class="list-disc list-inside">
+            {% for cond in rule.applies_when[:2] %}<li>{{ cond }}</li>{% endfor %}
+            {% if rule.applies_when | length > 2 %}
+            <li class="text-gray-400">+{{ rule.applies_when | length - 2 }} more</li>
+            {% endif %}
+          </ul>
+          {% else %}—{% endif %}
+        </td>
+        <td class="font-mono text-sm">{{ rule.priority }}</td>
+        <td class="font-mono text-sm">{{ rule.source_case_ids | length }}</td>
+        <td>
+          <button type="button" @click="open = !open"
+                  class="text-xs text-indigo-600 hover:underline whitespace-nowrap">
+            <span x-text="open ? 'Hide' : 'Expand'">Expand</span>
+          </button>
+        </td>
+      </tr>
+      <tr x-show="open" class="bg-gray-50">
+        <td colspan="6" class="p-3 text-sm">
+          <strong class="block mb-1">All conditions:</strong>
+          <ul class="list-disc list-inside mb-2">
+            {% for cond in (rule.applies_when or []) %}<li>{{ cond }}</li>{% endfor %}
+          </ul>
+          {% if rule.tie_breakers %}
+          <strong class="block mb-1">Tie-breakers:</strong>
+          <ul class="list-disc list-inside">
+            {% for tb in rule.tie_breakers %}<li>{{ tb }}</li>{% endfor %}
+          </ul>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card text-center py-10 text-gray-400">No synthesized rules found for this strategy.</div>
+{% endif %}
+{% endblock %}

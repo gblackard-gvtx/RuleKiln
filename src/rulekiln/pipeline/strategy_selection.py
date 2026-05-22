@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from rulekiln.pipeline.evaluator import get_primary_metric
 from rulekiln.schemas.pipeline import EvalResult, QualityGateResult, StrategyComparison
 from rulekiln.schemas.task_case import TaskMode
-from rulekiln.pipeline.evaluator import get_primary_metric
 
 
 def _primary_score(result: EvalResult, task_mode: TaskMode) -> float:
@@ -39,7 +39,10 @@ def select_strategy(
             hs = _primary_score(hdbscan_eval, task_mode)
             ds = _primary_score(dbscan_eval, task_mode)
             if hs >= ds:
-                return "hdbscan", "Neither strategy passed gates; HDBSCAN has higher/equal primary metric."
+                return (
+                    "hdbscan",
+                    "Neither strategy passed gates; HDBSCAN has higher/equal primary metric.",
+                )
             return "dbscan", "Neither strategy passed gates; DBSCAN has higher primary metric."
 
     # Both pass (or only one available)
@@ -50,7 +53,8 @@ def select_strategy(
     if hdbscan_eval is None and dbscan_eval is None:
         return "baseline", "No distilled strategy produced results; falling back to baseline."
 
-    assert hdbscan_eval is not None and dbscan_eval is not None
+    if hdbscan_eval is None or dbscan_eval is None:  # pragma: no cover
+        return "baseline", "No distilled strategy produced results; falling back to baseline."
     hs = _primary_score(hdbscan_eval, task_mode)
     ds = _primary_score(dbscan_eval, task_mode)
 

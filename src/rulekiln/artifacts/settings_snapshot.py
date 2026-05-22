@@ -8,7 +8,6 @@ from pathlib import Path
 
 from rulekiln.config.settings import AppSettings
 
-
 _SECRET_PATTERNS: list[re.Pattern[str]] = [
     re.compile(r"(api[_-]?key)", re.IGNORECASE),
     re.compile(r"(secret)", re.IGNORECASE),

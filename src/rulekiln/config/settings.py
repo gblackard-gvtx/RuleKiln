@@ -6,7 +6,6 @@ from typing import Literal
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 type ProviderKind = Literal[
     "fake",
     "bedrock",
@@ -30,6 +29,11 @@ class ProviderProfile(BaseModel):
     supports_embeddings: bool = False
     timeout_seconds: int = 60
     max_retries: int = 3
+
+    # Rate limiting
+    rate_limit_rpm: int | None = None
+    rate_limit_tpm: int | None = None
+    max_concurrency: int = 3
 
     # Provider-specific optional metadata
     aws_assume_role_arn: str | None = None
@@ -66,11 +70,37 @@ class AppSettings(BaseSettings):
     environment: str = "local"
     database_url: str = Field(alias="DATABASE_URL")
     mlflow_tracking_uri: str = Field(alias="MLFLOW_TRACKING_URI")
+    mlflow_experiment_name: str = Field(default="rulekiln", alias="MLFLOW_EXPERIMENT_NAME")
     artifact_root: str = Field(default=".rulekiln/runs", alias="ARTIFACT_ROOT")
     enable_pgvector: bool = Field(default=False, alias="ENABLE_PGVECTOR")
+    mlflow_ui_base_url: str | None = Field(default=None, alias="MLFLOW_UI_BASE_URL")
+    max_upload_size_bytes: int = Field(default=10 * 1024 * 1024, alias="MAX_UPLOAD_SIZE_BYTES")
 
     # Optional API keys — providers read their own key from env by name
     openai_api_key: SecretStr | None = Field(default=None, alias="OPENAI_API_KEY")
+
+    # ── Execution backend ──────────────────────────────────────────────────
+    execution_backend: Literal["background_tasks", "postgres_queue"] = Field(
+        default="postgres_queue", alias="EXECUTION_BACKEND"
+    )
+    worker_poll_interval_seconds: int = Field(default=2, alias="WORKER_POLL_INTERVAL_SECONDS")
+    worker_lease_seconds: int = Field(default=1800, alias="WORKER_LEASE_SECONDS")
+
+    # ── Provider rate limiting defaults ──────────────────────────────────────
+    default_provider_max_concurrency: int = Field(
+        default=3, alias="DEFAULT_PROVIDER_MAX_CONCURRENCY"
+    )
+    default_provider_rate_limit_rpm: int | None = Field(
+        default=None, alias="DEFAULT_PROVIDER_RATE_LIMIT_RPM"
+    )
+    default_provider_rate_limit_tpm: int | None = Field(
+        default=None, alias="DEFAULT_PROVIDER_RATE_LIMIT_TPM"
+    )
+
+    # ── Rule pruning defaults ─────────────────────────────────────────────
+    default_max_rules: int = Field(default=40, alias="DEFAULT_MAX_RULES")
+    default_min_rule_support_count: int = Field(default=2, alias="DEFAULT_MIN_RULE_SUPPORT_COUNT")
+    default_max_prompt_tokens: int = Field(default=8000, alias="DEFAULT_MAX_PROMPT_TOKENS")
 
     default_quality_gate: QualityGateDefaults = Field(
         default_factory=QualityGateDefaults,

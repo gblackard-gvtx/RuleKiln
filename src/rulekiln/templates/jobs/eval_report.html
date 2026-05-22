@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %} — Eval Report{% endblock %}
+
+{% block content %}
+<div class="flex items-center gap-3 mb-2">
+  <a href="/ui/jobs/{{ job_id }}" class="text-gray-400 hover:text-gray-600 text-sm">← Job detail</a>
+</div>
+
+<h1 class="text-2xl font-bold text-gray-900 mb-6">Evaluation Report</h1>
+
+{% if eval_runs %}
+<div class="card p-0 overflow-hidden">
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Strategy</th>
+        <th>Split</th>
+        <th>Score</th>
+        <th>Accuracy</th>
+        <th>Macro F1</th>
+        <th>Malformed %</th>
+        <th>Model</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in eval_runs %}
+      <tr>
+        <td>
+          <span class="badge {% if run.strategy == 'baseline' %}badge-queued{% elif run.strategy == 'dbscan' %}badge-running{% else %}badge-completed{% endif %}">
+            {{ run.strategy }}
+          </span>
+        </td>
+        <td class="text-gray-500 text-sm">{{ run.split }}</td>
+        <td class="font-mono text-sm">
+          {{ "%.4f" | format(run.weighted_case_score) if run.weighted_case_score is not none else "—" }}
+        </td>
+        <td class="font-mono text-sm">
+          {{ "%.4f" | format(run.accuracy) if run.accuracy is not none else "—" }}
+        </td>
+        <td class="font-mono text-sm">
+          {{ "%.4f" | format(run.macro_f1) if run.macro_f1 is not none else "—" }}
+        </td>
+        <td class="font-mono text-sm">
+          {{ "%.2f" | format(run.malformed_output_rate * 100) if run.malformed_output_rate is not none else "—" }}%
+        </td>
+        <td class="text-xs text-gray-400 font-mono">{{ run.model }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card text-center py-10 text-gray-400">No evaluation runs found for this job.</div>
+{% endif %}
+{% endblock %}

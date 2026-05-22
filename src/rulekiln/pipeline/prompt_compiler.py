@@ -8,7 +8,6 @@ import textwrap
 from rulekiln.schemas.pipeline import SynthesizedRuleSchema
 from rulekiln.schemas.task_case import RuleKilnTask
 
-
 _MAX_CUES = 5  # max positive/negative cues listed per rule
 
 
@@ -67,12 +66,18 @@ def compile_prompt(
     if task.output_schema:
         sections.append(
             "## Output Format\n"
-            f"Always respond with valid JSON matching this schema:\n```json\n{task.output_schema}\n```"
+            "Always respond with valid JSON matching this schema:\n"
+            f"```json\n{task.output_schema}\n```"
         )
 
     # Rules
     if sorted_rules:
-        sections.append("## Decision Rules\n")
+        total_rules = len(sorted_rules)
+        sections.append(
+            "## Distilled Rule Policy\n"
+            f"The following {total_rules} rule(s) are distilled from observed examples. "
+            "Apply them strictly and in order of priority.\n"
+        )
         for i, rule in enumerate(sorted_rules, start=1):
             sections.append(_render_rule(i, rule))
 

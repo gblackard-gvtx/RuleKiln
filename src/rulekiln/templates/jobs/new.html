@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% block title %} — New Job{% endblock %}
+
+{% block content %}
+<div class="max-w-2xl mx-auto">
+  <h1 class="text-2xl font-bold text-gray-900 mb-6">New Distillation Job</h1>
+
+  <form action="/ui/jobs/preview" method="post" enctype="multipart/form-data"
+        class="card space-y-6">
+
+    {# ── Files ──────────────────────────────────────────────────────── #}
+    <fieldset class="space-y-4">
+      <legend class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
+        Upload Files
+      </legend>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1" for="task_file">
+          Task definition <span class="text-gray-400">(.yaml / .yml)</span>
+        </label>
+        <input id="task_file" name="task_file" type="file" accept=".yaml,.yml" required
+               class="block w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3
+                      file:rounded file:border file:border-gray-300 file:text-sm
+                      file:bg-gray-50 hover:file:bg-gray-100 cursor-pointer" />
+      </div>
+
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1" for="cases_file">
+          Cases <span class="text-gray-400">(.jsonl)</span>
+        </label>
+        <input id="cases_file" name="cases_file" type="file" accept=".jsonl" required
+               class="block w-full text-sm text-gray-600 file:mr-3 file:py-1.5 file:px-3
+                      file:rounded file:border file:border-gray-300 file:text-sm
+                      file:bg-gray-50 hover:file:bg-gray-100 cursor-pointer" />
+      </div>
+    </fieldset>
+
+    <hr class="border-gray-200" />
+
+    {# ── Provider profiles ─────────────────────────────────────────── #}
+    <fieldset class="space-y-4">
+      <legend class="text-sm font-semibold text-gray-700 uppercase tracking-wide mb-2">
+        Provider Profiles
+        <span class="text-xs text-gray-400 font-normal ml-1">
+          (API credentials are never submitted here — they are read from environment variables)
+        </span>
+      </legend>
+
+      {% for role, label in [
+          ("teacher",   "Teacher (rule extraction)"),
+          ("student",   "Student (evaluation)"),
+          ("embedding", "Embedding"),
+      ] %}
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1"
+                 for="{{ role }}_profile">{{ label }} — profile</label>
+          <select id="{{ role }}_profile" name="{{ role }}_profile" required
+                  class="w-full rounded border border-gray-300 text-sm px-2.5 py-1.5
+                         focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+            <option value="" disabled selected>Select profile…</option>
+            {% for p in profile_names %}
+            <option value="{{ p }}">{{ p }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-medium text-gray-700 mb-1"
+                 for="{{ role }}_model">{{ label }} — model ID</label>
+          <input id="{{ role }}_model" name="{{ role }}_model" type="text" required
+                 placeholder="e.g. gpt-4o"
+                 class="w-full rounded border border-gray-300 text-sm px-2.5 py-1.5
+                        focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+        </div>
+      </div>
+      {% endfor %}
+
+      {# Optional judge ─────────────────────────────────────── #}
+      <div x-data="{ showJudge: false }">
+        <button type="button" @click="showJudge = !showJudge"
+                class="text-sm text-indigo-600 hover:underline">
+          <span x-text="showJudge ? '− Hide judge provider' : '+ Add optional judge provider'">
+            + Add optional judge provider
+          </span>
+        </button>
+        <div x-show="showJudge" class="grid grid-cols-2 gap-3 mt-3">
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1" for="judge_profile">
+              Judge — profile
+            </label>
+            <select id="judge_profile" name="judge_profile"
+                    class="w-full rounded border border-gray-300 text-sm px-2.5 py-1.5">
+              <option value="">None</option>
+              {% for p in profile_names %}
+              <option value="{{ p }}">{{ p }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div>
+            <label class="block text-sm font-medium text-gray-700 mb-1" for="judge_model">
+              Judge — model ID
+            </label>
+            <input id="judge_model" name="judge_model" type="text" placeholder="optional"
+                   class="w-full rounded border border-gray-300 text-sm px-2.5 py-1.5" />
+          </div>
+        </div>
+      </div>
+    </fieldset>
+
+    <hr class="border-gray-200" />
+
+    {# ── Optional baseline prompt ──────────────────────────── #}
+    <div>
+      <label class="block text-sm font-medium text-gray-700 mb-1" for="baseline_prompt">
+        Baseline prompt <span class="text-gray-400">(optional)</span>
+      </label>
+      <textarea id="baseline_prompt" name="baseline_prompt" rows="4"
+                placeholder="Leave blank to use the default baseline…"
+                class="w-full rounded border border-gray-300 text-sm px-2.5 py-1.5
+                       focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500
+                       font-mono"></textarea>
+    </div>
+
+    <div class="flex justify-end pt-2">
+      <button type="submit"
+              class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium
+                     px-6 py-2 rounded-md transition-colors">
+        Validate &amp; Preview →
+      </button>
+    </div>
+  </form>
+</div>
+{% endblock %}

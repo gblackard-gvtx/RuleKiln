@@ -20,7 +20,9 @@ async def stage_timing(job_id: str, stage: str) -> AsyncIterator[None]:
         yield
     except Exception as exc:
         elapsed = time.monotonic() - start
-        logger.error("stage_error", job_id=job_id, stage=stage, elapsed_s=round(elapsed, 3), error=str(exc))
+        logger.error(
+            "stage_error", job_id=job_id, stage=stage, elapsed_s=round(elapsed, 3), error=str(exc)
+        )
         raise
     else:
         elapsed = time.monotonic() - start

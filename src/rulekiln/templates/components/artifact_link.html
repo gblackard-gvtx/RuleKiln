@@ -1,0 +1,18 @@
+{#
+  Renders a single artifact download anchor.
+  Required context variables:
+    `artifact_filename`     (str) — display filename
+    `artifact_download_url` (str) — href for download
+    `artifact_content_type` (str) — MIME type hint shown to user
+#}
+<a href="{{ artifact_download_url }}"
+   download="{{ artifact_filename }}"
+   class="inline-flex items-center gap-1.5 text-sm text-indigo-600 hover:text-indigo-800 hover:underline">
+  <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0" fill="none"
+       viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+    <path stroke-linecap="round" stroke-linejoin="round"
+          d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1M12 12v6m0 0l-3-3m3 3l3-3M12 4v8" />
+  </svg>
+  {{ artifact_filename }}
+  <span class="text-gray-400 text-xs">({{ artifact_content_type }})</span>
+</a>

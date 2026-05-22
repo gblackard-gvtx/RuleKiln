@@ -11,6 +11,8 @@ def test_all_required_stages_present() -> None:
         "embedding_rules",
         "clustering_rules",
         "synthesizing_rules",
+        "reviewing_rule_conflicts",
+        "pruning_rules",
         "compiling_prompts",
         "evaluating_baseline",
         "evaluating_distilled",
@@ -27,7 +29,7 @@ def test_all_required_stages_present() -> None:
 
 
 def test_stage_count() -> None:
-    assert len(PipelineStage) == 16
+    assert len(PipelineStage) == 18
 
 
 def test_terminal_stages() -> None:

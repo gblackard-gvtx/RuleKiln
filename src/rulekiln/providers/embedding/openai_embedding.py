@@ -1,7 +1,5 @@
 """OpenAI embedding provider adapter."""
 
-import os
-
 import httpx
 
 from rulekiln.providers.contracts import (
@@ -22,14 +20,16 @@ class OpenAIEmbeddingClient(EmbeddingClient):
         texts: list[str],
         config: ProviderConfig,
     ) -> list[list[float]]:
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        if not api_key:
-            raise ProviderNotConfiguredError("openai", "OPENAI_API_KEY is not set.")
+        if not config.api_key:
+            raise ProviderNotConfiguredError(
+                "openai",
+                "api_key_env_var is not set or the referenced environment variable is empty.",
+            )
 
         async with httpx.AsyncClient(timeout=config.timeout_seconds) as client:
             resp = await client.post(
                 _OPENAI_EMBED_URL,
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": f"Bearer {config.api_key}"},
                 json={"model": config.model, "input": texts},
             )
             resp.raise_for_status()

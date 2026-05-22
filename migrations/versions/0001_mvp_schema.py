@@ -102,9 +102,7 @@ def upgrade() -> None:
         sa.Column("topic", sa.Text(), nullable=True),
         sa.Column("algorithm", sa.String(), nullable=False),
         sa.Column("rule_ids", sa.dialects.postgresql.JSONB(), nullable=False),
-        sa.Column(
-            "metadata", sa.dialects.postgresql.JSONB(), nullable=False, server_default="{}"
-        ),
+        sa.Column("metadata", sa.dialects.postgresql.JSONB(), nullable=False, server_default="{}"),
         sa.PrimaryKeyConstraint("id"),
     )
 

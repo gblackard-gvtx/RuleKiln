@@ -23,8 +23,14 @@ class ProviderConfig(BaseModel):
     model: str
     region: str | None = None
     base_url: str | None = None
+    api_key: str | None = None  # resolved from api_key_env_var at config build time
     timeout_seconds: int = 60
     max_retries: int = 3
+
+    # Effective rate limits (resolved from route override → profile → app default)
+    rate_limit_rpm: int | None = None
+    rate_limit_tpm: int | None = None
+    max_concurrency: int = 3
 
 
 class ProviderNotImplementedError(NotImplementedError):

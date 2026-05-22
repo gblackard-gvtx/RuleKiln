@@ -105,10 +105,7 @@ async def get_job_eval_report(
             malformed_output_rate=r.malformed_output_rate,
             per_outcome_precision=dict(r.per_outcome_precision or {}),
             per_outcome_recall=dict(r.per_outcome_recall or {}),
-            confusion_matrix={
-                k: dict(v)
-                for k, v in (r.confusion_matrix or {}).items()
-            },
+            confusion_matrix={k: dict(v) for k, v in (r.confusion_matrix or {}).items()},
         )
         for r in db_runs
     ]

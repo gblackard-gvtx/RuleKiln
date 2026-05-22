@@ -25,7 +25,7 @@ def _build_clusters(
     algorithm: str,
 ) -> list[RuleClusterSchema]:
     cluster_map: dict[int, list[str]] = {}
-    for rule_id, label in zip(rule_ids, labels):
+    for rule_id, label in zip(rule_ids, labels, strict=False):
         if label == _NOISE_LABEL:
             continue
         cluster_map.setdefault(int(label), []).append(rule_id)

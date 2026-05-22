@@ -6,7 +6,7 @@ Exercises the full pipeline orchestration in-process with SQLite + fake chat/emb
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from rulekiln.config.settings import AppSettings, ProviderProfile, get_settings
+from rulekiln.config.settings import AppSettings, ProviderProfile
 from rulekiln.db.models import Base
 from rulekiln.db.session import override_session_factory
 from rulekiln.schemas.job import DistillationRequest, ModelRoute
@@ -83,9 +83,13 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
     from rulekiln.providers import resolver as _resolver
 
     def _patched_resolve(profile_name: str, model: str, *, role: str, settings: AppSettings):  # type: ignore[no-untyped-def]
-        return _resolver.resolve_provider_config(profile_name, model, role=role, settings=fake_settings)
+        return _resolver.resolve_provider_config(
+            profile_name, model, role=role, settings=fake_settings
+        )
 
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.resolve_provider_config", _patched_resolve)
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.resolve_provider_config", _patched_resolve
+    )
 
     payload = _build_payload()
     job_id = "aaaaaaaa-1111-0000-0000-000000000001"
@@ -124,9 +128,13 @@ async def test_pipeline_with_baseline_runs(db_factory, fake_settings, monkeypatc
     from rulekiln.providers import resolver as _resolver
 
     def _patched_resolve(profile_name: str, model: str, *, role: str, settings: AppSettings):  # type: ignore[no-untyped-def]
-        return _resolver.resolve_provider_config(profile_name, model, role=role, settings=fake_settings)
+        return _resolver.resolve_provider_config(
+            profile_name, model, role=role, settings=fake_settings
+        )
 
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.resolve_provider_config", _patched_resolve)
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.resolve_provider_config", _patched_resolve
+    )
 
     payload = _build_payload(baseline=True)
     job_id = "aaaaaaaa-1111-0000-0000-000000000002"

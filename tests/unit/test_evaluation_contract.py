@@ -16,7 +16,9 @@ def _task(mode: str = "classification") -> RuleKilnTask:
     )
 
 
-def _case(case_id: str, expected: str = "yes", golden: bool = False, weight: float = 1.0) -> RuleKilnCase:
+def _case(
+    case_id: str, expected: str = "yes", golden: bool = False, weight: float = 1.0
+) -> RuleKilnCase:
     return RuleKilnCase(
         id=case_id,
         task_mode="classification",
@@ -30,19 +32,19 @@ def _case(case_id: str, expected: str = "yes", golden: bool = False, weight: flo
 
 
 def _eval_result(**kwargs) -> EvalResult:  # type: ignore[no-untyped-def]
-    defaults: dict[str, object] = dict(
-        strategy="hdbscan",
-        model="fake",
-        split="train",
-        accuracy=0.8,
-        macro_f1=0.75,
-        weighted_case_score=0.8,
-        malformed_output_rate=0.0,
-        per_outcome_precision={},
-        per_outcome_recall={},
-        confusion_matrix={},
-        case_results=[],
-    )
+    defaults: dict[str, object] = {
+        "strategy": "hdbscan",
+        "model": "fake",
+        "split": "train",
+        "accuracy": 0.8,
+        "macro_f1": 0.75,
+        "weighted_case_score": 0.8,
+        "malformed_output_rate": 0.0,
+        "per_outcome_precision": {},
+        "per_outcome_recall": {},
+        "confusion_matrix": {},
+        "case_results": [],
+    }
     defaults.update(kwargs)
     return EvalResult(**defaults)  # type: ignore[arg-type]
 
