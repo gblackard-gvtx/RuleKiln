@@ -4,10 +4,10 @@ from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.pipeline import ExtractionOutput
 from rulekiln.schemas.task_case import RuleKilnCase, RuleKilnTask
 
-
 _EXTRACTION_SYSTEM_PROMPT = """\
-You are a rule extraction specialist. Given a task definition and a case example with its expected output, \
-extract the explicit decision rules that a model must follow to produce that output.
+You are a rule extraction specialist. Given a task definition and a case example with its \
+expected output, extract the explicit decision rules that a model must follow \
+to produce that output.
 
 For each rule produce:
 - topic: a short label for the rule domain (e.g. "date_format", "tone", "label_selection")
@@ -18,7 +18,8 @@ For each rule produce:
 - negative_cues: list of signals that indicate this rule does NOT apply
 - rule_type: one of "decision", "constraint", "format", "fallback"
 
-Return only rules that are clearly demonstrated by the case. Do not invent rules not supported by evidence.
+Return only rules that are clearly demonstrated by the case. Do not invent rules not \
+supported by evidence.
 """
 
 

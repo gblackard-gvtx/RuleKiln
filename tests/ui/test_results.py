@@ -1,27 +1,26 @@
 """Tests: GET /ui/jobs/{job_id}/results — results summary page."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-import pytest
 from httpx import AsyncClient
 
-from rulekiln.db.models import DistillationJob, EvalRun, PromptVersion
+from rulekiln.db.models import DistillationJob, EvalRun
 
 
 async def _insert_job(factory, **kwargs) -> str:
     job_id = str(uuid.uuid4())
-    defaults = dict(
-        id=job_id,
-        task_id="t1",
-        task_name="Results Task",
-        task_mode="classification",
-        status="completed",
-        stage=None,
-        request_json={},
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-    )
+    defaults = {
+        "id": job_id,
+        "task_id": "t1",
+        "task_name": "Results Task",
+        "task_mode": "classification",
+        "status": "completed",
+        "stage": None,
+        "request_json": {},
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
     defaults.update(kwargs)
     async with factory() as session:
         session.add(DistillationJob(**defaults))
@@ -43,7 +42,7 @@ async def _insert_eval_run(factory, job_id: str, strategy: str, split: str) -> N
                 macro_f1=0.83,
                 weighted_case_score=0.84,
                 malformed_output_rate=0.01,
-                created_at=datetime.now(timezone.utc),
+                created_at=datetime.now(UTC),
             )
         )
         await session.commit()

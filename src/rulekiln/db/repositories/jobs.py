@@ -1,6 +1,6 @@
 """Job and artifact repository helpers."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,8 +16,8 @@ from rulekiln.db.models import (
     SynthesizedRule,
 )
 
-
 # ── Job ──────────────────────────────────────────────────────
+
 
 async def create_job(session: AsyncSession, job: DistillationJob) -> None:
     session.add(job)
@@ -25,9 +25,7 @@ async def create_job(session: AsyncSession, job: DistillationJob) -> None:
 
 
 async def get_job(session: AsyncSession, job_id: str) -> DistillationJob | None:
-    result = await session.execute(
-        select(DistillationJob).where(DistillationJob.id == job_id)
-    )
+    result = await session.execute(select(DistillationJob).where(DistillationJob.id == job_id))
     return result.scalar_one_or_none()
 
 
@@ -37,9 +35,7 @@ async def list_recent_jobs(
 ) -> list[DistillationJob]:
     """Return the most recent jobs ordered by created_at descending."""
     result = await session.execute(
-        select(DistillationJob)
-        .order_by(DistillationJob.created_at.desc())
-        .limit(limit)
+        select(DistillationJob).order_by(DistillationJob.created_at.desc()).limit(limit)
     )
     return list(result.scalars().all())
 
@@ -62,18 +58,15 @@ async def update_job_status(
     await session.commit()
 
 
-async def set_mlflow_run_id(
-    session: AsyncSession, job_id: str, run_id: str
-) -> None:
+async def set_mlflow_run_id(session: AsyncSession, job_id: str, run_id: str) -> None:
     await session.execute(
-        update(DistillationJob)
-        .where(DistillationJob.id == job_id)
-        .values(mlflow_run_id=run_id)
+        update(DistillationJob).where(DistillationJob.id == job_id).values(mlflow_run_id=run_id)
     )
     await session.commit()
 
 
 # ── Cases ─────────────────────────────────────────────────────
+
 
 async def bulk_insert_cases(session: AsyncSession, cases: list[Case]) -> None:
     session.add_all(cases)
@@ -86,6 +79,7 @@ async def get_cases_for_job(session: AsyncSession, job_id: str) -> list[Case]:
 
 
 # ── Stage markers ─────────────────────────────────────────────
+
 
 async def mark_stage_complete(
     session: AsyncSession,
@@ -134,6 +128,7 @@ async def is_stage_complete(
 
 # ── Micro rules ───────────────────────────────────────────────
 
+
 async def bulk_insert_micro_rules(session: AsyncSession, rules: list[MicroRule]) -> None:
     session.add_all(rules)
     await session.commit()
@@ -146,14 +141,14 @@ async def get_micro_rules_for_job(session: AsyncSession, job_id: str) -> list[Mi
 
 # ── Rule clusters ─────────────────────────────────────────────
 
-async def bulk_insert_rule_clusters(
-    session: AsyncSession, clusters: list[RuleCluster]
-) -> None:
+
+async def bulk_insert_rule_clusters(session: AsyncSession, clusters: list[RuleCluster]) -> None:
     session.add_all(clusters)
     await session.commit()
 
 
 # ── Synthesized rules ─────────────────────────────────────────
+
 
 async def bulk_insert_synthesized_rules(
     session: AsyncSession, rules: list[SynthesizedRule]
@@ -176,16 +171,13 @@ async def get_synthesized_rules_for_job(
 
 # ── Prompt versions ───────────────────────────────────────────
 
-async def insert_prompt_version(
-    session: AsyncSession, prompt_version: PromptVersion
-) -> None:
+
+async def insert_prompt_version(session: AsyncSession, prompt_version: PromptVersion) -> None:
     session.add(prompt_version)
     await session.commit()
 
 
-async def get_selected_prompt_version(
-    session: AsyncSession, job_id: str
-) -> PromptVersion | None:
+async def get_selected_prompt_version(session: AsyncSession, job_id: str) -> PromptVersion | None:
     result = await session.execute(
         select(PromptVersion).where(
             PromptVersion.job_id == job_id,
@@ -195,13 +187,9 @@ async def get_selected_prompt_version(
     return result.scalar_one_or_none()
 
 
-async def mark_prompt_version_selected(
-    session: AsyncSession, job_id: str, strategy: str
-) -> None:
+async def mark_prompt_version_selected(session: AsyncSession, job_id: str, strategy: str) -> None:
     await session.execute(
-        update(PromptVersion)
-        .where(PromptVersion.job_id == job_id)
-        .values(is_selected=False)
+        update(PromptVersion).where(PromptVersion.job_id == job_id).values(is_selected=False)
     )
     await session.execute(
         update(PromptVersion)
@@ -212,6 +200,7 @@ async def mark_prompt_version_selected(
 
 
 # ── Eval runs ─────────────────────────────────────────────────
+
 
 async def insert_eval_run(session: AsyncSession, eval_run: EvalRun) -> None:
     session.add(eval_run)
@@ -224,6 +213,7 @@ async def get_eval_runs_for_job(session: AsyncSession, job_id: str) -> list[Eval
 
 
 # ── Synthesized rule updates ──────────────────────────────────
+
 
 async def update_synthesized_rule_conflict(
     session: AsyncSession,
@@ -284,6 +274,7 @@ async def get_selected_synthesized_rules_for_job(
 
 
 # ── Postgres queue operations ─────────────────────────────────
+
 
 async def claim_next_job(
     session: AsyncSession,
@@ -387,7 +378,7 @@ async def recover_expired_leases(
 
     Returns (retried_count, failed_count).
     """
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
 
     # Return to pending if under max_attempts
     retried = await session.execute(
@@ -426,4 +417,3 @@ async def recover_expired_leases(
 
     await session.commit()
     return (retried.rowcount, failed.rowcount)
-

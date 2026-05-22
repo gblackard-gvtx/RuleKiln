@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import pytest
-
 from rulekiln.pipeline.failure_analysis import FailureAnalysisResult, analyze_failures
-from rulekiln.schemas.pipeline import CaseEvalResult, EvalResult, OutcomeCondition, SynthesizedRuleSchema
+from rulekiln.schemas.pipeline import (
+    CaseEvalResult,
+    EvalResult,
+    OutcomeCondition,
+    SynthesizedRuleSchema,
+)
 
 
 def _eval_result(
@@ -89,9 +92,7 @@ def test_structured_failures_populated_for_broken() -> None:
     distilled = _eval_result(case_results=[_case_result("c1", passed=False)])
     rules = [_rule("rule_1", "path.a")]
     result = analyze_failures(baseline, distilled, selected_rules=rules)
-    broken_failures = [
-        f for f in result.structured_failures if f.failure_class == "broken"
-    ]
+    broken_failures = [f for f in result.structured_failures if f.failure_class == "broken"]
     assert len(broken_failures) == 1
     assert broken_failures[0].case_id == "c1"
     assert "path.a" in broken_failures[0].failed_assertion_paths

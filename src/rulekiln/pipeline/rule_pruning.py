@@ -48,7 +48,13 @@ class PruningResult:
         pruned_entries: list[dict[str, str]] = []
         for record in self.pruned:
             reason_counts[record.reason] = reason_counts.get(record.reason, 0) + 1
-            pruned_entries.append({"rule_id": record.rule.id, "topic": record.rule.topic, "reason": record.reason})
+            pruned_entries.append(
+                {
+                    "rule_id": record.rule.id,
+                    "topic": record.rule.topic,
+                    "reason": record.reason,
+                }
+            )
         return {
             "selected_count": self.selected_count,
             "pruned_count": self.pruned_count,
@@ -95,10 +101,11 @@ def prune_rules(
         )
 
         # 2/3. Remove below-min-support unless golden-backed
-        if rule.support_count < min_rule_support_count:
-            if not (preserve_golden_rules and is_golden):
-                pruned.append(PruningRecord(rule, "below_min_support"))
-                continue
+        if rule.support_count < min_rule_support_count and not (
+            preserve_golden_rules and is_golden
+        ):
+            pruned.append(PruningRecord(rule, "below_min_support"))
+            continue
 
         selected.append(rule)
 

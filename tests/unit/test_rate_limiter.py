@@ -10,7 +10,9 @@ from rulekiln.providers.contracts import ProviderConfig
 from rulekiln.providers.rate_limiter import ProviderRateLimiter
 
 
-def _config(profile: str = "p1", model: str = "m1", rpm: int | None = None, concurrency: int = 5) -> ProviderConfig:
+def _config(
+    profile: str = "p1", model: str = "m1", rpm: int | None = None, concurrency: int = 5
+) -> ProviderConfig:
     return ProviderConfig(
         provider="fake",
         profile_name=profile,

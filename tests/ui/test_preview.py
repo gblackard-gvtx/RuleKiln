@@ -1,8 +1,5 @@
 """Tests: POST /ui/jobs/preview — task/case validation and preview rendering."""
 
-import json
-
-import pytest
 from httpx import AsyncClient
 
 from tests.ui.conftest import VALID_CASE_LINE, VALID_TASK_YAML
@@ -82,9 +79,7 @@ class TestPreview:
         assert response.status_code == 200
         assert "2" in response.text
 
-    async def test_unknown_provider_profile_returns_error(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_unknown_provider_profile_returns_error(self, client: AsyncClient) -> None:
         data = _form_data()
         data["teacher_profile"] = "nonexistent_profile"
         response = await client.post(

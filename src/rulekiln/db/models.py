@@ -4,12 +4,12 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     Double,
     ForeignKey,
     Integer,
-    JSON,
     String,
     Text,
     func,
@@ -53,7 +53,9 @@ class DistillationJob(Base):
     queue_status: Mapped[str] = mapped_column(String, nullable=False, default="pending")
     locked_by: Mapped[str | None] = mapped_column(String, nullable=True)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=3)
     next_run_at: Mapped[datetime] = mapped_column(
@@ -189,9 +191,7 @@ class PromptVersion(Base):
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
-    job: Mapped[DistillationJob] = relationship(
-        "DistillationJob", back_populates="prompt_versions"
-    )
+    job: Mapped[DistillationJob] = relationship("DistillationJob", back_populates="prompt_versions")
     eval_runs: Mapped[list["EvalRun"]] = relationship("EvalRun", back_populates="prompt_version")
 
 

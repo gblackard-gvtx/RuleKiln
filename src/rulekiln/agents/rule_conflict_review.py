@@ -4,7 +4,6 @@ from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.pipeline import MicroRuleSchema, RuleConflictReview, SynthesizedRuleSchema
 from rulekiln.schemas.task_case import RuleKilnTask
 
-
 _CONFLICT_SYSTEM_PROMPT = """\
 You review synthesized task-policy rules for contradictions.
 

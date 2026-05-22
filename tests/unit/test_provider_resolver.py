@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from rulekiln.config.settings import AppSettings, ProviderProfile
 from rulekiln.providers.resolver import resolve_provider_config
 from rulekiln.schemas.task_case import ModelRoute
@@ -53,7 +51,9 @@ def test_route_overrides_defaults() -> None:
         max_concurrency=8,
     )
     settings = _settings(rpm=60, concurrency=4)
-    config = resolve_provider_config("default", "gpt-4o", role="teacher", settings=settings, route=route)
+    config = resolve_provider_config(
+        "default", "gpt-4o", role="teacher", settings=settings, route=route
+    )
     assert config.rate_limit_rpm == 120
     assert config.max_concurrency == 8
 
@@ -67,9 +67,10 @@ def test_profile_overrides_default_but_not_route() -> None:
         max_concurrency=None,
     )
     settings = _settings(rpm=30, concurrency=2, profiles={"my_profile": profile})
-    config = resolve_provider_config("my_profile", "gpt-4o", role="teacher", settings=settings, route=route)
+    config = resolve_provider_config(
+        "my_profile", "gpt-4o", role="teacher", settings=settings, route=route
+    )
     # profile (90) overrides default (30)
     assert config.rate_limit_rpm == 90
     # profile (6) overrides default (2)
     assert config.max_concurrency == 6
-

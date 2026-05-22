@@ -9,11 +9,10 @@ from typing import Annotated
 
 import yaml
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
-from starlette.responses import FileResponse
+from starlette.responses import FileResponse, RedirectResponse, Response
 
 from rulekiln.api.validators.request_shape import (
     RequestValidationError,
@@ -78,9 +77,7 @@ _KNOWN_ARTIFACT_PATTERNS: list[str] = [
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
-async def _get_selected_strategy(
-    session: AsyncSession, job: DistillationJob
-) -> str | None:
+async def _get_selected_strategy(session: AsyncSession, job: DistillationJob) -> str | None:
     """Derive selected strategy from the selected PromptVersion, falling back to the job column."""
     pv = await get_selected_prompt_version(session, job.id)
     if pv is not None:
@@ -128,7 +125,7 @@ async def ui_root() -> RedirectResponse:
 async def job_list(
     request: Request,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     jobs = await list_recent_jobs(session, limit=50)
     items: list[JobListItemView] = [
         JobListItemView(
@@ -154,11 +151,9 @@ async def job_list(
 async def new_job_form(
     request: Request,
     settings: Annotated[AppSettings, Depends(get_settings)],
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     profile_names = sorted(settings.provider_profiles.keys())
-    return templates.TemplateResponse(
-        request, "jobs/new.html", {"profile_names": profile_names}
-    )
+    return templates.TemplateResponse(request, "jobs/new.html", {"profile_names": profile_names})
 
 
 # ── Phase 6: Preview / validate ───────────────────────────────────────────────
@@ -170,7 +165,7 @@ async def preview_job(
     form: Annotated[NewJobForm, Depends(NewJobForm)],
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[AppSettings, Depends(get_settings)],
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -258,9 +253,7 @@ async def preview_job(
         cases=cases,
         teacher=ModelRoute(provider_profile=form.teacher_profile, model=form.teacher_model),
         student=ModelRoute(provider_profile=form.student_profile, model=form.student_model),
-        embedding=ModelRoute(
-            provider_profile=form.embedding_profile, model=form.embedding_model
-        ),
+        embedding=ModelRoute(provider_profile=form.embedding_profile, model=form.embedding_model),
         judge=judge,
         baseline_prompt=form.baseline_prompt or None,
     )
@@ -401,7 +394,7 @@ async def job_detail(
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[AppSettings, Depends(get_settings)],
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -411,8 +404,7 @@ async def job_detail(
     mlflow_run_url: str | None = None
     if job.mlflow_run_id and settings.mlflow_ui_base_url:
         mlflow_run_url = (
-            f"{settings.mlflow_ui_base_url.rstrip('/')}/"
-            f"#/experiments/1/runs/{job.mlflow_run_id}"
+            f"{settings.mlflow_ui_base_url.rstrip('/')}/#/experiments/1/runs/{job.mlflow_run_id}"
         )
 
     detail = JobDetailView(
@@ -437,7 +429,7 @@ async def job_status_fragment(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -463,7 +455,7 @@ async def job_results(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -519,7 +511,7 @@ async def job_prompt(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -542,7 +534,7 @@ async def job_rules(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -564,7 +556,7 @@ async def job_eval_report(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -582,7 +574,7 @@ async def job_failures(
     settings: Annotated[AppSettings, Depends(get_settings)],
     failure_class: str | None = None,
     split: str | None = None,
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -630,7 +622,7 @@ async def job_artifacts(
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[AppSettings, Depends(get_settings)],
-) -> templates.TemplateResponse:  # pyright: ignore[reportAttributeAccessIssue]
+) -> Response:
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
@@ -652,9 +644,7 @@ async def job_artifacts(
             )
 
     manifest = ArtifactsView(job_id=job_id, files=files)
-    return templates.TemplateResponse(
-        request, "jobs/artifacts.html", {"manifest": manifest}
-    )
+    return templates.TemplateResponse(request, "jobs/artifacts.html", {"manifest": manifest})
 
 
 @router.get("/jobs/{job_id}/artifacts/download")
@@ -676,4 +666,3 @@ async def download_artifact(
     ext = resolved.suffix.lower()
     media_type = _CONTENT_TYPE_MAP.get(ext, "application/octet-stream")
     return FileResponse(path=str(resolved), media_type=media_type, filename=resolved.name)
-

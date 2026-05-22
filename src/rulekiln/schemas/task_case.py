@@ -40,7 +40,7 @@ class RuleKilnTask(BaseModel):
     prompt_scaffold: dict[str, Any] = Field(default_factory=dict)
     allowed_evaluation_methods: list[str] = Field(default_factory=list)
     provider_model_defaults: dict[
-        Literal["teacher", "student", "embedding"],
+        Literal["teacher", "student", "embedding", "judge"],
         ModelRoute,
     ] = Field(default_factory=dict)
     quality_gates: dict[str, Any] = Field(default_factory=dict)

@@ -4,10 +4,10 @@ from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.pipeline import MicroRuleSchema, SynthesisOutput
 from rulekiln.schemas.task_case import RuleKilnTask
 
-
 _SYNTHESIS_SYSTEM_PROMPT = """\
-You are a rule synthesis specialist. Given a cluster of related micro-rules extracted from multiple cases, \
-synthesize them into a single coherent rule that generalizes across all cases in the cluster.
+You are a rule synthesis specialist. Given a cluster of related micro-rules extracted from \
+multiple cases, synthesize them into a single coherent rule that generalizes across all \
+cases in the cluster.
 
 Produce:
 - topic: a concise label for the synthesized rule's domain

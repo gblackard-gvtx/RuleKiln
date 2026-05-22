@@ -1,9 +1,9 @@
 """Unit tests for DistillationRequest schema validation."""
 
 import pytest
+from pydantic import ValidationError
 
 from rulekiln.schemas.job import DistillationRequest
-from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask
 
 
 def _base_task() -> dict:
@@ -43,17 +43,17 @@ def test_valid_request_parses() -> None:
 
 def test_legacy_field_task_name_rejected() -> None:
     payload = {**_base_payload(), "task_name": "legacy"}
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         DistillationRequest.model_validate(payload)
 
 
 def test_legacy_field_examples_rejected() -> None:
     payload = {**_base_payload(), "examples": []}
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         DistillationRequest.model_validate(payload)
 
 
 def test_extra_unknown_field_rejected() -> None:
     payload = {**_base_payload(), "unknown_field": "value"}
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         DistillationRequest.model_validate(payload)

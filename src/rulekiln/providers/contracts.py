@@ -23,6 +23,7 @@ class ProviderConfig(BaseModel):
     model: str
     region: str | None = None
     base_url: str | None = None
+    api_key: str | None = None  # resolved from api_key_env_var at config build time
     timeout_seconds: int = 60
     max_retries: int = 3
 

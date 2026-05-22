@@ -1,4 +1,5 @@
-"""Failure analysis: categorize cases as fixed, broken, or unchanged between baseline and distilled."""
+"""Failure analysis: categorize cases as fixed, broken, or unchanged between
+baseline and distilled."""
 
 from __future__ import annotations
 
@@ -64,7 +65,7 @@ def analyze_failures(
     rule_output_path_index: dict[str, str] = {}
     if selected_rules:
         for rule in selected_rules:
-            for oc in rule.outcome_conditions.values():
+            for _oc in rule.outcome_conditions.values():
                 # outcome_conditions may have paths embedded in the "when" conditions
                 pass
             # Primary mapping: rule topic used as fallback key
@@ -97,7 +98,9 @@ def analyze_failures(
             else:
                 result.unchanged_failing.append(entry)
                 if d:
-                    _maybe_add_structured_failure(result, d, "unchanged_wrong", rule_output_path_index)
+                    _maybe_add_structured_failure(
+                        result, d, "unchanged_wrong", rule_output_path_index
+                    )
         elif d is None:
             result.unchanged_failing.append(entry)
         elif not b.passed and d.passed:
@@ -123,9 +126,7 @@ def _maybe_add_structured_failure(
 ) -> None:
     """Build a CaseEvaluationFailure by mapping failed assertion paths to rules."""
     failed_paths: list[str] = [
-        path
-        for path, score in case_result.assertion_scores.items()
-        if score < 1.0
+        path for path, score in case_result.assertion_scores.items() if score < 1.0
     ]
     failed_types: list[str] = []
 
@@ -138,6 +139,7 @@ def _maybe_add_structured_failure(
             violated.append(rule_id)
 
     from typing import Literal
+
     fc: Literal["fixed", "broken", "unchanged_wrong"] = failure_class  # type: ignore[assignment]
 
     result.structured_failures.append(
@@ -166,4 +168,3 @@ def _case_entry(
         entry["baseline_score"] = baseline.score
         entry["baseline_passed"] = baseline.passed
     return entry
-

@@ -1,7 +1,6 @@
 """Anthropic chat provider adapter using the anthropic SDK directly."""
 
 import json
-import os
 
 import anthropic
 from pydantic import BaseModel
@@ -30,9 +29,12 @@ class AnthropicChatClient(ChatModelClient):
         output_schema: type[BaseModel],
         config: ProviderConfig,
     ) -> BaseModel:
-        api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+        api_key = config.api_key
         if not api_key:
-            raise ProviderNotConfiguredError("anthropic", "ANTHROPIC_API_KEY is not set.")
+            raise ProviderNotConfiguredError(
+                "anthropic",
+                "api_key_env_var is not set or the referenced environment variable is empty.",
+            )
 
         schema_json = json.dumps(output_schema.model_json_schema(), indent=2)
         augmented_system = (

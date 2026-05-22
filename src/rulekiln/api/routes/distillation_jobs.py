@@ -6,7 +6,10 @@ from typing import Annotated
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rulekiln.api.validators.request_shape import RequestValidationError, validate_distillation_request
+from rulekiln.api.validators.request_shape import (
+    RequestValidationError,
+    validate_distillation_request,
+)
 from rulekiln.config.settings import AppSettings, get_settings
 from rulekiln.db.models import DistillationJob
 from rulekiln.db.repositories.jobs import create_job, get_job

@@ -2,9 +2,7 @@
 
 import uuid
 
-import pytest
 from httpx import AsyncClient
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests.ui.conftest import VALID_CASE_LINE, VALID_TASK_YAML
 
@@ -38,9 +36,7 @@ class TestCreateJob:
         val_end = text.index('"', val_start)
         return text[val_start:val_end]
 
-    async def test_submit_draft_redirects_to_detail(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_submit_draft_redirects_to_detail(self, client: AsyncClient) -> None:
         draft_id = await self._get_draft_job_id(client)
         response = await client.post(
             "/ui/jobs",
@@ -50,9 +46,7 @@ class TestCreateJob:
         assert response.status_code == 303
         assert f"/ui/jobs/{draft_id}" in response.headers["location"]
 
-    async def test_submit_missing_draft_id_returns_error(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_submit_missing_draft_id_returns_error(self, client: AsyncClient) -> None:
         # Missing form field should return 422
         response = await client.post(
             "/ui/jobs",
@@ -61,9 +55,7 @@ class TestCreateJob:
         )
         assert response.status_code == 422
 
-    async def test_submit_unknown_draft_id_returns_404(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_submit_unknown_draft_id_returns_404(self, client: AsyncClient) -> None:
         response = await client.post(
             "/ui/jobs",
             data={"draft_job_id": str(uuid.uuid4())},

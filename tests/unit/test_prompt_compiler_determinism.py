@@ -1,7 +1,5 @@
 """Unit tests for prompt_compiler determinism (T026)."""
 
-import pytest
-
 from rulekiln.pipeline.prompt_compiler import compile_prompt, count_tokens_approx
 from rulekiln.schemas.pipeline import OutcomeCondition, SynthesizedRuleSchema
 from rulekiln.schemas.task_case import RuleKilnTask

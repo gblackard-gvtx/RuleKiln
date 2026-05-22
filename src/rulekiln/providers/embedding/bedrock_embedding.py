@@ -20,8 +20,9 @@ class BedrockEmbeddingClient(EmbeddingClient):
             raise ProviderNotConfiguredError("bedrock", "region is required for bedrock embedding.")
 
         try:
-            import boto3  # pyright: ignore[reportMissingModuleSource]
             import json
+
+            import boto3  # pyright: ignore[reportMissingModuleSource]
         except ImportError as exc:
             raise ProviderNotConfiguredError(
                 "bedrock", "boto3 is not installed. Add it to dependencies."

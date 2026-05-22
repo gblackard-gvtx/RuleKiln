@@ -6,7 +6,6 @@ from typing import Literal
 from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 type ProviderKind = Literal[
     "fake",
     "bedrock",
@@ -71,6 +70,7 @@ class AppSettings(BaseSettings):
     environment: str = "local"
     database_url: str = Field(alias="DATABASE_URL")
     mlflow_tracking_uri: str = Field(alias="MLFLOW_TRACKING_URI")
+    mlflow_experiment_name: str = Field(default="rulekiln", alias="MLFLOW_EXPERIMENT_NAME")
     artifact_root: str = Field(default=".rulekiln/runs", alias="ARTIFACT_ROOT")
     enable_pgvector: bool = Field(default=False, alias="ENABLE_PGVECTOR")
     mlflow_ui_base_url: str | None = Field(default=None, alias="MLFLOW_UI_BASE_URL")
@@ -87,9 +87,15 @@ class AppSettings(BaseSettings):
     worker_lease_seconds: int = Field(default=1800, alias="WORKER_LEASE_SECONDS")
 
     # ── Provider rate limiting defaults ──────────────────────────────────────
-    default_provider_max_concurrency: int = Field(default=3, alias="DEFAULT_PROVIDER_MAX_CONCURRENCY")
-    default_provider_rate_limit_rpm: int | None = Field(default=None, alias="DEFAULT_PROVIDER_RATE_LIMIT_RPM")
-    default_provider_rate_limit_tpm: int | None = Field(default=None, alias="DEFAULT_PROVIDER_RATE_LIMIT_TPM")
+    default_provider_max_concurrency: int = Field(
+        default=3, alias="DEFAULT_PROVIDER_MAX_CONCURRENCY"
+    )
+    default_provider_rate_limit_rpm: int | None = Field(
+        default=None, alias="DEFAULT_PROVIDER_RATE_LIMIT_RPM"
+    )
+    default_provider_rate_limit_tpm: int | None = Field(
+        default=None, alias="DEFAULT_PROVIDER_RATE_LIMIT_TPM"
+    )
 
     # ── Rule pruning defaults ─────────────────────────────────────────────
     default_max_rules: int = Field(default=40, alias="DEFAULT_MAX_RULES")

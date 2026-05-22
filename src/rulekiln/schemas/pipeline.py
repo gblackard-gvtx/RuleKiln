@@ -4,8 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 # ── Rule extraction ──────────────────────────────────────────────────────────
+
 
 class MicroRuleSchema(BaseModel):
     """A single rule extracted from a teacher-model case response."""
@@ -28,6 +28,7 @@ class ExtractionOutput(BaseModel):
 
 
 # ── Synthesis ────────────────────────────────────────────────────────────────
+
 
 class OutcomeCondition(BaseModel):
     outcome: str
@@ -69,6 +70,7 @@ class SynthesisOutput(BaseModel):
 
 # ── Conflict review ──────────────────────────────────────────────────────
 
+
 class RuleConflictReview(BaseModel):
     """Conflict review result for a single synthesized rule."""
 
@@ -82,6 +84,7 @@ class RuleConflictReview(BaseModel):
 
 # ── Clustering ───────────────────────────────────────────────────────────────
 
+
 class RuleClusterSchema(BaseModel):
     """A cluster of micro-rule IDs produced by a clustering algorithm."""
 
@@ -93,6 +96,7 @@ class RuleClusterSchema(BaseModel):
 
 
 # ── Evaluation ───────────────────────────────────────────────────────────────
+
 
 class CaseEvalResult(BaseModel):
     """Evaluation result for a single case."""
@@ -127,6 +131,7 @@ class EvalResult(BaseModel):
 
 # ── Eval-to-rule failure mapping ───────────────────────────────────────────
 
+
 class CaseEvaluationFailure(BaseModel):
     """Granular failure record with rule mapping."""
 
@@ -142,6 +147,7 @@ class CaseEvaluationFailure(BaseModel):
 
 # ── Quality gates ─────────────────────────────────────────────────────────────
 
+
 class QualityGateResult(BaseModel):
     """Result of a quality gate check for one strategy."""
 
@@ -156,6 +162,7 @@ class QualityGateResult(BaseModel):
 
 
 # ── Strategy comparison ───────────────────────────────────────────────────────
+
 
 class StrategyComparison(BaseModel):
     """Full comparison across strategies after evaluation and gate checks."""

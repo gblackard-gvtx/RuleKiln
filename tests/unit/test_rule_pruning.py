@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import pytest
-
-from rulekiln.pipeline.rule_pruning import PruningRecord, PruningResult, prune_rules
+from rulekiln.pipeline.rule_pruning import prune_rules
 from rulekiln.schemas.pipeline import OutcomeCondition, SynthesizedRuleSchema
 
 

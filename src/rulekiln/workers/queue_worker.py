@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import signal
 import sys
 import uuid
@@ -19,7 +20,6 @@ from rulekiln.db.repositories.jobs import (
 )
 from rulekiln.db.session import get_session_factory
 from rulekiln.schemas.job import DistillationRequest
-from rulekiln.workers.distillation_worker import run_distillation_pipeline
 
 logger = structlog.get_logger(__name__)
 
@@ -97,6 +97,7 @@ async def worker_loop(worker_id: str) -> None:
             payload = DistillationRequest.model_validate(job.request_json)
             async with session_factory() as session:
                 from rulekiln.workers.distillation_worker import _run  # noqa: PLC0415
+
                 await _run(session, job.id, payload)
             async with session_factory() as session:
                 await complete_job(session, job.id)
@@ -108,10 +109,8 @@ async def worker_loop(worker_id: str) -> None:
         finally:
             stop_renewer.set()
             renewer_task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await renewer_task
-            except asyncio.CancelledError:
-                pass
 
 
 def main() -> None:

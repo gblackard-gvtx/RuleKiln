@@ -1,7 +1,5 @@
 """Fake chat provider for offline testing and local development."""
 
-import json
-
 from pydantic import BaseModel
 
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig

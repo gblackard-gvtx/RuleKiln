@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from rulekiln.schemas.pipeline import EvalResult, StrategyComparison, SynthesizedRuleSchema
+from rulekiln.schemas.pipeline import StrategyComparison, SynthesizedRuleSchema
 from rulekiln.schemas.task_case import RuleKilnCase, RuleKilnTask
 
 
@@ -64,7 +64,11 @@ def write_eval_report(root: Path, comparison: StrategyComparison) -> Path:
     path = outputs / "eval_report.json"
     report = comparison.model_dump(
         mode="json",
-        exclude={"dbscan_eval": {"case_results"}, "hdbscan_eval": {"case_results"}, "baseline_eval": {"case_results"}},
+        exclude={
+            "dbscan_eval": {"case_results"},
+            "hdbscan_eval": {"case_results"},
+            "baseline_eval": {"case_results"},
+        },
     )
     path.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     return path
@@ -74,7 +78,10 @@ def write_strategy_comparison(root: Path, comparison: StrategyComparison) -> Pat
     outputs = root / "outputs"
     outputs.mkdir(parents=True, exist_ok=True)
     path = outputs / "strategy_comparison.json"
-    path.write_text(json.dumps(comparison.model_dump(mode="json"), indent=2, ensure_ascii=False), encoding="utf-8")
+    path.write_text(
+        json.dumps(comparison.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
     return path
 
 

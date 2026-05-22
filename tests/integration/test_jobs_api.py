@@ -13,7 +13,6 @@ from rulekiln.config.settings import AppSettings, ProviderProfile, get_settings
 from rulekiln.db.models import Base
 from rulekiln.db.session import get_db_session, override_session_factory
 
-
 _IN_MEMORY_URL = "sqlite+aiosqlite://"
 
 

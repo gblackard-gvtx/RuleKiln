@@ -2,10 +2,12 @@
 
 import pytest
 
-from rulekiln.api.validators.request_shape import RequestValidationError, validate_distillation_request
-from rulekiln.config.settings import AppSettings, ProviderProfile, QualityGateDefaults
+from rulekiln.api.validators.request_shape import (
+    RequestValidationError,
+    validate_distillation_request,
+)
+from rulekiln.config.settings import AppSettings, ProviderProfile
 from rulekiln.schemas.job import DistillationRequest
-from rulekiln.schemas.task_case import ModelRoute
 
 
 def _settings_with_profiles(*profile_names: str) -> AppSettings:

@@ -31,6 +31,7 @@ def get_primary_metric(task_mode: TaskMode) -> str:
 
 class _StudentOutputSchema(BaseModel):
     """Generic passthrough for structured student output."""
+
     raw: dict[str, str | int | float | bool | None] | str | None = None
 
 
@@ -142,9 +143,7 @@ def _compute_metrics(
     # Weighted case score
     weight_map = {c.id: c.weight for c in cases}
     total_weight = sum(weight_map.get(r.case_id, 1.0) for r in case_results)
-    weighted_sum = sum(
-        r.score * weight_map.get(r.case_id, 1.0) for r in case_results
-    )
+    weighted_sum = sum(r.score * weight_map.get(r.case_id, 1.0) for r in case_results)
     weighted_case_score = weighted_sum / total_weight if total_weight > 0 else 0.0
 
     # For classification/routing: compute accuracy + macro F1 from expected labels
@@ -167,10 +166,14 @@ def _compute_metrics(
             if case is None or case.expected is None:
                 continue
             expected_label = (
-                case.expected.get("label", "") if isinstance(case.expected, dict) else str(case.expected)
+                case.expected.get("label", "")
+                if isinstance(case.expected, dict)
+                else str(case.expected)
             )
             actual_label = (
-                res.actual_output.get("label", "") if isinstance(res.actual_output, dict) else str(res.actual_output or "")
+                res.actual_output.get("label", "")
+                if isinstance(res.actual_output, dict)
+                else str(res.actual_output or "")
             )
             labels.add(expected_label)
             labels.add(actual_label)

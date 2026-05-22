@@ -36,7 +36,4 @@ def mask_dict_values(data: dict[str, str]) -> dict[str, str]:
         r"(api[_-]?key|secret|password|token|credential|auth)",
         re.IGNORECASE,
     )
-    return {
-        k: "***REDACTED***" if _SECRET_KEYS.search(k) else v
-        for k, v in data.items()
-    }
+    return {k: "***REDACTED***" if _SECRET_KEYS.search(k) else v for k, v in data.items()}

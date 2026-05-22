@@ -1,10 +1,8 @@
 """Tests: GET /ui/jobs/{job_id}/artifacts — artifact listing and download."""
 
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
-import pytest
 from httpx import AsyncClient
 
 from rulekiln.db.models import DistillationJob
@@ -12,17 +10,17 @@ from rulekiln.db.models import DistillationJob
 
 async def _insert_job(factory, **kwargs) -> str:
     job_id = str(uuid.uuid4())
-    defaults = dict(
-        id=job_id,
-        task_id="t1",
-        task_name="Artifacts Task",
-        task_mode="classification",
-        status="completed",
-        stage=None,
-        request_json={},
-        created_at=datetime.now(timezone.utc),
-        updated_at=datetime.now(timezone.utc),
-    )
+    defaults = {
+        "id": job_id,
+        "task_id": "t1",
+        "task_name": "Artifacts Task",
+        "task_mode": "classification",
+        "status": "completed",
+        "stage": None,
+        "request_json": {},
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+    }
     defaults.update(kwargs)
     async with factory() as session:
         session.add(DistillationJob(**defaults))

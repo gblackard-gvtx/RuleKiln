@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import contextlib
-import json
 from pathlib import Path
+from types import ModuleType
 from typing import TYPE_CHECKING
 
 from rulekiln.observability.logging import get_logger
 
 if TYPE_CHECKING:
-    pass
+    from rulekiln.schemas.job import DistillationRequest
 
 logger = get_logger(__name__)
 
 
-def _get_mlflow():  # pyright: ignore[reportReturnType]
+def _get_mlflow() -> ModuleType:  # pyright: ignore[reportReturnType]
     """Import mlflow lazily; raise a clear error if not installed."""
     try:
         import mlflow  # type: ignore[import-untyped]
@@ -41,11 +40,13 @@ def create_run(
 
     with mlflow.start_run(run_name=f"{task_id}-{job_id[:8]}") as run:
         run_id: str = run.info.run_id
-        mlflow.set_tags({
-            "job_id": job_id,
-            "task_id": task_id,
-            "task_name": task_name,
-        })
+        mlflow.set_tags(
+            {
+                "job_id": job_id,
+                "task_id": task_id,
+                "task_name": task_name,
+            }
+        )
 
     return run_id
 
@@ -134,3 +135,19 @@ def build_run_metrics(
         "weighted_case_score": weighted_case_score,
         "malformed_output_rate": malformed_output_rate,
     }
+
+
+def build_provider_params(payload: DistillationRequest) -> dict[str, str]:
+    """Build per-role provider params dict suitable for mlflow.log_params."""
+    params: dict[str, str] = {
+        "teacher_provider_profile": payload.teacher.provider_profile,
+        "teacher_model": payload.teacher.model,
+        "student_provider_profile": payload.student.provider_profile,
+        "student_model": payload.student.model,
+        "embedding_provider_profile": payload.embedding.provider_profile,
+        "embedding_model": payload.embedding.model,
+    }
+    if payload.judge:
+        params["judge_provider_profile"] = payload.judge.provider_profile
+        params["judge_model"] = payload.judge.model
+    return params

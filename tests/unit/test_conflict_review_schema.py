@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from rulekiln.schemas.pipeline import RuleConflictReview, SynthesizedRuleSchema, OutcomeCondition
+from rulekiln.schemas.pipeline import OutcomeCondition, RuleConflictReview, SynthesizedRuleSchema
 
 
 def _rule(rule_id: str = "r1") -> SynthesizedRuleSchema:
@@ -63,7 +64,7 @@ def test_rule_conflict_review_valid_split() -> None:
 
 
 def test_rule_conflict_review_invalid_resolution() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError):
         RuleConflictReview(
             synthesized_rule_id="r1",
             has_conflicts=False,

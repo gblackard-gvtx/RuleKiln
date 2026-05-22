@@ -2,7 +2,11 @@
 
 from pydantic import BaseModel
 
-from rulekiln.providers.contracts import ChatModelClient, ProviderConfig, ProviderNotImplementedError
+from rulekiln.providers.contracts import (
+    ChatModelClient,
+    ProviderConfig,
+    ProviderNotImplementedError,
+)
 from rulekiln.providers.rate_limiter import get_rate_limiter
 
 
@@ -38,27 +42,35 @@ def get_chat_client(config: ProviderConfig) -> ChatModelClient:
     match config.provider:
         case "fake":
             from rulekiln.providers.chat.fake import FakeChatClient
+
             inner: ChatModelClient = FakeChatClient()
         case "openai":
             from rulekiln.providers.chat.openai_chat import OpenAIChatClient
+
             inner = OpenAIChatClient()
         case "openai_compatible":
             from rulekiln.providers.chat.openai_compatible_chat import OpenAICompatibleChatClient
+
             inner = OpenAICompatibleChatClient()
         case "bedrock":
             from rulekiln.providers.chat.bedrock_chat import BedrockChatClient
+
             inner = BedrockChatClient()
         case "anthropic":
             from rulekiln.providers.chat.anthropic_chat import AnthropicChatClient
+
             inner = AnthropicChatClient()
         case "vertex_gemini":
             from rulekiln.providers.chat.stubs import VertexGeminiChatClient
+
             inner = VertexGeminiChatClient()
         case "azure_openai":
             from rulekiln.providers.chat.stubs import AzureOpenAIChatClient
+
             inner = AzureOpenAIChatClient()
         case "custom":
             from rulekiln.providers.chat.stubs import CustomChatClient
+
             inner = CustomChatClient()
         case _:
             raise ProviderNotImplementedError(config.provider)
