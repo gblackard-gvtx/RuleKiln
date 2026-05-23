@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from rulekiln.importers.column_mapping import CsvImportMapping, CsvImportPreview
 from rulekiln.schemas.pipeline import StrategyComparison, SynthesizedRuleSchema
 from rulekiln.schemas.task_case import RuleKilnCase, RuleKilnTask
 
@@ -124,4 +125,49 @@ def write_manifest(root: Path, artifact_paths: list[str]) -> Path:
         json.dumps({"artifacts": artifact_paths}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    return path
+
+
+def write_import_mapping(root: Path, mapping: CsvImportMapping) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "import_mapping.yaml"
+    path.write_text(
+        yaml.safe_dump(mapping.model_dump(mode="json"), allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_import_preview(root: Path, preview: CsvImportPreview) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "import_preview.json"
+    path.write_text(
+        json.dumps(preview.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_import_source_csv(root: Path, content: bytes) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "source.csv"
+    path.write_bytes(content)
+    return path
+
+
+def write_validation_report(root: Path, errors: list[str], warnings: list[str]) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "validation_report.json"
+    path.write_text(
+        json.dumps({"errors": errors, "warnings": warnings}, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_cases_jsonl(root: Path, cases: list[RuleKilnCase]) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "cases.jsonl"
+    lines = [json.dumps(c.model_dump(mode="json"), ensure_ascii=False) for c in cases]
+    path.write_text("\n".join(lines), encoding="utf-8")
     return path

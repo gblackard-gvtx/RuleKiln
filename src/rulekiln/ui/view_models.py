@@ -99,3 +99,33 @@ class ArtifactsView(BaseModel):
 
     job_id: str
     files: list[ArtifactFileView]
+
+
+class CsvPreviewView(BaseModel):
+    """Template context for the CSV import preview page."""
+
+    import_id: str
+    file_name: str
+    task_id: str
+    task_name: str
+    task_mode: str
+    description: str
+    row_count: int
+    columns: list[str]
+    sample_rows: list[dict[str, str]] = Field(default_factory=list)
+    inferred_types: dict[str, str] = Field(default_factory=dict)
+    suggested_mappings: list[dict[str, str | bool | None]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class CsvGenerateView(BaseModel):
+    """Template context for the CSV import generate/success page."""
+
+    import_id: str
+    task_yaml_url: str
+    cases_jsonl_url: str
+    mapping_yaml_url: str
+    errors: list[str] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    case_count: int

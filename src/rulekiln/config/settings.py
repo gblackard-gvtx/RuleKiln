@@ -72,9 +72,15 @@ class AppSettings(BaseSettings):
     mlflow_tracking_uri: str = Field(alias="MLFLOW_TRACKING_URI")
     mlflow_experiment_name: str = Field(default="rulekiln", alias="MLFLOW_EXPERIMENT_NAME")
     artifact_root: str = Field(default=".rulekiln/runs", alias="ARTIFACT_ROOT")
+    import_artifact_root: str = Field(default=".rulekiln/imports", alias="IMPORT_ARTIFACT_ROOT")
     enable_pgvector: bool = Field(default=False, alias="ENABLE_PGVECTOR")
     mlflow_ui_base_url: str | None = Field(default=None, alias="MLFLOW_UI_BASE_URL")
     max_upload_size_bytes: int = Field(default=10 * 1024 * 1024, alias="MAX_UPLOAD_SIZE_BYTES")
+    max_csv_upload_size_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        alias="MAX_CSV_UPLOAD_SIZE_BYTES",
+    )
+    max_csv_rows: int = Field(default=10_000, alias="MAX_CSV_ROWS")
 
     # Optional API keys — providers read their own key from env by name
     openai_api_key: SecretStr | None = Field(default=None, alias="OPENAI_API_KEY")
