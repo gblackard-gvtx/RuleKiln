@@ -11,6 +11,12 @@ if [[ ! -f .env ]]; then
   cp .env.example .env
 fi
 
+# Create required local directories before Docker Compose starts.
+# .rulekiln/runs is the ARTIFACT_ROOT bind-mounted into the api and worker
+# containers; creating it here ensures correct ownership (not root-owned).
+echo "Creating required directories..."
+mkdir -p .rulekiln/runs
+
 echo "Starting RuleKiln local Docker Compose stack..."
 docker compose up -d --build
 
