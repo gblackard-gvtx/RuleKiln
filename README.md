@@ -12,6 +12,40 @@ RuleKiln runs a full distillation pipeline: it extracts micro-rules from your ca
 
 ---
 
+
+## Why RuleKiln Exists
+
+RuleKiln is built around a simple idea:
+
+> Use an expensive teacher model during prompt-hardening, then let cheaper student models run the task in production.
+
+The teacher model may still be an online API such as Claude, GPT, Gemini, or a Bedrock-hosted model. The key distinction is **when** that model is used.
+
+Instead of calling the expensive model for every production request, RuleKiln uses it during a build-time distillation process:
+
+1. The teacher reviews task cases.
+2. It extracts reusable task-policy rules.
+3. RuleKiln clusters, resolves, and prunes those rules.
+4. RuleKiln compiles them into prompt candidates.
+5. One or more student models are graded against the same cases.
+6. The best prompt/student combination is selected only if it passes quality gates.
+
+The result is a reusable prompt artifact — a “lesson plan” — that can be deployed with a smaller, cheaper, or local student model.
+
+This does not try to make a 4B or 8B model generally as capable as a frontier model. Instead, RuleKiln asks a narrower and more practical question:
+
+> Can this smaller model perform this specific task well enough when given a distilled, task-specific prompt?
+
+That makes RuleKiln useful for workflows such as transcript review, support-ticket routing, structured extraction, policy checks, summarization, and other repeatable tasks with measurable evaluation cases.
+
+The economic thesis is:
+
+> Pay the expensive model to teach during prompt hardening. Let cheaper students execute many times.
+
+For high-volume workflows, this can turn expensive runtime reasoning into a reusable, auditable prompt-building step.
+
+---
+
 ## Quick start
 
 ### Option A — Native Python
