@@ -338,6 +338,7 @@ uv run alembic upgrade head
 ```
 
 See [Docs/dev/docker.md](Docs/dev/docker.md) for the full Docker Compose development guide.
+See [Docs/reference/python_module_reference.md](Docs/reference/python_module_reference.md) for a full module-by-module model/function reference.
 
 ---
 
