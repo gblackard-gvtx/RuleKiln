@@ -376,24 +376,8 @@ See [Docs/reference/python_module_reference.md](Docs/reference/python_module_ref
 
 ---
 
-## Citation
+## Research Inspiration
 
-RuleKiln implements the **Prompt-Level Distillation (PLD)** method introduced in:
+RuleKiln is inspired by recent work on prompt-level distillation, including ["Prompt-Level Distillation: A Non-Parametric Alternative to Model Fine-Tuning for Efficient Reasoning"](https://doi.org/10.48550/arXiv.2602.21103) by Sanket Badhe and Deep Shah.
 
-> Sanket Badhe, Deep Shah.  
-> **Prompt-Level Distillation: A Non-Parametric Alternative to Model Fine-Tuning for Efficient Reasoning.**  
-> arXiv:2602.21103 [cs.CL], February 2026.  
-> <https://doi.org/10.48550/arXiv.2602.21103>
-
-```bibtex
-@misc{badhe2026promptleveldistillationnonparametric,
-  title   = {Prompt-Level Distillation: A Non-Parametric Alternative to
-             Model Fine-Tuning for Efficient Reasoning},
-  author  = {Sanket Badhe and Deep Shah},
-  year    = {2026},
-  eprint  = {2602.21103},
-  archivePrefix = {arXiv},
-  primaryClass  = {cs.CL},
-  url     = {https://doi.org/10.48550/arXiv.2602.21103}
-}
-```
+RuleKiln is an independent implementation and product design. It does not copy or include the paper's text, figures, datasets, prompts, or code. RuleKiln extends the core idea with a case-first workflow, provider-neutral teacher/student routing, classroom-style multi-student grading, rule provenance, conflict review, pruning, eval-to-rule mapping, artifact exports, and operational tooling.
