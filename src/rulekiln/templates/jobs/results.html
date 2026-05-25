@@ -65,6 +65,31 @@
   </dl>
 </div>
 
+{% if summary.estimated_total_cost_usd is not none or summary.total_tokens is not none %}
+<div class="bg-white rounded-lg border border-gray-200 p-4">
+  <h2 class="text-sm font-semibold text-gray-700 mb-3">Run Cost &amp; Usage</h2>
+  {% if summary.has_estimated_usage %}
+  <p class="text-xs text-amber-600 mb-2">&#9888; Some token counts are estimated.</p>
+  {% endif %}
+  <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+    <dt class="text-gray-500">Total cost (est.)</dt>
+    <dd>{% if summary.estimated_total_cost_usd is not none %}${{ "%.6f" | format(summary.estimated_total_cost_usd) }}{% else %}—{% endif %}</dd>
+    <dt class="text-gray-500">Teacher cost</dt>
+    <dd>{% if summary.teacher_cost_usd is not none %}${{ "%.6f" | format(summary.teacher_cost_usd) }}{% else %}—{% endif %}</dd>
+    <dt class="text-gray-500">Student cost</dt>
+    <dd>{% if summary.student_cost_usd is not none %}${{ "%.6f" | format(summary.student_cost_usd) }}{% else %}—{% endif %}</dd>
+    <dt class="text-gray-500">Embedding cost</dt>
+    <dd>{% if summary.embedding_cost_usd is not none %}${{ "%.6f" | format(summary.embedding_cost_usd) }}{% else %}—{% endif %}</dd>
+    <dt class="text-gray-500">Judge cost</dt>
+    <dd>{% if summary.judge_cost_usd is not none %}${{ "%.6f" | format(summary.judge_cost_usd) }}{% else %}—{% endif %}</dd>
+    <dt class="text-gray-500">Total tokens</dt>
+    <dd>{{ summary.total_tokens if summary.total_tokens is not none else "—" }}</dd>
+    <dt class="text-gray-500">Model calls</dt>
+    <dd>{{ summary.total_model_calls if summary.total_model_calls is not none else "—" }}</dd>
+  </dl>
+</div>
+{% endif %}
+
 <div class="flex gap-3">
   <a href="/ui/jobs/{{ summary.job_id }}/artifacts"
      class="border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm font-medium

@@ -36,24 +36,40 @@ from rulekiln.db.repositories.jobs import (
     update_synthesized_rule_conflict,
     update_synthesized_rule_pruning,
 )
+from rulekiln.artifacts.writer import write_token_cost_summary
+from rulekiln.db.repositories.model_calls import (
+    bulk_insert_model_call_events,
+    update_job_usage_totals,
+)
 from rulekiln.db.session import get_session_factory
 from rulekiln.integrations.mlflow_tracker import (
     build_provider_params,
     build_run_params,
     create_run,
     log_params,
+    log_token_cost_metrics,
 )
 from rulekiln.observability.logging import get_logger
 from rulekiln.pipeline.clustering import cluster_dbscan, cluster_hdbscan
 from rulekiln.pipeline.evaluator import evaluate_prompt
 from rulekiln.pipeline.failure_analysis import analyze_failures
-from rulekiln.pipeline.prompt_compiler import compile_prompt, count_tokens_approx
+from rulekiln.pipeline.prompt_compiler import (
+    compile_baseline_prompt,
+    compile_prompt,
+    count_tokens_approx,
+)
 from rulekiln.pipeline.quality_gates import check_quality_gates
 from rulekiln.pipeline.rule_pruning import prune_rules
 from rulekiln.pipeline.strategy_selection import build_strategy_comparison
 from rulekiln.providers.chat import get_chat_client
 from rulekiln.providers.embedding import get_embedding_client
 from rulekiln.providers.resolver import resolve_provider_config
+from rulekiln.providers.tracking import (
+    ModelCallCollector,
+    ModelCallContext,
+    set_tracking_context,
+    update_tracking_context,
+)
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.pipeline import (
     EvalResult,
@@ -64,8 +80,11 @@ from rulekiln.schemas.pipeline import (
     SynthesizedRuleSchema,
 )
 from rulekiln.schemas.task_case import RuleKilnCase
+from rulekiln.usage.aggregator import ModelUsageAggregator
 
 logger = get_logger(__name__)
+
+_CASE_ID_DELIMITER = "::"
 
 
 class PipelineStage(StrEnum):
@@ -114,6 +133,13 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
     settings = get_settings()
     task = payload.task
     cases = payload.cases
+    collector = ModelCallCollector()
+
+    teacher_profile = payload.teacher.provider_profile
+    student_profile = payload.student.provider_profile
+    embedding_profile = payload.embedding.provider_profile
+    judge_route = payload.judge or payload.teacher
+    judge_profile = judge_route.provider_profile
 
     # ── Stage: validating_project ──────────────────────────────────────────
     if not await is_stage_complete(session, job_id, PipelineStage.VALIDATING_PROJECT):
@@ -140,9 +166,8 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         settings=settings,
     )
     # judge falls back to teacher when not explicitly specified
-    judge_route = payload.judge or payload.teacher
     judge_config = resolve_provider_config(
-        judge_route.provider_profile,
+        judge_profile,
         judge_route.model,
         role="judge",
         settings=settings,
@@ -157,14 +182,26 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         await _set_stage(session, job_id, PipelineStage.EXTRACTING_RULES)
         train_cases = [c for c in cases if c.split in ("train", "validation")]
         micro_rules: list[MicroRule] = []
+        set_tracking_context(
+            ModelCallContext(
+                job_id=job_id,
+                stage=PipelineStage.EXTRACTING_RULES,
+                role="teacher",
+                provider_profile=teacher_profile,
+                provider=teacher_config.provider,
+                model=teacher_config.model,
+            ),
+            collector,
+        )
         for case in train_cases:
+            update_tracking_context(case_id=case.id)
             extraction = await extract_rules_for_case(task, case, teacher_chat, teacher_config)
             for rule in extraction.rules:
                 micro_rules.append(
                     MicroRule(
                         id=str(uuid.uuid4()),
                         job_id=job_id,
-                        case_id=case.id,
+                        case_id=_db_case_id(job_id, case.id),
                         topic=rule.topic,
                         condition=rule.condition,
                         expected_outcome=rule.expected_outcome,
@@ -186,7 +223,21 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
     # ── Stage: embedding_rules ────────────────────────────────────────────
     embeddings: list[list[float]] = []
     if rule_texts:
-        embeddings = await embedding_client.embed_texts(texts=rule_texts, config=embedding_config)
+        set_tracking_context(
+            ModelCallContext(
+                job_id=job_id,
+                stage=PipelineStage.EMBEDDING_RULES,
+                role="embedding",
+                provider_profile=embedding_profile,
+                provider=embedding_config.provider,
+                model=embedding_config.model,
+            ),
+            collector,
+        )
+        embedding_result = await embedding_client.embed_texts(
+            texts=rule_texts, config=embedding_config
+        )
+        embeddings = embedding_result.embeddings
     if not await is_stage_complete(session, job_id, PipelineStage.EMBEDDING_RULES):
         await _set_stage(session, job_id, PipelineStage.EMBEDDING_RULES)
         await mark_stage_complete(session, job_id, PipelineStage.EMBEDDING_RULES)
@@ -208,6 +259,18 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         ):
             continue
         await _set_stage(session, job_id, PipelineStage.SYNTHESIZING_RULES)
+        set_tracking_context(
+            ModelCallContext(
+                job_id=job_id,
+                stage=PipelineStage.SYNTHESIZING_RULES,
+                role="teacher",
+                provider_profile=teacher_profile,
+                provider=teacher_config.provider,
+                model=teacher_config.model,
+                strategy=strategy,
+            ),
+            collector,
+        )
         synth_rules: list[SynthesizedRule] = []
         for cluster in clusters:
             cluster_micro = [
@@ -225,6 +288,10 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
                 if rid in rule_map
             ]
             case_ids = list({rule_map[rid].case_id for rid in cluster.rule_ids if rid in rule_map})
+            case_ids = [
+                _payload_case_id_from_db_case_id(job_id, case_id)
+                for case_id in case_ids
+            ]
             synthesis = await synthesize_cluster(
                 task,
                 cluster.topic,
@@ -249,6 +316,18 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         ):
             continue
         await _set_stage(session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS)
+        set_tracking_context(
+            ModelCallContext(
+                job_id=job_id,
+                stage=PipelineStage.REVIEWING_RULE_CONFLICTS,
+                role="judge",
+                provider_profile=judge_profile,
+                provider=judge_config.provider,
+                model=judge_config.model,
+                strategy=strategy,
+            ),
+            collector,
+        )
         db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
         for synth_rule in db_synth:
             schema = _db_synth_to_schema(synth_rule)
@@ -368,19 +447,37 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         )
 
     # ── Stage: evaluating_baseline ────────────────────────────────────────
+    if payload.baseline_prompt:
+        baseline_prompt_text = payload.baseline_prompt
+        baseline_prompt_source = "provided"
+    else:
+        baseline_prompt_text = compile_baseline_prompt(task)
+        baseline_prompt_source = "compiled"
+
     baseline_eval: EvalResult | None = None
     if not await is_stage_complete(session, job_id, PipelineStage.EVALUATING_BASELINE):
         await _set_stage(session, job_id, PipelineStage.EVALUATING_BASELINE)
-        if payload.baseline_prompt:
-            baseline_eval = await evaluate_prompt(
-                payload.baseline_prompt,
-                cases,
-                task,
-                student_chat,
-                student_config,
+        set_tracking_context(
+            ModelCallContext(
+                job_id=job_id,
+                stage=PipelineStage.EVALUATING_BASELINE,
+                role="student",
+                provider_profile=student_profile,
+                provider=student_config.provider,
+                model=student_config.model,
                 strategy="baseline",
-            )
-            await insert_eval_run(session, _eval_to_db(job_id, None, baseline_eval))
+            ),
+            collector,
+        )
+        baseline_eval = await evaluate_prompt(
+            baseline_prompt_text,
+            cases,
+            task,
+            student_chat,
+            student_config,
+            strategy="baseline",
+        )
+        await insert_eval_run(session, _eval_to_db(job_id, None, baseline_eval))
         await mark_stage_complete(session, job_id, PipelineStage.EVALUATING_BASELINE)
 
     # ── Stage: evaluating_distilled ───────────────────────────────────────
@@ -391,6 +488,18 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         ):
             continue
         await _set_stage(session, job_id, PipelineStage.EVALUATING_DISTILLED)
+        set_tracking_context(
+            ModelCallContext(
+                job_id=job_id,
+                stage=PipelineStage.EVALUATING_DISTILLED,
+                role="student",
+                provider_profile=student_profile,
+                provider=student_config.provider,
+                model=student_config.model,
+                strategy=strategy,
+            ),
+            collector,
+        )
         db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
         schemas = [_db_synth_to_schema(r) for r in db_synth]
         prompt_text, _ = compile_prompt(task, schemas, strategy)
@@ -503,6 +612,8 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
                 prompt_hash=prompt_hash,
             ),
             **build_provider_params(payload),
+            "baseline_prompt_source": baseline_prompt_source,
+            "baseline_prompt_compiler": task.baseline_prompt_policy.compiler,
         }
         log_params(settings.mlflow_tracking_uri, mlflow_run_id, run_params)
         logger.info(
@@ -515,6 +626,32 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
 
     if not await is_stage_complete(session, job_id, PipelineStage.EXPORTING_ARTIFACTS):
         await _set_stage(session, job_id, PipelineStage.EXPORTING_ARTIFACTS)
+        artifact_root = _artifact_root(settings.artifact_root, job_id)
+        _write_baseline_prompt_artifact(artifact_root, baseline_prompt_text)
+
+        # ── Aggregate and persist token/cost usage ─────────────────────────
+        records = collector.records
+        aggregator = ModelUsageAggregator()
+        usage_summary = aggregator.aggregate(records)
+
+        if records:
+            await bulk_insert_model_call_events(session, job_id, records)
+            await update_job_usage_totals(session, job_id, usage_summary)
+
+        write_token_cost_summary(artifact_root, usage_summary)
+
+        # ── Log token/cost metrics to MLflow ───────────────────────────────
+        # Retrieve mlflow_run_id from artifact (written in LOGGING_ARTIFACTS)
+        try:
+            mlflow_run_id_path = artifact_root / "exports" / "mlflow_run_id.txt"
+            if mlflow_run_id_path.exists():
+                mlflow_run_id_for_cost = mlflow_run_id_path.read_text(encoding="utf-8").strip()
+                log_token_cost_metrics(
+                    settings.mlflow_tracking_uri, mlflow_run_id_for_cost, usage_summary
+                )
+        except Exception as exc:
+            logger.warning("mlflow_cost_logging_failed", error=str(exc), job_id=job_id)
+
         await mark_stage_complete(session, job_id, PipelineStage.EXPORTING_ARTIFACTS)
 
     await update_job_status(session, job_id, status="completed", stage=PipelineStage.COMPLETED)
@@ -537,7 +674,7 @@ def _to_db_case(job_id: str, case: RuleKilnCase) -> Case:
     elif case.expected is not None:
         expected_text = str(case.expected)
     return Case(
-        id=case.id,
+        id=_db_case_id(job_id, case.id),
         job_id=job_id,
         task_mode=case.task_mode,
         split=case.split,
@@ -548,6 +685,17 @@ def _to_db_case(job_id: str, case: RuleKilnCase) -> Case:
         metadata_json=case.metadata,
         weight=case.weight,
     )
+
+
+def _db_case_id(job_id: str, payload_case_id: str) -> str:
+    return f"{job_id}{_CASE_ID_DELIMITER}{payload_case_id}"
+
+
+def _payload_case_id_from_db_case_id(job_id: str, db_case_id: str) -> str:
+    prefix = f"{job_id}{_CASE_ID_DELIMITER}"
+    if db_case_id.startswith(prefix):
+        return db_case_id[len(prefix) :]
+    return db_case_id
 
 
 def _to_db_cluster(job_id: str, c: RuleClusterSchema) -> RuleCluster:
@@ -623,3 +771,15 @@ def _eval_to_db(job_id: str, prompt_version_id: str | None, result: EvalResult) 
         malformed_output_rate=result.malformed_output_rate,
         confusion_matrix={k: dict(v) for k, v in result.confusion_matrix.items()},
     )
+
+
+def _artifact_root(artifact_root_setting: str, job_id: str) -> "Path":
+    from pathlib import Path
+
+    return Path(artifact_root_setting) / job_id
+
+
+def _write_baseline_prompt_artifact(root: "Path", baseline_prompt: str) -> None:
+    from rulekiln.artifacts.writer import write_baseline_prompt
+
+    write_baseline_prompt(root, baseline_prompt)

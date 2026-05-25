@@ -151,3 +151,24 @@ def build_provider_params(payload: DistillationRequest) -> dict[str, str]:
         params["judge_provider_profile"] = payload.judge.provider_profile
         params["judge_model"] = payload.judge.model
     return params
+
+
+def build_token_cost_metrics(summary: dict[str, object]) -> dict[str, float]:
+    """Build a flat metrics dict from a token/cost summary for MLflow logging."""
+    return {
+        "tokens.total": float(summary.get("total_tokens", 0)),
+        "tokens.input": float(summary.get("total_input_tokens", 0)),
+        "tokens.output": float(summary.get("total_output_tokens", 0)),
+        "cost.total_usd": float(summary.get("estimated_total_cost_usd", 0.0)),
+        "cost.teacher_usd": float(summary.get("teacher_cost_usd", 0.0)),
+        "cost.student_usd": float(summary.get("student_cost_usd", 0.0)),
+        "cost.embedding_usd": float(summary.get("embedding_cost_usd", 0.0)),
+        "cost.judge_usd": float(summary.get("judge_cost_usd", 0.0)),
+        "model_calls.total": float(summary.get("total_model_calls", 0)),
+    }
+
+
+def log_token_cost_metrics(tracking_uri: str, run_id: str, summary: dict[str, object]) -> None:
+    """Compute and log token/cost metrics to an existing MLflow run."""
+    metrics = build_token_cost_metrics(summary)
+    log_metrics(tracking_uri=tracking_uri, run_id=run_id, metrics=metrics)

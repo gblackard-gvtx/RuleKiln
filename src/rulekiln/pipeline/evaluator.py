@@ -50,7 +50,8 @@ async def _call_student(
             output_schema=_StudentOutputSchema,
             config=config,
         )
-        output = getattr(result, "raw", None)
+        parsed = result.parsed
+        output = getattr(parsed, "raw", None) if parsed is not None else None
         return output, False
     except Exception:
         return None, True

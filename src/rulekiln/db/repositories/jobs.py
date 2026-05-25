@@ -1,6 +1,6 @@
 """Job and artifact repository helpers."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -301,7 +301,7 @@ async def claim_next_job(
                 status          = 'running',
                 locked_by       = :worker_id,
                 locked_at       = now(),
-                lease_expires_at = now() + (:lease_seconds || ' seconds')::interval,
+                lease_expires_at = now() + make_interval(secs => :lease_seconds),
                 attempt_count   = attempt_count + 1,
                 updated_at      = now()
             FROM next_job
@@ -332,7 +332,7 @@ async def renew_lease(
             DistillationJob.queue_status == "running",
         )
         .values(
-            lease_expires_at=text(f"now() + '{lease_seconds} seconds'::interval"),
+            lease_expires_at=datetime.now(tz=UTC) + timedelta(seconds=lease_seconds),
         )
     )
     await session.commit()

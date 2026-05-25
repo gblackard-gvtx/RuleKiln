@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ModelRoute(BaseModel):
@@ -27,6 +27,24 @@ TaskMode = Literal[
 ]
 
 
+class BaselinePromptPolicy(BaseModel):
+    """Controls which sections are included in the compiled baseline prompt."""
+
+    model_config = ConfigDict(  # pyright: ignore[reportUnannotatedClassAttribute]
+        extra="ignore",
+    )
+
+    compiler: str = "default_baseline_v1"
+    include_role: bool = True
+    include_task_description: bool = True
+    include_input_template: bool = True
+    include_output_schema: bool = True
+    include_allowed_values: bool = True
+    include_prompt_scaffold: bool = True
+    include_input_boundary: bool = True
+    include_distilled_rules: bool = False
+
+
 class RuleKilnTask(BaseModel):
     """Reusable task definition."""
 
@@ -38,6 +56,7 @@ class RuleKilnTask(BaseModel):
     input_template: str
     output_schema: dict[str, Any] = Field(default_factory=dict)
     prompt_scaffold: dict[str, Any] = Field(default_factory=dict)
+    baseline_prompt_policy: BaselinePromptPolicy = Field(default_factory=BaselinePromptPolicy)
     allowed_evaluation_methods: list[str] = Field(default_factory=list)
     provider_model_defaults: dict[
         Literal["teacher", "student", "embedding", "judge"],

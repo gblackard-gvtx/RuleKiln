@@ -5,14 +5,12 @@ WORKDIR /app
 # Install uv for fast dependency resolution
 RUN pip install --no-cache-dir uv
 
-# Copy dependency metadata first for layer caching
-COPY pyproject.toml ./
-
-# Install all runtime dependencies (no dev extras)
-RUN uv pip install --system --no-cache ".[dev]"
-
-# Copy source
+# Copy dependency metadata and source
+COPY pyproject.toml README.md ./
 COPY src/ src/
+
+# Install all dependencies including the package itself
+RUN uv pip install --system --no-cache ".[dev]"
 COPY migrations/ migrations/
 COPY alembic.ini ./
 COPY main.py ./

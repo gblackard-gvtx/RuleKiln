@@ -53,6 +53,15 @@ class ResultsSummaryView(BaseModel):
     fixed_count: int | None
     broken_count: int | None
     quality_gates_passed: bool | None
+    # Token / cost fields
+    estimated_total_cost_usd: float | None = None
+    teacher_cost_usd: float | None = None
+    student_cost_usd: float | None = None
+    embedding_cost_usd: float | None = None
+    judge_cost_usd: float | None = None
+    total_model_calls: int | None = None
+    total_tokens: int | None = None
+    has_estimated_usage: bool = False
 
 
 class ProviderRouteView(BaseModel):

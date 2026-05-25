@@ -15,7 +15,12 @@ from rulekiln.db.models import DistillationJob
 from rulekiln.db.repositories.jobs import create_job, get_job
 from rulekiln.db.session import get_db_session
 from rulekiln.observability.logging import get_logger
-from rulekiln.schemas.job import CreateJobResponse, DistillationRequest, JobStatusResponse
+from rulekiln.schemas.job import (
+    CreateJobResponse,
+    DistillationRequest,
+    JobStatusResponse,
+    JobUsageSummary,
+)
 from rulekiln.workers.distillation_worker import run_distillation_pipeline
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -73,9 +78,26 @@ async def get_distillation_job(
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+
+    usage: JobUsageSummary | None = None
+    if job.total_tokens > 0 or job.estimated_total_cost_usd is not None:
+        usage = JobUsageSummary(
+            total_input_tokens=job.total_input_tokens,
+            total_output_tokens=job.total_output_tokens,
+            total_tokens=job.total_tokens,
+            estimated_total_cost_usd=float(job.estimated_total_cost_usd)
+            if job.estimated_total_cost_usd is not None
+            else None,
+            teacher_cost_usd=float(job.teacher_cost_usd) if job.teacher_cost_usd is not None else None,
+            student_cost_usd=float(job.student_cost_usd) if job.student_cost_usd is not None else None,
+            embedding_cost_usd=float(job.embedding_cost_usd) if job.embedding_cost_usd is not None else None,
+            judge_cost_usd=float(job.judge_cost_usd) if job.judge_cost_usd is not None else None,
+        )
+
     return JobStatusResponse(
         job_id=job.id,
         status=job.status,
         stage=job.stage,
         error_message=job.error_message,
+        usage=usage,
     )

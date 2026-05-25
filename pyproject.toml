@@ -80,3 +80,8 @@ testpaths = ["tests"]
 markers = [
     "external: tests that require real provider credentials (excluded from default CI)",
 ]
+
+[dependency-groups]
+dev = [
+    "datasets>=4.8.5",
+]

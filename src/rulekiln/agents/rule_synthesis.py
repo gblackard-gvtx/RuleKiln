@@ -60,7 +60,11 @@ async def synthesize_cluster(
         output_schema=SynthesisOutput,
         config=config,
     )
-    output = SynthesisOutput.model_validate(result.model_dump())
+    parsed = result.parsed
+    if not isinstance(parsed, SynthesisOutput):
+        output = SynthesisOutput.model_validate(parsed.model_dump() if parsed else {})
+    else:
+        output = parsed
     # Inject provenance into each rule
     for rule in output.rules:
         rule.source_case_ids = source_case_ids

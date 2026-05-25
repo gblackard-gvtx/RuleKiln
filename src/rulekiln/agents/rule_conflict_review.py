@@ -81,6 +81,10 @@ async def review_rule_for_conflicts(
         output_schema=RuleConflictReview,
         config=config,
     )
-    review = RuleConflictReview.model_validate(result.model_dump())
+    parsed = result.parsed
+    if not isinstance(parsed, RuleConflictReview):
+        review = RuleConflictReview.model_validate(parsed.model_dump() if parsed else {})
+    else:
+        review = parsed
     # Ensure the rule ID is always set on the result
     return review.model_copy(update={"synthesized_rule_id": rule.id})

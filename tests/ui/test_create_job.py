@@ -62,3 +62,22 @@ class TestCreateJob:
             follow_redirects=False,
         )
         assert response.status_code == 404
+
+    async def test_submit_same_draft_twice_redirects_to_detail(self, client: AsyncClient) -> None:
+        draft_id = await self._get_draft_job_id(client)
+
+        first = await client.post(
+            "/ui/jobs",
+            data={"draft_job_id": draft_id},
+            follow_redirects=False,
+        )
+        assert first.status_code == 303
+        assert f"/ui/jobs/{draft_id}" in first.headers["location"]
+
+        second = await client.post(
+            "/ui/jobs",
+            data={"draft_job_id": draft_id},
+            follow_redirects=False,
+        )
+        assert second.status_code == 303
+        assert f"/ui/jobs/{draft_id}" in second.headers["location"]

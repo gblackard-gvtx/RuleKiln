@@ -41,6 +41,14 @@ def write_prompt(root: Path, strategy: str, system_prompt: str) -> Path:
     return path
 
 
+def write_baseline_prompt(root: Path, system_prompt: str) -> Path:
+    outputs = root / "outputs"
+    outputs.mkdir(parents=True, exist_ok=True)
+    path = outputs / "baseline_prompt.md"
+    path.write_text(system_prompt, encoding="utf-8")
+    return path
+
+
 def write_selected_prompt(root: Path, system_prompt: str) -> Path:
     outputs = root / "outputs"
     outputs.mkdir(parents=True, exist_ok=True)
@@ -124,4 +132,13 @@ def write_manifest(root: Path, artifact_paths: list[str]) -> Path:
         json.dumps({"artifacts": artifact_paths}, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+    return path
+
+
+def write_token_cost_summary(root: Path, summary: dict[str, object]) -> Path:
+    """Write token usage and cost summary to metadata/token_cost_summary.json."""
+    metadata = root / "metadata"
+    metadata.mkdir(parents=True, exist_ok=True)
+    path = metadata / "token_cost_summary.json"
+    path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     return path

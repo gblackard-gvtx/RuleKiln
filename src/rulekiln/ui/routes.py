@@ -361,9 +361,16 @@ async def create_job_from_ui(
             detail="Draft job not found.",
         )
     if job.status != "draft":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Job has already been submitted.",
+        logger.info(
+            "ui_job_already_submitted",
+            job_id=job.id,
+            task_id=job.task_id,
+            status=job.status,
+        )
+        # Treat duplicate submits as idempotent and send the user to the job page.
+        return RedirectResponse(
+            url=f"/ui/jobs/{job.id}",
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     try:
@@ -499,6 +506,18 @@ async def job_results(
         fixed_count=None,
         broken_count=None,
         quality_gates_passed=None,
+        estimated_total_cost_usd=float(job.estimated_total_cost_usd)
+        if job.estimated_total_cost_usd is not None
+        else None,
+        teacher_cost_usd=float(job.teacher_cost_usd) if job.teacher_cost_usd is not None else None,
+        student_cost_usd=float(job.student_cost_usd) if job.student_cost_usd is not None else None,
+        embedding_cost_usd=float(job.embedding_cost_usd)
+        if job.embedding_cost_usd is not None
+        else None,
+        judge_cost_usd=float(job.judge_cost_usd) if job.judge_cost_usd is not None else None,
+        total_model_calls=None,
+        total_tokens=job.total_tokens if job.total_tokens > 0 else None,
+        has_estimated_usage=False,
     )
     return templates.TemplateResponse(request, "jobs/results.html", {"summary": summary})
 

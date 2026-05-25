@@ -7,6 +7,7 @@ from rulekiln.providers.contracts import (
     ProviderConfig,
     ProviderNotImplementedError,
 )
+from rulekiln.schemas.usage import ChatCompletionResult
 
 
 class VertexGeminiChatClient(ChatModelClient):
@@ -17,7 +18,7 @@ class VertexGeminiChatClient(ChatModelClient):
         user_prompt: str,
         output_schema: type[BaseModel],
         config: ProviderConfig,
-    ) -> BaseModel:
+    ) -> ChatCompletionResult:
         raise ProviderNotImplementedError("vertex_gemini")
 
 
@@ -29,7 +30,7 @@ class AzureOpenAIChatClient(ChatModelClient):
         user_prompt: str,
         output_schema: type[BaseModel],
         config: ProviderConfig,
-    ) -> BaseModel:
+    ) -> ChatCompletionResult:
         raise ProviderNotImplementedError("azure_openai")
 
 
@@ -41,5 +42,5 @@ class CustomChatClient(ChatModelClient):
         user_prompt: str,
         output_schema: type[BaseModel],
         config: ProviderConfig,
-    ) -> BaseModel:
+    ) -> ChatCompletionResult:
         raise ProviderNotImplementedError("custom")
