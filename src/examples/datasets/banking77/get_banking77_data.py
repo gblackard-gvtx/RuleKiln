@@ -170,6 +170,7 @@ def main() -> None:
     print(f"Loaded test rows: {len(test_df)}")
     print(train_df.head())
 
+    # Optional separate files for debugging/reference.
     write_rulekiln_cases(
         train_df,
         target_split="train",
@@ -184,12 +185,30 @@ def main() -> None:
         limit=300,
     )
 
+    # Single upload file for the current RuleKiln UI.
+    combined_path = generated_dir / "cases.jsonl"
+
+    write_rulekiln_cases(
+        train_df,
+        target_split="train",
+        out_path=combined_path,
+        limit=500,
+    )
+
+    write_rulekiln_cases(
+        test_df,
+        target_split="validation",
+        out_path=combined_path,
+        limit=300,
+    )
+
     (generated_dir / "labels.json").write_text(
         json.dumps(LABEL_NAMES, indent=2),
         encoding="utf-8",
     )
 
-    print(f"Wrote generated cases to {generated_dir}")
+    print(f"Wrote separate files to {generated_dir}")
+    print(f"Wrote combined upload file to {combined_path}")
 
 
 if __name__ == "__main__":

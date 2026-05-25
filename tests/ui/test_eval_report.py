@@ -1,4 +1,4 @@
-"""Tests: GET /ui/jobs/{job_id}/results — results summary page."""
+"""Tests: GET /ui/jobs/{job_id}/eval-report — score column metric mapping."""
 
 import uuid
 from datetime import UTC, datetime
@@ -13,7 +13,7 @@ async def _insert_job(factory, **kwargs) -> str:
     defaults = {
         "id": job_id,
         "task_id": "t1",
-        "task_name": "Results Task",
+        "task_name": "Eval Report Task",
         "task_mode": "classification",
         "status": "completed",
         "stage": None,
@@ -48,31 +48,20 @@ async def _insert_eval_run(factory, job_id: str, strategy: str, split: str) -> N
         await session.commit()
 
 
-class TestResults:
-    async def test_unknown_job_returns_404(self, client: AsyncClient) -> None:
-        response = await client.get(f"/ui/jobs/{uuid.uuid4()}/results")
-        assert response.status_code == 404
-
-    async def test_no_eval_runs_renders_empty(
-        self, client: AsyncClient, db_session_factory
-    ) -> None:
-        job_id = await _insert_job(db_session_factory)
-        response = await client.get(f"/ui/jobs/{job_id}/results")
-        assert response.status_code == 200
-
-    async def test_eval_runs_populate_metrics(
+class TestEvalReport:
+    async def test_score_column_uses_macro_f1_for_classification(
         self, client: AsyncClient, db_session_factory
     ) -> None:
         job_id = await _insert_job(db_session_factory)
         await _insert_eval_run(db_session_factory, job_id, "dbscan", "validation")
-        await _insert_eval_run(db_session_factory, job_id, "hdbscan", "validation")
-        response = await client.get(f"/ui/jobs/{job_id}/results")
-        assert response.status_code == 200
-        # Classification defaults to macro_f1 as primary metric
-        assert "macro_f1" in response.text
-        assert "0.83" in response.text
 
-    async def test_results_uses_task_primary_metric_override(
+        response = await client.get(f"/ui/jobs/{job_id}/eval-report")
+
+        assert response.status_code == 200
+        assert "Score (macro_f1)" in response.text
+        assert "0.8300" in response.text
+
+    async def test_score_column_honors_task_primary_metric_override(
         self, client: AsyncClient, db_session_factory
     ) -> None:
         job_id = await _insert_job(
@@ -86,7 +75,9 @@ class TestResults:
             },
         )
         await _insert_eval_run(db_session_factory, job_id, "dbscan", "validation")
-        response = await client.get(f"/ui/jobs/{job_id}/results")
+
+        response = await client.get(f"/ui/jobs/{job_id}/eval-report")
+
         assert response.status_code == 200
-        assert "accuracy" in response.text
-        assert "0.85" in response.text
+        assert "Score (accuracy)" in response.text
+        assert "0.8500" in response.text

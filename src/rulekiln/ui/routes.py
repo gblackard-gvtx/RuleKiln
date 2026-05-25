@@ -31,6 +31,7 @@ from rulekiln.db.repositories.jobs import (
 )
 from rulekiln.db.session import get_db_session
 from rulekiln.observability.logging import get_logger
+from rulekiln.pipeline.evaluator import get_primary_metric
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask
 from rulekiln.ui.forms import NewJobForm
@@ -111,6 +112,35 @@ def _ext_ok(filename: str | None) -> bool:
     if not filename:
         return False
     return Path(filename).suffix.lower() in _ALLOWED_EXTENSIONS
+
+
+def _resolve_primary_metric(job: DistillationJob) -> str:
+    """Resolve primary metric using task config first, then request override, then mode default."""
+    req_json = job.request_json
+    if isinstance(req_json, dict):
+        task_obj = req_json.get("task")
+        if isinstance(task_obj, dict):
+            eval_obj = task_obj.get("evaluation")
+            if isinstance(eval_obj, dict):
+                metric = eval_obj.get("primary_metric")
+                if isinstance(metric, str) and metric.strip():
+                    return metric.strip()
+
+        metric_override = req_json.get("metric")
+        if isinstance(metric_override, str) and metric_override.strip():
+            return metric_override.strip()
+
+    return get_primary_metric(job.task_mode)
+
+
+def _score_for_metric(run: object, primary_metric: str) -> float | None:
+    """Map a primary metric name to the corresponding EvalRun value."""
+    metric = primary_metric.strip().lower()
+    if metric == "macro_f1":
+        return getattr(run, "macro_f1", None)
+    if metric == "accuracy":
+        return getattr(run, "accuracy", None)
+    return getattr(run, "weighted_case_score", None)
 
 
 # ── Phase 4: Job list ─────────────────────────────────────────────────────────
@@ -469,12 +499,13 @@ async def job_results(
 
     eval_runs = await get_eval_runs_for_job(session, job_id)
     selected_strategy = await _get_selected_strategy(session, job)
+    primary_metric = _resolve_primary_metric(job)
 
     score_map: dict[str, float | None] = {}
     malformed_map: dict[str, float | None] = {}
     for run in eval_runs:
         if run.split in {"validation", "test"}:
-            score_map[run.strategy] = run.weighted_case_score
+            score_map[run.strategy] = _score_for_metric(run, primary_metric)
             malformed_map[run.strategy] = run.malformed_output_rate
 
     baseline_score = score_map.get("baseline")
@@ -485,9 +516,6 @@ async def job_results(
     metric_delta: float | None = None
     if selected_score is not None and baseline_score is not None:
         metric_delta = selected_score - baseline_score
-
-    req_json = job.request_json or {}
-    primary_metric = str(req_json.get("metric") or "weighted_case_score")
 
     summary = ResultsSummaryView(
         job_id=job_id,
@@ -580,8 +608,15 @@ async def job_eval_report(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
     eval_runs = await get_eval_runs_for_job(session, job_id)
+    primary_metric = _resolve_primary_metric(job)
     return templates.TemplateResponse(
-        request, "jobs/eval_report.html", {"eval_runs": eval_runs, "job_id": job_id}
+        request,
+        "jobs/eval_report.html",
+        {
+            "eval_runs": eval_runs,
+            "job_id": job_id,
+            "primary_metric": primary_metric,
+        },
     )
 
 
