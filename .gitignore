@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+
+# RuleKiln job artifacts — generated at runtime, not for version control
+.rulekiln/

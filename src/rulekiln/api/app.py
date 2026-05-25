@@ -9,6 +9,7 @@ from rulekiln.api.errors import register_exception_handlers
 from rulekiln.api.lifespan import lifespan
 from rulekiln.api.routes.distillation_jobs import router as jobs_router
 from rulekiln.api.routes.distillation_outputs import router as outputs_router
+from rulekiln.ui.import_routes import router as import_router
 from rulekiln.ui.routes import router as ui_router
 
 _STATIC_DIR = Path(__file__).parent.parent / "static"
@@ -26,6 +27,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router, prefix="/v1")
     app.include_router(outputs_router, prefix="/v1")
     app.include_router(ui_router)
+    app.include_router(import_router)
     return app
 
 

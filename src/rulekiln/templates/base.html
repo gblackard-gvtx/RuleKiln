@@ -36,6 +36,10 @@
            class="text-gray-600 hover:text-gray-900 {% if request.url.path.endswith('/new') %}text-gray-900 underline underline-offset-4{% endif %}">
           New Job
         </a>
+        <a href="/ui/import/csv"
+           class="text-gray-600 hover:text-gray-900 {% if request.url.path.startswith('/ui/import') %}text-gray-900 underline underline-offset-4{% endif %}">
+          Import CSV
+        </a>
       </div>
     </div>
   </nav>
