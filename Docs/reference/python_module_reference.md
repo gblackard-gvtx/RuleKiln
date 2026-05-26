@@ -82,6 +82,34 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 
 
+## `migrations/versions/0004_add_model_call_events.py`
+
+- **Module purpose:** Alembic revision that adds model call event persistence and usage/cost summary columns.
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `upgrade()`: Alembic migration step to upgrade schema changes for this revision.
+
+  - `downgrade()`: Alembic migration step to downgrade schema changes for this revision.
+
+
+
+## `migrations/versions/0005_add_eval_case_results_and_idempotency_keys.py`
+
+- **Module purpose:** Alembic revision that adds durable per-case evaluation rows and model-call idempotency-key indexing.
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `upgrade()`: Alembic migration step to upgrade schema changes for this revision.
+
+  - `downgrade()`: Alembic migration step to downgrade schema changes for this revision.
+
+
+
 ## `src/rulekiln/__init__.py`
 
 - **Module purpose:** Package marker module.
@@ -386,7 +414,11 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
   - `EvalRun` (model) _(bases: Base)_: SQLAlchemy ORM model used for database persistence.
 
+  - `EvalCaseResultRecord` (model) _(bases: Base)_: Durable per-case evaluation row used for resumable baseline/distilled evaluation.
+
   - `StageMarker` (model) _(bases: Base)_: Durable stage completion marker for idempotent resume semantics.
+
+  - `ModelCallEvent` (model) _(bases: Base)_: Persisted model API event row including usage, cost, and idempotency metadata.
 
 - **Functions:**
 
@@ -401,6 +433,24 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 - **Models / classes:** none.
 
 - **Functions:** none.
+
+
+
+## `src/rulekiln/db/repositories/eval_case_results.py`
+
+- **Module purpose:** Async repository functions for idempotent per-case evaluation persistence and resume lookups.
+
+- **Models / classes:**
+
+  - `EvalCaseResultUpsert` (model) _(bases: BaseModel)_: Payload model used to insert or update one durable case-evaluation row.
+
+- **Functions:**
+
+  - `async upsert_eval_case_result()`: Insert or update one case-level evaluation row keyed by job/student/strategy/split/case.
+
+  - `async get_eval_case_results()`: Load persisted per-case evaluation rows for one job/student/strategy/split tuple.
+
+  - `async get_completed_eval_case_ids()`: Return completed case IDs to support resume-safe evaluation skipping.
 
 
 
@@ -464,7 +514,23 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
   - `async fail_job()`: Mark a job as permanently failed in the queue.
 
+  - `async apply_job_failure_policy()`: Apply retry classification and transition to waiting-for-retry or terminal-failure states.
+
   - `async recover_expired_leases()`: Reset expired-lease jobs back to pending or fail them if max_attempts exceeded.
+
+
+
+## `src/rulekiln/db/repositories/model_calls.py`
+
+- **Module purpose:** Async repository functions for model-call event persistence, dedupe, and job usage summary updates.
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `async bulk_insert_model_call_events()`: Persist model-call events with in-memory and DB-level idempotency-key dedupe.
+
+  - `async update_job_usage_totals()`: Write aggregated token/cost usage totals back to a distillation job row.
 
 
 
@@ -1138,7 +1204,7 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 - **Functions:**
 
-  - `async run_distillation_pipeline()`: Top-level background task driving the full pipeline stage-by-stage.
+  - `async run_distillation_pipeline()`: Top-level full pipeline runner used by in-process and Postgres queue worker execution paths.
 
   - `async _run()`: Internal helper function supporting the module implementation.
 
@@ -1158,7 +1224,7 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 ## `src/rulekiln/workers/queue_worker.py`
 
-- **Module purpose:** Queue worker loop that claims jobs, renews leases, and runs distillation tasks until shutdown.
+- **Module purpose:** Postgres-backed queue worker loop that claims jobs, renews leases, and runs distillation tasks until shutdown.
 
 - **Models / classes:** none.
 
@@ -1170,4 +1236,74 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
   - `async worker_loop()`: Main loop: claim jobs, run pipeline, repeat until shutdown.
 
-  - `main()`: CLI entrypoint: rulekiln-worker.
+  - `main()`: CLI entrypoint for the Postgres queue worker (`rulekiln-postgres-worker`).
+
+
+
+## `src/rulekiln/workers/dbos_runtime.py`
+
+- **Module purpose:** Runtime guard helpers that make DBOS backend availability checks explicit.
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `is_dbos_available()`: Return whether the DBOS package is importable in the current runtime.
+
+  - `require_dbos_available()`: Raise a clear runtime error when `EXECUTION_BACKEND=dbos` is configured without DBOS installed.
+
+
+
+## `src/rulekiln/workers/dbos_workflow.py`
+
+- **Module purpose:** DBOS spike workflow implementation with durable step boundaries and case-level resume semantics.
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `async run_dbos_spike_workflow()`: Execute the DBOS spike sequence (`validating_project`, `compiling_prompts`, `evaluating_baseline`) for one job.
+
+  - `async _validate_project_step()`: Durable step to stage and persist source cases.
+
+  - `async _compile_prompts_step()`: Durable step to compile or reuse the baseline prompt.
+
+  - `async _evaluate_baseline_step()`: Durable step to evaluate baseline prompt with per-case upsert persistence.
+
+  - `_eval_case_record_to_schema()`: Convert persisted case-eval rows into runtime evaluator schema.
+
+  - `_build_eval_case_upsert_payload()`: Build a validated upsert payload for durable per-case evaluation writes.
+
+  - `async _set_stage()`: Internal helper to set running status/stage for workflow progress.
+
+
+
+## `src/rulekiln/workers/dbos_worker.py`
+
+- **Module purpose:** DBOS backend queue worker loop that claims jobs and runs the full distillation pipeline.
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `_install_signal_handlers()`: Internal helper function supporting the module implementation.
+
+  - `async _lease_renewer()`: Periodically renews the job lease until stop_event is set.
+
+  - `async worker_loop()`: Main loop: recover leases, claim jobs, run DBOS workflow, and apply failure policy.
+
+  - `main()`: CLI entrypoint for the DBOS worker (`rulekiln-worker` and `rulekiln-dbos-worker`).
+
+
+
+## `src/rulekiln/workers/error_classification.py`
+
+- **Module purpose:** Exception classifier that separates retryable worker errors from terminal failures.
+
+- **Models / classes:**
+
+  - `ErrorClassification` (model) _(bases: BaseModel)_: Classification payload describing retryability and normalized error type.
+
+- **Functions:**
+
+  - `classify_worker_error()`: Classify one exception into retryable/terminal for worker failure-policy decisions.

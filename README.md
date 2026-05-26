@@ -46,6 +46,75 @@ For high-volume workflows, this can turn expensive runtime reasoning into a reus
 
 ---
 
+## Edge and On-Device Models
+
+One of RuleKiln's strongest deployment targets is small models running locally, offline, or at the edge.
+
+Many teams want AI tasks to run on phones, laptops, embedded devices, or private local servers, but smaller models often struggle with instruction-following, structured output, and task-specific edge cases. RuleKiln is designed to help with that gap.
+
+The workflow is:
+
+1. Use a stronger cloud teacher model during prompt hardening.
+2. Extract and synthesize task-specific rules from labelled cases.
+3. Prune those rules to fit a prompt/token budget.
+4. Compile a compact prompt for a smaller student model.
+5. Evaluate the student before and after hardening.
+6. Promote the prompt only if it passes quality gates.
+
+This makes RuleKiln especially useful for edge-oriented use cases such as:
+
+- on-device intent classification
+- offline form or document extraction
+- local transcript tagging after speech-to-text
+- support-ticket routing
+- field technician troubleshooting
+- device diagnostics
+- private summarization and checklist review
+- structured extraction where data should not leave the device
+
+RuleKiln does not make a small model generally as capable as a frontier model. Instead, it asks a narrower deployment question:
+
+> Can this edge model perform this specific task well enough when given a compact, distilled prompt?
+
+For edge deployments, the best prompt is not always the highest-scoring prompt. It is the prompt that satisfies the full deployment budget:
+
+- quality score is high enough
+- malformed output rate is low enough
+- regression rate is acceptable
+- prompt length fits the target context window
+- latency is acceptable for the device
+- the model can run locally without calling a cloud LLM at runtime
+
+Future RuleKiln deployment profiles may make this explicit:
+
+```yaml
+deployment_profile:
+  type: edge
+  target_runtime: phone
+  max_prompt_tokens: 1200
+  max_context_tokens: 4096
+  max_rules: 20
+  max_latency_ms: 1500
+  require_json_output: true
+  max_malformed_output_rate: 0.01
+  max_regression_rate: 0.05
+```
+
+The long-term goal is not only to produce a better prompt, but to produce a deployable prompt:
+
+```text
+frontier teacher at build time
+small student at runtime
+auditable rules
+compact prompt
+before/after evals
+quality gates
+```
+
+That makes RuleKiln a practical prompt-hardening layer for local and edge AI systems.
+
+---
+
 ## Quick start
 
 ### Option A — Native Python
@@ -68,8 +137,8 @@ uv run alembic upgrade head
 # 4. Start the API
 uv run uvicorn src.rulekiln.api.app:app --host 0.0.0.0 --port 8000 --reload
 
-# 5. Start the queue worker (separate terminal — required for postgres_queue mode)
-uv run python -m rulekiln.workers.queue_worker
+# 5. Start the worker (separate terminal — required for dbos/postgres_queue modes)
+uv run python -m rulekiln.workers.dbos_worker
 # or, if installed as a script:
 uv run rulekiln-worker
 ```
@@ -92,11 +161,11 @@ cd rulekiln
 This starts:
 | Service | URL |
 |---------|-----|
-| RuleKiln API | <http://localhost:8000> |
-| OpenAPI docs | <http://localhost:8000/docs> |
+| RuleKiln API | <http://localhost:8010> |
+| OpenAPI docs | <http://localhost:8010/docs> |
 | MLflow UI | <http://localhost:5000> |
 | PostgreSQL | `localhost:5432` |
-| Queue worker | *(background process, no UI)* |
+| DBOS worker | *(background process, no UI)* |
 
 ```bash
 # Stop the stack
@@ -116,9 +185,10 @@ Copy `.env.example` to `.env` and adjust values. The key variables are:
 | `MLFLOW_ALLOWED_HOSTS` | Optional MLflow server host allowlist (mainly for Docker Compose service-to-service calls) |
 | `ARTIFACT_ROOT` | Local path for job artifact output (default: `.rulekiln/runs`) |
 | `ENABLE_PGVECTOR` | Enable pgvector for embedding storage (default: `false`) |
-| `EXECUTION_BACKEND` | `postgres_queue` (default) or `background_tasks` — see [Execution backends](#execution-backends) |
+| `EXECUTION_BACKEND` | `dbos` (default), `postgres_queue`, or `background_tasks` — see [Execution backends](#execution-backends) |
 | `WORKER_POLL_INTERVAL_SECONDS` | How often the queue worker polls for new jobs (default: `2`) |
 | `WORKER_LEASE_SECONDS` | Job lease duration in seconds before a crashed worker's job is reclaimed (default: `1800`) |
+| `WORKER_RETRY_BACKOFF_SECONDS` | Backoff delay before retrying a retryable failed job (default: `30`) |
 | `DEFAULT_PROVIDER_MAX_CONCURRENCY` | Max concurrent in-flight calls per provider config (default: `3`) |
 | `DEFAULT_PROVIDER_RATE_LIMIT_RPM` | Global default requests-per-minute cap (default: unset) |
 | `DEFAULT_PROVIDER_RATE_LIMIT_TPM` | Global default tokens-per-minute cap (default: unset) |
@@ -128,16 +198,13 @@ Copy `.env.example` to `.env` and adjust values. The key variables are:
 
 ### Execution backends
 
-RuleKiln supports two job execution modes, controlled by `EXECUTION_BACKEND`:
+RuleKiln supports three job execution modes, controlled by `EXECUTION_BACKEND`:
 
-| Mode | Description |
-|------|-------------|
-| `postgres_queue` | **(default)** Jobs are queued in PostgreSQL. The `worker` process polls, claims, and runs them with lease-based crash recovery and automatic retry (up to `max_attempts`). Scale by running multiple workers. |
-| `background_tasks` | Jobs run in the FastAPI process via `BackgroundTasks`. Simpler for local dev or single-server deploys. No separate worker needed, but no crash recovery or retry. |
-
-In `postgres_queue` mode, `POST /v1/jobs/` returns `status: "pending"` and the API returns immediately. The worker picks the job up within `WORKER_POLL_INTERVAL_SECONDS`.
-
-In `background_tasks` mode, the job starts in the same process and `POST /v1/jobs/` returns `status: "created"`.
+| Backend | Default | Separate worker | `POST /v1/jobs/` status | Retry semantics | Stage coverage (current) | Worker command |
+|---------|---------|-----------------|--------------------------|-----------------|--------------------------|----------------|
+| `dbos` | Yes | Yes | `pending` | Classified retry policy with `waiting_for_retry`, then `failed_retryable` or `failed_terminal` when attempts are exhausted or error is terminal | Full pipeline stage chain | `uv run rulekiln-worker` (or `uv run rulekiln-dbos-worker`) |
+| `postgres_queue` | No | Yes | `pending` | Same classified retry policy as DBOS worker-backed queue processing | Full pipeline stage chain (legacy queue worker path) | `uv run rulekiln-postgres-worker` |
+| `background_tasks` | No | No | `created` | No queue lease recovery or worker retry loop | Full legacy stage chain | Not required |
 
 ### Provider profiles
 
@@ -251,6 +318,11 @@ Response `202 Accepted` (`postgres_queue` mode):
 {"job_id": "...", "status": "pending"}
 ```
 
+Response `202 Accepted` (`dbos` mode):
+```json
+{"job_id": "...", "status": "pending"}
+```
+
 Response `202 Accepted` (`background_tasks` mode):
 ```json
 {"job_id": "...", "status": "created"}
@@ -266,7 +338,9 @@ GET /v1/jobs/{job_id}
 {"job_id": "...", "status": "running", "stage": "reviewing_rule_conflicts", "error_message": null}
 ```
 
-Pipeline stages in order: `validating_project` → `extracting_rules` → `embedding_rules` → `clustering_rules` → `synthesizing_rules` → `reviewing_rule_conflicts` → `pruning_rules` → `compiling_prompts` → `evaluating_baseline` → `evaluating_distilled` → `selecting_strategy` → `analyzing_failures` → `checking_quality_gates` → `logging_artifacts` → `exporting_artifacts` → `completed`.
+Common status values: `pending`, `running`, `waiting_for_retry`, `failed_retryable`, `failed_terminal`, `completed`.
+
+Full pipeline stage order (`dbos` / `postgres_queue` / `background_tasks`): `validating_project` → `extracting_rules` → `embedding_rules` → `clustering_rules` → `synthesizing_rules` → `reviewing_rule_conflicts` → `pruning_rules` → `compiling_prompts` → `evaluating_baseline` → `evaluating_distilled` → `selecting_strategy` → `analyzing_failures` → `checking_quality_gates` → `logging_artifacts` → `exporting_artifacts` → `completed`.
 
 ### Retrieve outputs (once `status == "completed"`)
 
@@ -290,7 +364,7 @@ http://localhost:8000/ui/jobs/new
 
 1. **New Job** — upload a `task.yaml` and `cases.jsonl`, choose provider profiles and model IDs.
 2. **Preview** — validate files, review split counts, estimated API calls, and provider routes before committing.
-3. **Run Pipeline** — submit the validated job; the pipeline runs as a background task.
+3. **Run Pipeline** — submit the validated job; execution is delegated by `EXECUTION_BACKEND` (`dbos`/`postgres_queue` queue + worker, or `background_tasks` in-process).
 4. **Monitor** — the job detail page polls live status every 2 seconds via HTMX until the job finishes.
 5. **Review results** — navigate to Results, Prompt, Rules, Eval Report, Failures, or Artifacts from the detail page.
 

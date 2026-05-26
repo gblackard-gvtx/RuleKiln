@@ -68,7 +68,7 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       ARTIFACT_ROOT: .rulekiln/runs
       ENABLE_PGVECTOR: "false"
-      EXECUTION_BACKEND: postgres_queue
+      EXECUTION_BACKEND: dbos
     depends_on:
       postgres:
         condition: service_healthy
@@ -96,7 +96,7 @@ services:
       MLFLOW_TRACKING_URI: http://mlflow:5000
       ARTIFACT_ROOT: .rulekiln/runs
       ENABLE_PGVECTOR: "false"
-      EXECUTION_BACKEND: postgres_queue
+      EXECUTION_BACKEND: dbos
     depends_on:
       postgres:
         condition: service_healthy
@@ -104,7 +104,7 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-    command: python -m rulekiln.workers.queue_worker
+    command: python -m rulekiln.workers.dbos_worker
 
 volumes:
   postgres_data:

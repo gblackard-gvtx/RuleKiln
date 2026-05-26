@@ -2,6 +2,8 @@
 
 RuleKiln supports two local workflows. Both are fully offline using the `fake` provider — no API keys or cloud credentials are required.
 
+Default execution mode is `dbos`. That means local development normally runs with a separate worker process.
+
 ---
 
 ## Option A — Native Python
@@ -23,6 +25,11 @@ uv run alembic upgrade head
 
 # Start the API with auto-reload
 uv run uvicorn src.rulekiln.api.app:app --host 0.0.0.0 --port 8000 --reload
+
+# Start the default worker (separate terminal)
+uv run python -m rulekiln.workers.dbos_worker
+# or
+uv run rulekiln-worker
 ```
 
 ### Running a local MLflow server
@@ -66,10 +73,11 @@ This script:
 
 | Service | URL |
 |---------|-----|
-| RuleKiln API | <http://localhost:8000> |
-| OpenAPI docs | <http://localhost:8000/docs> |
+| RuleKiln API | <http://localhost:8010> |
+| OpenAPI docs | <http://localhost:8010/docs> |
 | MLflow UI | <http://localhost:5000> |
 | PostgreSQL | `localhost:5432` (user/pass: `rulekiln/rulekiln`) |
+| DBOS worker | background container (`worker` service) |
 
 ### Stop the stack
 
@@ -108,8 +116,12 @@ Both workflows use the same `.env` contract. Key differences:
 | `MLFLOW_TRACKING_URI` | `http://localhost:5000` or `file:///...` | `http://mlflow:5000` |
 | `MLFLOW_ALLOWED_HOSTS` | Optional host allowlist for MLflow server | `localhost,127.0.0.1,mlflow,mlflow:5000` |
 | `ARTIFACT_ROOT` | `.rulekiln/runs` | `.rulekiln/runs` (mounted into container) |
+| `EXECUTION_BACKEND` | `dbos` (default) | `dbos` (set in compose override) |
+| `WORKER_RETRY_BACKOFF_SECONDS` | `30` (default) | `30` unless overridden in `.env` |
 
 The Compose stack sets `DATABASE_URL` and `MLFLOW_TRACKING_URI` directly in `docker-compose.yml`, overriding whatever is in `.env` for those two keys.
+
+If you want to run the legacy queue worker path instead of the default DBOS worker path, set `EXECUTION_BACKEND=postgres_queue` and run `uv run rulekiln-postgres-worker` (native) or change the worker command in `docker-compose.yml` to `python -m rulekiln.workers.queue_worker`.
 
 ---
 

@@ -13,6 +13,7 @@ from sqlalchemy import (
     Numeric,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -92,6 +93,9 @@ class DistillationJob(Base):
         "PromptVersion", back_populates="job"
     )
     eval_runs: Mapped[list["EvalRun"]] = relationship("EvalRun", back_populates="job")
+    eval_case_results: Mapped[list["EvalCaseResultRecord"]] = relationship(
+        "EvalCaseResultRecord", back_populates="job"
+    )
     stage_markers: Mapped[list["StageMarker"]] = relationship("StageMarker", back_populates="job")
     model_call_events: Mapped[list["ModelCallEvent"]] = relationship(
         "ModelCallEvent", back_populates="job"
@@ -236,6 +240,58 @@ class EvalRun(Base):
     )
 
 
+class EvalCaseResultRecord(Base):
+    """Case-level durable evaluation record used for resumable strategy evaluation."""
+
+    __tablename__ = "eval_case_results"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "student_id",
+            "strategy",
+            "split",
+            "case_id",
+            name="uq_eval_case_results_job_student_strategy_split_case",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("distillation_jobs.id"), nullable=False)
+
+    student_id: Mapped[str] = mapped_column(String, nullable=False)
+    strategy: Mapped[str] = mapped_column(String, nullable=False)
+    split: Mapped[str] = mapped_column(String, nullable=False)
+    case_id: Mapped[str] = mapped_column(String, nullable=False)
+
+    expected_json: Mapped[dict | str | None] = mapped_column(JSON, nullable=True)  # pyright: ignore[reportArgumentType]
+    actual_json: Mapped[dict | str | None] = mapped_column(JSON, nullable=True)  # pyright: ignore[reportArgumentType]
+    raw_output: Mapped[str | None] = mapped_column(Text, nullable=True)
+    assertion_scores: Mapped[dict[str, float]] = mapped_column(  # pyright: ignore[reportArgumentType]
+        JSON, nullable=False, default=dict
+    )
+
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    case_score: Mapped[float] = mapped_column(Double, nullable=False, default=0.0)
+
+    malformed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    invalid_label: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    error_type: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    job: Mapped[DistillationJob] = relationship("DistillationJob", back_populates="eval_case_results")
+
+
 class StageMarker(Base):
     """Durable stage completion marker for idempotent resume semantics."""
 
@@ -270,6 +326,9 @@ class ModelCallEvent(Base):
     student_id: Mapped[str | None] = mapped_column(String, nullable=True)
     strategy: Mapped[str | None] = mapped_column(String, nullable=True)
     case_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(
+        String, nullable=True, unique=True, index=True
+    )
 
     input_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(Integer, nullable=True)

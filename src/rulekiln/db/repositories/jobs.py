@@ -371,6 +371,58 @@ async def fail_job(session: AsyncSession, job_id: str, error_message: str) -> No
     await session.commit()
 
 
+async def apply_job_failure_policy(
+    session: AsyncSession,
+    job_id: str,
+    *,
+    error_message: str,
+    retryable: bool,
+    retry_backoff_seconds: int,
+) -> str:
+    """Apply retry classification to a failed running job.
+
+    Returns the final status written to distillation_jobs.status.
+    """
+    job = await get_job(session, job_id)
+    if job is None:
+        return "failed_terminal"
+
+    retry_budget_remaining = job.attempt_count < job.max_attempts
+    if retryable and retry_budget_remaining:
+        next_run_at = datetime.now(tz=UTC) + timedelta(seconds=retry_backoff_seconds)
+        await session.execute(
+            update(DistillationJob)
+            .where(DistillationJob.id == job_id)
+            .values(
+                queue_status="pending",
+                status="waiting_for_retry",
+                next_run_at=next_run_at,
+                locked_by=None,
+                locked_at=None,
+                lease_expires_at=None,
+                error_message=error_message,
+            )
+        )
+        await session.commit()
+        return "waiting_for_retry"
+
+    final_status = "failed_retryable" if retryable else "failed_terminal"
+    await session.execute(
+        update(DistillationJob)
+        .where(DistillationJob.id == job_id)
+        .values(
+            queue_status="failed",
+            status=final_status,
+            locked_by=None,
+            locked_at=None,
+            lease_expires_at=None,
+            error_message=error_message,
+        )
+    )
+    await session.commit()
+    return final_status
+
+
 async def recover_expired_leases(
     session: AsyncSession,
 ) -> tuple[int, int]:
@@ -390,7 +442,7 @@ async def recover_expired_leases(
         )
         .values(
             queue_status="pending",
-            status="pending",
+            status="waiting_for_retry",
             locked_by=None,
             locked_at=None,
             lease_expires_at=None,
@@ -407,7 +459,7 @@ async def recover_expired_leases(
         )
         .values(
             queue_status="failed",
-            status="failed",
+            status="failed_retryable",
             locked_by=None,
             locked_at=None,
             lease_expires_at=None,

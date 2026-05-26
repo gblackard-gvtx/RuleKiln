@@ -44,6 +44,7 @@ from rulekiln.ui.view_models import (
     ProviderRouteView,
     ResultsSummaryView,
 )
+from rulekiln.workers.dbos_runtime import require_dbos_available
 from rulekiln.workers.distillation_worker import run_distillation_pipeline
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
@@ -412,8 +413,21 @@ async def create_job_from_ui(
             detail=f"Validation failed: {exc}",
         ) from exc
 
-    await update_job_status(session, job.id, status="created")
-    background_tasks.add_task(run_distillation_pipeline, job.id, payload)
+    if settings.execution_backend == "dbos":
+        try:
+            require_dbos_available()
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+
+    if settings.execution_backend == "background_tasks":
+        await update_job_status(session, job.id, status="created")
+        background_tasks.add_task(run_distillation_pipeline, job.id, payload)
+    else:
+        await update_job_status(session, job.id, status="pending")
+
     logger.info("ui_job_submitted", job_id=job.id, task_id=job.task_id)
 
     return RedirectResponse(
@@ -470,7 +484,7 @@ async def job_status_fragment(
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
-    polling = job.status in {"queued", "running", "created"}
+    polling = job.status in {"queued", "running", "created", "waiting_for_retry"}
     return templates.TemplateResponse(
         request,
         "jobs/status_fragment.html",

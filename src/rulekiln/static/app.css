@@ -9,8 +9,11 @@
 .badge-created  { background-color: #f3f4f6; color: #374151; }
 .badge-draft    { background-color: #ede9fe; color: #5b21b6; }   /* violet-100 / violet-800 */
 .badge-running  { background-color: #dbeafe; color: #1d4ed8; }   /* blue-100  / blue-700   */
+.badge-waiting_for_retry { background-color: #fef3c7; color: #b45309; } /* amber */
 .badge-completed{ background-color: #dcfce7; color: #15803d; }   /* green-100 / green-700  */
 .badge-failed   { background-color: #fee2e2; color: #b91c1c; }   /* red-100   / red-700    */
+.badge-failed_terminal { background-color: #fee2e2; color: #b91c1c; }
+.badge-failed_retryable { background-color: #ffedd5; color: #c2410c; }
 .badge-needs_review { background-color: #fef3c7; color: #b45309; } /* amber-100 / amber-700 */
 
 /* ── Metric card ───────────────────────────────────────────────────────── */

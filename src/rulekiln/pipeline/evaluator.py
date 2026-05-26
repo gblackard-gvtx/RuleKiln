@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Awaitable, Callable, Mapping
 from collections import defaultdict
 
 from pydantic import BaseModel
@@ -11,6 +12,8 @@ from pydantic import BaseModel
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.pipeline import CaseEvalResult, EvalResult
 from rulekiln.schemas.task_case import AssertionType, RuleKilnCase, RuleKilnTask, TaskMode
+
+type CaseResultPersistFn = Callable[[CaseEvalResult], Awaitable[None]]
 
 # Primary metric by task mode (C005)
 _PRIMARY_METRIC: dict[TaskMode, str] = {
@@ -221,13 +224,30 @@ async def evaluate_prompt(
     config: ProviderConfig,
     strategy: str,
     split: str = "train",
+    completed_case_results: Mapping[str, CaseEvalResult] | None = None,
+    on_case_result: CaseResultPersistFn | None = None,
 ) -> EvalResult:
     """Run the student model against every case and return aggregate metrics."""
-    case_results: list[CaseEvalResult] = []
+    case_result_by_id: dict[str, CaseEvalResult] = {}
+    if completed_case_results:
+        case_result_by_id.update(completed_case_results)
+
     for case in cases:
+        if case.id in case_result_by_id:
+            continue
+
         actual, malformed = await _call_student(system_prompt, case, chat_client, config)
         result = _score_case(case, actual, malformed)
-        case_results.append(result)
+        case_result_by_id[case.id] = result
+
+        if on_case_result is not None:
+            await on_case_result(result)
+
+    case_results = [
+        case_result_by_id[case.id]
+        for case in cases
+        if case.id in case_result_by_id
+    ]
 
     return _compute_metrics(
         case_results=case_results,

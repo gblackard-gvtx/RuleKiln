@@ -74,6 +74,14 @@ class TestJobDetail:
         assert response.status_code == 200
         assert "hx-get" in response.text
 
+    async def test_status_fragment_waiting_for_retry_has_polling(
+        self, client: AsyncClient, db_session_factory
+    ) -> None:
+        job_id = await _insert_job(db_session_factory, status="waiting_for_retry")
+        response = await client.get(f"/ui/jobs/{job_id}/status-fragment")
+        assert response.status_code == 200
+        assert "hx-get" in response.text
+
     async def test_status_fragment_completed_no_polling(
         self, client: AsyncClient, db_session_factory
     ) -> None:

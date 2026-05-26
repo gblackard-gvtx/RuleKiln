@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+from sqlalchemy import select
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -26,6 +27,7 @@ def _record_to_event(record: ModelCallRecord, job_id: str) -> ModelCallEvent:
         student_id=record.student_id,
         strategy=record.strategy,
         case_id=record.case_id,
+        idempotency_key=record.idempotency_key,
         input_tokens=usage.input_tokens if usage else None,
         output_tokens=usage.output_tokens if usage else None,
         total_tokens=usage.total_tokens if usage else None,
@@ -47,9 +49,49 @@ async def bulk_insert_model_call_events(
     records: list[ModelCallRecord],
 ) -> None:
     """Insert all model call records for a job into the DB."""
+    if not records:
+        return
+
     events = [_record_to_event(r, job_id) for r in records]
-    session.add_all(events)
+    deduped_events = _dedupe_events_by_key(events)
+    existing_keys = await _get_existing_idempotency_keys(session, deduped_events)
+    insertable_events = [
+        event
+        for event in deduped_events
+        if event.idempotency_key is None or event.idempotency_key not in existing_keys
+    ]
+    if not insertable_events:
+        return
+
+    session.add_all(insertable_events)
     await session.flush()
+
+
+def _dedupe_events_by_key(events: list[ModelCallEvent]) -> list[ModelCallEvent]:
+    seen_keys: set[str] = set()
+    deduped: list[ModelCallEvent] = []
+    for event in events:
+        key = event.idempotency_key
+        if key is not None:
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+        deduped.append(event)
+    return deduped
+
+
+async def _get_existing_idempotency_keys(
+    session: AsyncSession,
+    events: list[ModelCallEvent],
+) -> set[str]:
+    keys = {event.idempotency_key for event in events if event.idempotency_key is not None}
+    if not keys:
+        return set()
+
+    result = await session.execute(
+        select(ModelCallEvent.idempotency_key).where(ModelCallEvent.idempotency_key.in_(keys))
+    )
+    return {key for key in result.scalars().all() if key is not None}
 
 
 async def update_job_usage_totals(

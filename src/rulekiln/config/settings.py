@@ -80,11 +80,12 @@ class AppSettings(BaseSettings):
     openai_api_key: SecretStr | None = Field(default=None, alias="OPENAI_API_KEY")
 
     # ── Execution backend ──────────────────────────────────────────────────
-    execution_backend: Literal["background_tasks", "postgres_queue"] = Field(
-        default="postgres_queue", alias="EXECUTION_BACKEND"
+    execution_backend: Literal["background_tasks", "postgres_queue", "dbos"] = Field(
+        default="dbos", alias="EXECUTION_BACKEND"
     )
     worker_poll_interval_seconds: int = Field(default=2, alias="WORKER_POLL_INTERVAL_SECONDS")
     worker_lease_seconds: int = Field(default=1800, alias="WORKER_LEASE_SECONDS")
+    worker_retry_backoff_seconds: int = Field(default=30, alias="WORKER_RETRY_BACKOFF_SECONDS")
 
     # ── Provider rate limiting defaults ──────────────────────────────────────
     default_provider_max_concurrency: int = Field(

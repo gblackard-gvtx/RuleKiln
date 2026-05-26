@@ -22,7 +22,7 @@
   {% set job_id = job.job_id %}
   {% set stage = job.stage %}
   {% set error_message = job.error_message %}
-  {% set polling = job.status in ["queued", "running", "created"] %}
+  {% set polling = job.status in ["queued", "running", "created", "waiting_for_retry"] %}
   {% include "jobs/status_fragment.html" %}
 </div>
 

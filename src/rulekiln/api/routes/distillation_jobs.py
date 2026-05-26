@@ -21,6 +21,7 @@ from rulekiln.schemas.job import (
     JobStatusResponse,
     JobUsageSummary,
 )
+from rulekiln.workers.dbos_runtime import require_dbos_available
 from rulekiln.workers.distillation_worker import run_distillation_pipeline
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
@@ -42,8 +43,18 @@ async def create_distillation_job(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
+    if settings.execution_backend == "dbos":
+        try:
+            require_dbos_available()
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+
     job_id = str(uuid.uuid4())
-    queue_status = "pending" if settings.execution_backend == "postgres_queue" else "created"
+    queue_backends = {"postgres_queue", "dbos"}
+    queue_status = "pending" if settings.execution_backend in queue_backends else "created"
     job = DistillationJob(
         id=job_id,
         task_id=payload.task.task_id,
@@ -66,7 +77,7 @@ async def create_distillation_job(
         background_tasks.add_task(run_distillation_pipeline, job_id, payload)
         return CreateJobResponse(job_id=job_id, status="created")
 
-    # postgres_queue: job is persisted with queue_status='pending'; worker picks it up
+    # Worker-backed queues (postgres_queue, dbos): persisted as queue_status='pending'.
     return CreateJobResponse(job_id=job_id, status="pending")
 
 

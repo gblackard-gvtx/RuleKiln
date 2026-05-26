@@ -75,6 +75,7 @@ class ModelCallRecord(BaseModel):
     latency_ms: int | None = None
     status: Literal["success", "failed"]
     error_type: str | None = None
+    idempotency_key: str | None = None
 
 
 class ChatCompletionResult(BaseModel):

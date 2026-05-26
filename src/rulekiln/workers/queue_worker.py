@@ -12,14 +12,15 @@ import structlog
 
 from rulekiln.config.settings import get_settings
 from rulekiln.db.repositories.jobs import (
+    apply_job_failure_policy,
     claim_next_job,
     complete_job,
-    fail_job,
     recover_expired_leases,
     renew_lease,
 )
 from rulekiln.db.session import get_session_factory
 from rulekiln.schemas.job import DistillationRequest
+from rulekiln.workers.error_classification import classify_worker_error
 
 logger = structlog.get_logger(__name__)
 
@@ -103,9 +104,22 @@ async def worker_loop(worker_id: str) -> None:
                 await complete_job(session, job.id)
             log.info("job_completed")
         except Exception as exc:
-            log.error("job_failed", error=str(exc))
+            classification = classify_worker_error(exc)
+            log.error(
+                "job_failed",
+                error=str(exc),
+                error_type=classification.error_type,
+                retryable=classification.retryable,
+            )
             async with session_factory() as session:
-                await fail_job(session, job.id, error_message=str(exc))
+                status = await apply_job_failure_policy(
+                    session,
+                    job.id,
+                    error_message=str(exc),
+                    retryable=classification.retryable,
+                    retry_backoff_seconds=settings.worker_retry_backoff_seconds,
+                )
+            log.info("failure_policy_applied", resulting_status=status)
         finally:
             stop_renewer.set()
             renewer_task.cancel()

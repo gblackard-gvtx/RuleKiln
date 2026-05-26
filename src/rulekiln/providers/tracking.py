@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import time
 from contextvars import ContextVar
 from typing import Awaitable, Callable
@@ -102,6 +103,7 @@ def _record_call(
     usage: ModelUsage,
     latency_ms: int,
     status: str,
+    request_fingerprint: str,
     error_type: str | None = None,
 ) -> None:
     """Build a ModelCallRecord, log it, and append it to the collector."""
@@ -123,6 +125,7 @@ def _record_call(
         latency_ms=latency_ms,
         status=status,  # pyright: ignore[reportArgumentType]
         error_type=error_type,
+        idempotency_key=_build_idempotency_key(ctx, request_fingerprint),
     )
 
     collector.add(record)
@@ -141,6 +144,25 @@ def _record_call(
         status=status,
         case_id=ctx.case_id,
     )
+
+
+def _build_idempotency_key(ctx: ModelCallContext, request_fingerprint: str) -> str:
+    """Build a stable key for de-duplicating persisted model call events."""
+    strategy = ctx.strategy or "-"
+    student_id = ctx.student_id or "-"
+    case_id = ctx.case_id or "-"
+    request_hash = _hash_request_fingerprint(request_fingerprint)
+    return (
+        f"{ctx.job_id}:{ctx.stage}:{ctx.role}:"
+        f"{strategy}:{student_id}:{case_id}:{request_hash}"
+    )
+
+
+def _hash_request_fingerprint(request_fingerprint: str) -> str:
+    if not request_fingerprint:
+        return "empty"
+    digest = hashlib.sha256(request_fingerprint.encode("utf-8")).hexdigest()
+    return digest[:16]
 
 
 # ── Tracked Call Wrappers ─────────────────────────────────────────────────────
@@ -166,7 +188,7 @@ async def tracked_chat_call(
         result = await call()
         latency_ms = int((time.monotonic() - started) * 1000)
 
-        if ctx and collector:
+        if ctx is not None and collector is not None:
             usage = result.usage or estimate_usage_from_text(
                 input_text=fallback_input_text,
                 output_text=result.content,
@@ -177,13 +199,14 @@ async def tracked_chat_call(
                 usage=usage,
                 latency_ms=latency_ms,
                 status="success",
+                request_fingerprint=fallback_input_text,
             )
 
         return result
 
     except Exception as exc:
         latency_ms = int((time.monotonic() - started) * 1000)
-        if ctx and collector:
+        if ctx is not None and collector is not None:
             from rulekiln.providers.estimation import estimate_usage_from_text
             usage = estimate_usage_from_text(input_text=fallback_input_text)
             _record_call(
@@ -192,6 +215,7 @@ async def tracked_chat_call(
                 usage=usage,
                 latency_ms=latency_ms,
                 status="failed",
+                request_fingerprint=fallback_input_text,
                 error_type=type(exc).__name__,
             )
         raise
@@ -216,7 +240,7 @@ async def tracked_embedding_call(
         result = await call()
         latency_ms = int((time.monotonic() - started) * 1000)
 
-        if ctx and collector:
+        if ctx is not None and collector is not None:
             usage = result.usage or estimate_usage_from_text(
                 input_text=fallback_input_text,
             )
@@ -226,13 +250,14 @@ async def tracked_embedding_call(
                 usage=usage,
                 latency_ms=latency_ms,
                 status="success",
+                request_fingerprint=fallback_input_text,
             )
 
         return result
 
     except Exception as exc:
         latency_ms = int((time.monotonic() - started) * 1000)
-        if ctx and collector:
+        if ctx is not None and collector is not None:
             usage = estimate_usage_from_text(input_text=fallback_input_text)
             _record_call(
                 ctx=ctx,
@@ -240,6 +265,7 @@ async def tracked_embedding_call(
                 usage=usage,
                 latency_ms=latency_ms,
                 status="failed",
+                request_fingerprint=fallback_input_text,
                 error_type=type(exc).__name__,
             )
         raise

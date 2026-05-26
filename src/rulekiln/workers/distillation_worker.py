@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import uuid
+from decimal import Decimal
 from enum import StrEnum
+from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rulekiln.agents.rule_conflict_review import review_rule_for_conflicts
@@ -13,8 +17,10 @@ from rulekiln.agents.rule_synthesis import synthesize_cluster
 from rulekiln.config.settings import get_settings
 from rulekiln.db.models import (
     Case,
+    EvalCaseResultRecord,
     EvalRun,
     MicroRule,
+    ModelCallEvent,
     PromptVersion,
     RuleCluster,
     SynthesizedRule,
@@ -24,6 +30,7 @@ from rulekiln.db.repositories.jobs import (
     bulk_insert_micro_rules,
     bulk_insert_rule_clusters,
     bulk_insert_synthesized_rules,
+    get_eval_runs_for_job,
     get_micro_rules_for_job,
     get_selected_synthesized_rules_for_job,
     get_synthesized_rules_for_job,
@@ -35,6 +42,11 @@ from rulekiln.db.repositories.jobs import (
     update_job_status,
     update_synthesized_rule_conflict,
     update_synthesized_rule_pruning,
+)
+from rulekiln.db.repositories.eval_case_results import (
+    EvalCaseResultUpsert,
+    get_eval_case_results,
+    upsert_eval_case_result,
 )
 from rulekiln.artifacts.writer import write_token_cost_summary
 from rulekiln.db.repositories.model_calls import (
@@ -72,6 +84,7 @@ from rulekiln.providers.tracking import (
 )
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.pipeline import (
+    CaseEvalResult,
     EvalResult,
     MicroRuleSchema,
     OutcomeCondition,
@@ -108,6 +121,17 @@ class PipelineStage(StrEnum):
     FAILED = "failed"
 
 
+PipelinePhase = Literal[
+    "full",
+    "validate_project",
+    "compile_prompts",
+    "evaluate_baseline",
+    "evaluate_dbscan",
+    "evaluate_hdbscan",
+    "aggregate_evaluation_report",
+]
+
+
 async def run_distillation_pipeline(
     job_id: str,
     payload: DistillationRequest,
@@ -129,11 +153,36 @@ async def run_distillation_pipeline(
             raise
 
 
-async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest) -> None:  # noqa: C901
+async def run_pipeline_phase(
+    session: AsyncSession,
+    job_id: str,
+    payload: DistillationRequest,
+    *,
+    phase: PipelinePhase,
+) -> None:
+    """Run one pipeline phase while preserving existing stage-marker idempotency guards."""
+    await _run(session, job_id, payload, phase=phase)
+
+
+async def _run(
+    session: AsyncSession,
+    job_id: str,
+    payload: DistillationRequest,
+    *,
+    phase: PipelinePhase = "full",
+) -> None:  # noqa: C901
     settings = get_settings()
     task = payload.task
     cases = payload.cases
+    case_by_id = {case.id: case for case in cases}
     collector = ModelCallCollector()
+
+    run_validate = phase in {"full", "validate_project", "compile_prompts"}
+    run_compile_phase = phase in {"full", "compile_prompts"}
+    run_baseline_eval = phase in {"full", "evaluate_baseline"}
+    run_dbscan_eval = phase in {"full", "evaluate_dbscan"}
+    run_hdbscan_eval = phase in {"full", "evaluate_hdbscan"}
+    run_aggregate = phase in {"full", "aggregate_evaluation_report"}
 
     teacher_profile = payload.teacher.provider_profile
     student_profile = payload.student.provider_profile
@@ -142,10 +191,13 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
     judge_profile = judge_route.provider_profile
 
     # ── Stage: validating_project ──────────────────────────────────────────
-    if not await is_stage_complete(session, job_id, PipelineStage.VALIDATING_PROJECT):
+    if run_validate and not await is_stage_complete(session, job_id, PipelineStage.VALIDATING_PROJECT):
         await _set_stage(session, job_id, PipelineStage.VALIDATING_PROJECT)
         await bulk_insert_cases(session, [_to_db_case(job_id, c) for c in cases])
         await mark_stage_complete(session, job_id, PipelineStage.VALIDATING_PROJECT)
+
+    if phase == "validate_project":
+        return
 
     teacher_config = resolve_provider_config(
         payload.teacher.provider_profile,
@@ -176,275 +228,280 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
     student_chat = get_chat_client(student_config)
     embedding_client = get_embedding_client(embedding_config)
     judge_chat = get_chat_client(judge_config)
+    eval_student_id = student_config.model
+    eval_split = "train"
 
-    # ── Stage: extracting_rules ───────────────────────────────────────────
-    if not await is_stage_complete(session, job_id, PipelineStage.EXTRACTING_RULES):
-        await _set_stage(session, job_id, PipelineStage.EXTRACTING_RULES)
-        train_cases = [c for c in cases if c.split in ("train", "validation")]
-        micro_rules: list[MicroRule] = []
-        set_tracking_context(
-            ModelCallContext(
-                job_id=job_id,
-                stage=PipelineStage.EXTRACTING_RULES,
-                role="teacher",
-                provider_profile=teacher_profile,
-                provider=teacher_config.provider,
-                model=teacher_config.model,
-            ),
-            collector,
-        )
-        for case in train_cases:
-            update_tracking_context(case_id=case.id)
-            extraction = await extract_rules_for_case(task, case, teacher_chat, teacher_config)
-            for rule in extraction.rules:
-                micro_rules.append(
-                    MicroRule(
-                        id=str(uuid.uuid4()),
-                        job_id=job_id,
-                        case_id=_db_case_id(job_id, case.id),
-                        topic=rule.topic,
-                        condition=rule.condition,
-                        expected_outcome=rule.expected_outcome,
-                        output_path=rule.output_path,
-                        rationale_summary=rule.rationale_summary,
-                        rule_type=rule.rule_type,
-                        positive_cues=rule.positive_cues,
-                        negative_cues=rule.negative_cues,
+    if run_compile_phase:
+        # ── Stage: extracting_rules ───────────────────────────────────────
+        if not await is_stage_complete(session, job_id, PipelineStage.EXTRACTING_RULES):
+            await _set_stage(session, job_id, PipelineStage.EXTRACTING_RULES)
+            train_cases = [c for c in cases if c.split in ("train", "validation")]
+            micro_rules: list[MicroRule] = []
+            set_tracking_context(
+                ModelCallContext(
+                    job_id=job_id,
+                    stage=PipelineStage.EXTRACTING_RULES,
+                    role="teacher",
+                    provider_profile=teacher_profile,
+                    provider=teacher_config.provider,
+                    model=teacher_config.model,
+                ),
+                collector,
+            )
+            for case in train_cases:
+                update_tracking_context(case_id=case.id)
+                extraction = await extract_rules_for_case(task, case, teacher_chat, teacher_config)
+                for rule in extraction.rules:
+                    micro_rules.append(
+                        MicroRule(
+                            id=str(uuid.uuid4()),
+                            job_id=job_id,
+                            case_id=_db_case_id(job_id, case.id),
+                            topic=rule.topic,
+                            condition=rule.condition,
+                            expected_outcome=rule.expected_outcome,
+                            output_path=rule.output_path,
+                            rationale_summary=rule.rationale_summary,
+                            rule_type=rule.rule_type,
+                            positive_cues=rule.positive_cues,
+                            negative_cues=rule.negative_cues,
+                        )
                     )
+            await bulk_insert_micro_rules(session, micro_rules)
+            await mark_stage_complete(session, job_id, PipelineStage.EXTRACTING_RULES)
+            logger.info("rules_extracted", job_id=job_id, count=len(micro_rules))
+
+        db_micro_rules = await get_micro_rules_for_job(session, job_id)
+        rule_ids = [r.id for r in db_micro_rules]
+        rule_texts = [f"{r.topic}: {r.condition} → {r.expected_outcome}" for r in db_micro_rules]
+
+        # ── Stage: embedding_rules ────────────────────────────────────────
+        embeddings: list[list[float]] = []
+        if rule_texts:
+            set_tracking_context(
+                ModelCallContext(
+                    job_id=job_id,
+                    stage=PipelineStage.EMBEDDING_RULES,
+                    role="embedding",
+                    provider_profile=embedding_profile,
+                    provider=embedding_config.provider,
+                    model=embedding_config.model,
+                ),
+                collector,
+            )
+            embedding_result = await embedding_client.embed_texts(
+                texts=rule_texts, config=embedding_config
+            )
+            embeddings = embedding_result.embeddings
+        if not await is_stage_complete(session, job_id, PipelineStage.EMBEDDING_RULES):
+            await _set_stage(session, job_id, PipelineStage.EMBEDDING_RULES)
+            await mark_stage_complete(session, job_id, PipelineStage.EMBEDDING_RULES)
+
+        # ── Stage: clustering_rules ───────────────────────────────────────
+        dbscan_clusters = cluster_dbscan(rule_ids, embeddings) if rule_ids else []
+        hdbscan_clusters = cluster_hdbscan(rule_ids, embeddings) if rule_ids else []
+        if not await is_stage_complete(session, job_id, PipelineStage.CLUSTERING_RULES):
+            await _set_stage(session, job_id, PipelineStage.CLUSTERING_RULES)
+            db_clusters = [_to_db_cluster(job_id, c) for c in dbscan_clusters + hdbscan_clusters]
+            await bulk_insert_rule_clusters(session, db_clusters)
+            await mark_stage_complete(session, job_id, PipelineStage.CLUSTERING_RULES)
+
+        # ── Stage: synthesizing_rules ─────────────────────────────────────
+        rule_map: dict[str, MicroRule] = {r.id: r for r in db_micro_rules}
+        for strategy, clusters in [("dbscan", dbscan_clusters), ("hdbscan", hdbscan_clusters)]:
+            if await is_stage_complete(
+                session, job_id, PipelineStage.SYNTHESIZING_RULES, strategy=strategy
+            ):
+                continue
+            await _set_stage(session, job_id, PipelineStage.SYNTHESIZING_RULES)
+            set_tracking_context(
+                ModelCallContext(
+                    job_id=job_id,
+                    stage=PipelineStage.SYNTHESIZING_RULES,
+                    role="teacher",
+                    provider_profile=teacher_profile,
+                    provider=teacher_config.provider,
+                    model=teacher_config.model,
+                    strategy=strategy,
+                ),
+                collector,
+            )
+            synth_rules: list[SynthesizedRule] = []
+            for cluster in clusters:
+                cluster_micro = [
+                    MicroRuleSchema(
+                        topic=rule_map[rid].topic,
+                        condition=rule_map[rid].condition,
+                        expected_outcome=rule_map[rid].expected_outcome,
+                        output_path=rule_map[rid].output_path,
+                        rationale_summary=rule_map[rid].rationale_summary,
+                        rule_type=rule_map[rid].rule_type,
+                        positive_cues=list(rule_map[rid].positive_cues or []),
+                        negative_cues=list(rule_map[rid].negative_cues or []),
+                    )
+                    for rid in cluster.rule_ids
+                    if rid in rule_map
+                ]
+                case_ids = list({rule_map[rid].case_id for rid in cluster.rule_ids if rid in rule_map})
+                case_ids = [_payload_case_id_from_db_case_id(job_id, case_id) for case_id in case_ids]
+                synthesis = await synthesize_cluster(
+                    task,
+                    cluster.topic,
+                    cluster_micro,
+                    case_ids,
+                    cluster.rule_ids,
+                    teacher_chat,
+                    teacher_config,
                 )
-        await bulk_insert_micro_rules(session, micro_rules)
-        await mark_stage_complete(session, job_id, PipelineStage.EXTRACTING_RULES)
-        logger.info("rules_extracted", job_id=job_id, count=len(micro_rules))
+                for rule in synthesis.rules:
+                    synth_rules.append(_synth_to_db(job_id, strategy, rule))
+            await bulk_insert_synthesized_rules(session, synth_rules)
+            await mark_stage_complete(
+                session, job_id, PipelineStage.SYNTHESIZING_RULES, strategy=strategy
+            )
 
-    db_micro_rules = await get_micro_rules_for_job(session, job_id)
-    rule_ids = [r.id for r in db_micro_rules]
-    rule_texts = [f"{r.topic}: {r.condition} → {r.expected_outcome}" for r in db_micro_rules]
+        # ── Stage: reviewing_rule_conflicts ──────────────────────────────
+        total_train_cases = len([c for c in cases if c.split in ("train", "validation")])
+        for strategy in ("dbscan", "hdbscan"):
+            if await is_stage_complete(
+                session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy
+            ):
+                continue
+            await _set_stage(session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS)
+            set_tracking_context(
+                ModelCallContext(
+                    job_id=job_id,
+                    stage=PipelineStage.REVIEWING_RULE_CONFLICTS,
+                    role="judge",
+                    provider_profile=judge_profile,
+                    provider=judge_config.provider,
+                    model=judge_config.model,
+                    strategy=strategy,
+                ),
+                collector,
+            )
+            db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
+            for synth_rule in db_synth:
+                schema = _db_synth_to_schema(synth_rule)
+                support = len(schema.source_case_ids)
+                ratio = support / total_train_cases if total_train_cases > 0 else 0.0
+                golden_backed = bool(
+                    task.quality_gates and any(cid in set(schema.source_case_ids) for cid in [])
+                )
+                token_count = count_tokens_approx(f"{schema.topic} {' '.join(schema.applies_when)}")
+                await update_synthesized_rule_pruning(
+                    session,
+                    synth_rule.id,
+                    is_pruned=False,
+                    pruning_reason=None,
+                    support_count=support,
+                    support_ratio=ratio,
+                    golden_case_backed=golden_backed,
+                    estimated_token_count=token_count,
+                )
+                cluster_micro = [
+                    MicroRuleSchema(
+                        topic=rule_map[rid].topic,
+                        condition=rule_map[rid].condition,
+                        expected_outcome=rule_map[rid].expected_outcome,
+                        output_path=rule_map[rid].output_path,
+                        rationale_summary=rule_map[rid].rationale_summary,
+                        rule_type=rule_map[rid].rule_type,
+                        positive_cues=list(rule_map[rid].positive_cues or []),
+                        negative_cues=list(rule_map[rid].negative_cues or []),
+                    )
+                    for rid in (schema.source_micro_rule_ids or [])
+                    if rid in rule_map
+                ]
+                review = await review_rule_for_conflicts(
+                    task,
+                    schema,
+                    cluster_micro,
+                    judge_chat,
+                    judge_config,
+                )
+                has_conflicts = review.has_conflicts and review.resolution in ("discard",)
+                await update_synthesized_rule_conflict(
+                    session,
+                    synth_rule.id,
+                    has_conflicts=has_conflicts,
+                    conflict_summary=review.conflict_summary,
+                    conflicting_micro_rule_ids=review.conflicting_micro_rule_ids,
+                )
+            await mark_stage_complete(
+                session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy
+            )
+            logger.info(
+                "conflict_review_done", job_id=job_id, strategy=strategy, reviewed=len(db_synth)
+            )
 
-    # ── Stage: embedding_rules ────────────────────────────────────────────
-    embeddings: list[list[float]] = []
-    if rule_texts:
-        set_tracking_context(
-            ModelCallContext(
+        # ── Stage: pruning_rules ──────────────────────────────────────────
+        for strategy in ("dbscan", "hdbscan"):
+            if await is_stage_complete(
+                session, job_id, PipelineStage.PRUNING_RULES, strategy=strategy
+            ):
+                continue
+            await _set_stage(session, job_id, PipelineStage.PRUNING_RULES)
+            db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
+            schemas = [_db_synth_to_schema(r) for r in db_synth]
+            pruning_result = prune_rules(
+                schemas,
+                max_rules=task.max_rules,
+                max_prompt_tokens=task.max_prompt_tokens,
+                min_rule_support_count=task.min_rule_support_count,
+                preserve_golden_rules=task.preserve_golden_rules,
+            )
+            selected_ids = {r.id for r in pruning_result.selected}
+            for record in pruning_result.pruned:
+                await update_synthesized_rule_pruning(
+                    session,
+                    record.rule.id,
+                    is_pruned=True,
+                    pruning_reason=record.reason,
+                    support_count=record.rule.support_count,
+                    support_ratio=record.rule.support_ratio,
+                    golden_case_backed=record.rule.golden_case_backed,
+                    estimated_token_count=record.rule.estimated_token_count,
+                )
+            logger.info(
+                "pruning_done",
                 job_id=job_id,
-                stage=PipelineStage.EMBEDDING_RULES,
-                role="embedding",
-                provider_profile=embedding_profile,
-                provider=embedding_config.provider,
-                model=embedding_config.model,
-            ),
-            collector,
-        )
-        embedding_result = await embedding_client.embed_texts(
-            texts=rule_texts, config=embedding_config
-        )
-        embeddings = embedding_result.embeddings
-    if not await is_stage_complete(session, job_id, PipelineStage.EMBEDDING_RULES):
-        await _set_stage(session, job_id, PipelineStage.EMBEDDING_RULES)
-        await mark_stage_complete(session, job_id, PipelineStage.EMBEDDING_RULES)
-
-    # ── Stage: clustering_rules ───────────────────────────────────────────
-    dbscan_clusters = cluster_dbscan(rule_ids, embeddings) if rule_ids else []
-    hdbscan_clusters = cluster_hdbscan(rule_ids, embeddings) if rule_ids else []
-    if not await is_stage_complete(session, job_id, PipelineStage.CLUSTERING_RULES):
-        await _set_stage(session, job_id, PipelineStage.CLUSTERING_RULES)
-        db_clusters = [_to_db_cluster(job_id, c) for c in dbscan_clusters + hdbscan_clusters]
-        await bulk_insert_rule_clusters(session, db_clusters)
-        await mark_stage_complete(session, job_id, PipelineStage.CLUSTERING_RULES)
-
-    # ── Stage: synthesizing_rules ─────────────────────────────────────────
-    rule_map: dict[str, MicroRule] = {r.id: r for r in db_micro_rules}
-    for strategy, clusters in [("dbscan", dbscan_clusters), ("hdbscan", hdbscan_clusters)]:
-        if await is_stage_complete(
-            session, job_id, PipelineStage.SYNTHESIZING_RULES, strategy=strategy
-        ):
-            continue
-        await _set_stage(session, job_id, PipelineStage.SYNTHESIZING_RULES)
-        set_tracking_context(
-            ModelCallContext(
-                job_id=job_id,
-                stage=PipelineStage.SYNTHESIZING_RULES,
-                role="teacher",
-                provider_profile=teacher_profile,
-                provider=teacher_config.provider,
-                model=teacher_config.model,
                 strategy=strategy,
-            ),
-            collector,
-        )
-        synth_rules: list[SynthesizedRule] = []
-        for cluster in clusters:
-            cluster_micro = [
-                MicroRuleSchema(
-                    topic=rule_map[rid].topic,
-                    condition=rule_map[rid].condition,
-                    expected_outcome=rule_map[rid].expected_outcome,
-                    output_path=rule_map[rid].output_path,
-                    rationale_summary=rule_map[rid].rationale_summary,
-                    rule_type=rule_map[rid].rule_type,
-                    positive_cues=list(rule_map[rid].positive_cues or []),
-                    negative_cues=list(rule_map[rid].negative_cues or []),
-                )
-                for rid in cluster.rule_ids
-                if rid in rule_map
-            ]
-            case_ids = list({rule_map[rid].case_id for rid in cluster.rule_ids if rid in rule_map})
-            case_ids = [
-                _payload_case_id_from_db_case_id(job_id, case_id)
-                for case_id in case_ids
-            ]
-            synthesis = await synthesize_cluster(
-                task,
-                cluster.topic,
-                cluster_micro,
-                case_ids,
-                cluster.rule_ids,
-                teacher_chat,
-                teacher_config,
+                selected=len(selected_ids),
+                pruned=len(pruning_result.pruned),
             )
-            for rule in synthesis.rules:
-                synth_rules.append(_synth_to_db(job_id, strategy, rule))
-        await bulk_insert_synthesized_rules(session, synth_rules)
-        await mark_stage_complete(
-            session, job_id, PipelineStage.SYNTHESIZING_RULES, strategy=strategy
-        )
+            await mark_stage_complete(
+                session, job_id, PipelineStage.PRUNING_RULES, strategy=strategy
+            )
 
-    # ── Stage: reviewing_rule_conflicts ──────────────────────────────────
-    total_train_cases = len([c for c in cases if c.split in ("train", "validation")])
-    for strategy in ("dbscan", "hdbscan"):
-        if await is_stage_complete(
-            session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy
-        ):
-            continue
-        await _set_stage(session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS)
-        set_tracking_context(
-            ModelCallContext(
+        # ── Stage: compiling_prompts ──────────────────────────────────────
+        for strategy in ("dbscan", "hdbscan"):
+            if await is_stage_complete(
+                session, job_id, PipelineStage.COMPILING_PROMPTS, strategy=strategy
+            ):
+                continue
+            await _set_stage(session, job_id, PipelineStage.COMPILING_PROMPTS)
+            db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
+            schemas = [_db_synth_to_schema(r) for r in db_synth]
+            prompt_text, prompt_hash = compile_prompt(task, schemas, strategy)
+            pv = PromptVersion(
+                id=str(uuid.uuid4()),
                 job_id=job_id,
-                stage=PipelineStage.REVIEWING_RULE_CONFLICTS,
-                role="judge",
-                provider_profile=judge_profile,
-                provider=judge_config.provider,
-                model=judge_config.model,
+                task_id=task.task_id,
+                task_name=task.task_name,
                 strategy=strategy,
-            ),
-            collector,
-        )
-        db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
-        for synth_rule in db_synth:
-            schema = _db_synth_to_schema(synth_rule)
-            # Compute support_count/ratio and golden_case_backed before conflict review
-            support = len(schema.source_case_ids)
-            ratio = support / total_train_cases if total_train_cases > 0 else 0.0
-            golden_backed = bool(
-                task.quality_gates and any(cid in set(schema.source_case_ids) for cid in [])
+                version="v1",
+                system_prompt=prompt_text,
+                prompt_hash=prompt_hash,
             )
-            token_count = count_tokens_approx(f"{schema.topic} {' '.join(schema.applies_when)}")
-            await update_synthesized_rule_pruning(
-                session,
-                synth_rule.id,
-                is_pruned=False,
-                pruning_reason=None,
-                support_count=support,
-                support_ratio=ratio,
-                golden_case_backed=golden_backed,
-                estimated_token_count=token_count,
+            await insert_prompt_version(session, pv)
+            await mark_stage_complete(
+                session, job_id, PipelineStage.COMPILING_PROMPTS, strategy=strategy
             )
-            # Build micro rule schemas for this synthesized rule
-            cluster_micro = [
-                MicroRuleSchema(
-                    topic=rule_map[rid].topic,
-                    condition=rule_map[rid].condition,
-                    expected_outcome=rule_map[rid].expected_outcome,
-                    output_path=rule_map[rid].output_path,
-                    rationale_summary=rule_map[rid].rationale_summary,
-                    rule_type=rule_map[rid].rule_type,
-                    positive_cues=list(rule_map[rid].positive_cues or []),
-                    negative_cues=list(rule_map[rid].negative_cues or []),
-                )
-                for rid in (schema.source_micro_rule_ids or [])
-                if rid in rule_map
-            ]
-            review = await review_rule_for_conflicts(
-                task,
-                schema,
-                cluster_micro,
-                judge_chat,
-                judge_config,
-            )
-            # Fold resolved rules back into conflict flags
-            has_conflicts = review.has_conflicts and review.resolution in ("discard",)
-            await update_synthesized_rule_conflict(
-                session,
-                synth_rule.id,
-                has_conflicts=has_conflicts,
-                conflict_summary=review.conflict_summary,
-                conflicting_micro_rule_ids=review.conflicting_micro_rule_ids,
-            )
-        await mark_stage_complete(
-            session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy
-        )
-        logger.info(
-            "conflict_review_done", job_id=job_id, strategy=strategy, reviewed=len(db_synth)
-        )
 
-    # ── Stage: pruning_rules ──────────────────────────────────────────────
-    for strategy in ("dbscan", "hdbscan"):
-        if await is_stage_complete(session, job_id, PipelineStage.PRUNING_RULES, strategy=strategy):
-            continue
-        await _set_stage(session, job_id, PipelineStage.PRUNING_RULES)
-        db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
-        schemas = [_db_synth_to_schema(r) for r in db_synth]
-        pruning_result = prune_rules(
-            schemas,
-            max_rules=task.max_rules,
-            max_prompt_tokens=task.max_prompt_tokens,
-            min_rule_support_count=task.min_rule_support_count,
-            preserve_golden_rules=task.preserve_golden_rules,
-        )
-        selected_ids = {r.id for r in pruning_result.selected}
-        for record in pruning_result.pruned:
-            await update_synthesized_rule_pruning(
-                session,
-                record.rule.id,
-                is_pruned=True,
-                pruning_reason=record.reason,
-                support_count=record.rule.support_count,
-                support_ratio=record.rule.support_ratio,
-                golden_case_backed=record.rule.golden_case_backed,
-                estimated_token_count=record.rule.estimated_token_count,
-            )
-        logger.info(
-            "pruning_done",
-            job_id=job_id,
-            strategy=strategy,
-            selected=len(selected_ids),
-            pruned=len(pruning_result.pruned),
-        )
-        await mark_stage_complete(session, job_id, PipelineStage.PRUNING_RULES, strategy=strategy)
-
-    # ── Stage: compiling_prompts ──────────────────────────────────────────
-    for strategy in ("dbscan", "hdbscan"):
-        if await is_stage_complete(
-            session, job_id, PipelineStage.COMPILING_PROMPTS, strategy=strategy
-        ):
-            continue
-        await _set_stage(session, job_id, PipelineStage.COMPILING_PROMPTS)
-        db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
-        schemas = [_db_synth_to_schema(r) for r in db_synth]
-        prompt_text, prompt_hash = compile_prompt(task, schemas, strategy)
-        pv = PromptVersion(
-            id=str(uuid.uuid4()),
-            job_id=job_id,
-            task_id=task.task_id,
-            task_name=task.task_name,
-            strategy=strategy,
-            version="v1",
-            system_prompt=prompt_text,
-            prompt_hash=prompt_hash,
-        )
-        await insert_prompt_version(session, pv)
-        await mark_stage_complete(
-            session, job_id, PipelineStage.COMPILING_PROMPTS, strategy=strategy
-        )
+    if phase == "compile_prompts":
+        await _persist_collector_records(session, job_id, collector)
+        return
 
     # ── Stage: evaluating_baseline ────────────────────────────────────────
     if payload.baseline_prompt:
@@ -455,7 +512,7 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
         baseline_prompt_source = "compiled"
 
     baseline_eval: EvalResult | None = None
-    if not await is_stage_complete(session, job_id, PipelineStage.EVALUATING_BASELINE):
+    if run_baseline_eval and not await is_stage_complete(session, job_id, PipelineStage.EVALUATING_BASELINE):
         await _set_stage(session, job_id, PipelineStage.EVALUATING_BASELINE)
         set_tracking_context(
             ModelCallContext(
@@ -469,6 +526,32 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
             ),
             collector,
         )
+        existing_baseline_rows = await get_eval_case_results(
+            session,
+            job_id=job_id,
+            student_id=eval_student_id,
+            strategy="baseline",
+            split=eval_split,
+        )
+        completed_baseline_results = {
+            row.case_id: _eval_case_record_to_schema(row)
+            for row in existing_baseline_rows
+        }
+
+        async def _persist_baseline_case(case_result: CaseEvalResult) -> None:
+            case = case_by_id.get(case_result.case_id)
+            if case is None:
+                return
+            payload_row = _build_eval_case_upsert_payload(
+                job_id=job_id,
+                student_id=eval_student_id,
+                strategy="baseline",
+                split=eval_split,
+                case=case,
+                result=case_result,
+            )
+            await upsert_eval_case_result(session, payload_row)
+
         baseline_eval = await evaluate_prompt(
             baseline_prompt_text,
             cases,
@@ -476,13 +559,35 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
             student_chat,
             student_config,
             strategy="baseline",
+            split=eval_split,
+            completed_case_results=completed_baseline_results,
+            on_case_result=_persist_baseline_case,
         )
-        await insert_eval_run(session, _eval_to_db(job_id, None, baseline_eval))
+        existing_eval_runs = await get_eval_runs_for_job(session, job_id)
+        has_baseline_eval = any(
+            run.strategy == "baseline" and run.split == eval_split for run in existing_eval_runs
+        )
+        if not has_baseline_eval:
+            await insert_eval_run(session, _eval_to_db(job_id, None, baseline_eval))
         await mark_stage_complete(session, job_id, PipelineStage.EVALUATING_BASELINE)
+
+    if phase == "evaluate_baseline":
+        await _persist_collector_records(session, job_id, collector)
+        return
 
     # ── Stage: evaluating_distilled ───────────────────────────────────────
     eval_map: dict[str, EvalResult] = {}
-    for strategy in ("dbscan", "hdbscan"):
+    distilled_strategies: tuple[str, ...]
+    if phase == "evaluate_dbscan":
+        distilled_strategies = ("dbscan",)
+    elif phase == "evaluate_hdbscan":
+        distilled_strategies = ("hdbscan",)
+    elif phase == "full":
+        distilled_strategies = ("dbscan", "hdbscan")
+    else:
+        distilled_strategies = ()
+
+    for strategy in distilled_strategies:
         if await is_stage_complete(
             session, job_id, PipelineStage.EVALUATING_DISTILLED, strategy=strategy
         ):
@@ -500,6 +605,32 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
             ),
             collector,
         )
+        existing_rows = await get_eval_case_results(
+            session,
+            job_id=job_id,
+            student_id=eval_student_id,
+            strategy=strategy,
+            split=eval_split,
+        )
+        completed_case_results = {
+            row.case_id: _eval_case_record_to_schema(row)
+            for row in existing_rows
+        }
+
+        async def _persist_strategy_case(case_result: CaseEvalResult) -> None:
+            case = case_by_id.get(case_result.case_id)
+            if case is None:
+                return
+            payload_row = _build_eval_case_upsert_payload(
+                job_id=job_id,
+                student_id=eval_student_id,
+                strategy=strategy,
+                split=eval_split,
+                case=case,
+                result=case_result,
+            )
+            await upsert_eval_case_result(session, payload_row)
+
         db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
         schemas = [_db_synth_to_schema(r) for r in db_synth]
         prompt_text, _ = compile_prompt(task, schemas, strategy)
@@ -510,155 +641,310 @@ async def _run(session: AsyncSession, job_id: str, payload: DistillationRequest)
             student_chat,
             student_config,
             strategy=strategy,
+            split=eval_split,
+            completed_case_results=completed_case_results,
+            on_case_result=_persist_strategy_case,
         )
         eval_map[strategy] = ev
-        await insert_eval_run(session, _eval_to_db(job_id, None, ev))
+        existing_eval_runs = await get_eval_runs_for_job(session, job_id)
+        has_strategy_eval = any(
+            run.strategy == strategy and run.split == eval_split for run in existing_eval_runs
+        )
+        if not has_strategy_eval:
+            await insert_eval_run(session, _eval_to_db(job_id, None, ev))
         await mark_stage_complete(
             session, job_id, PipelineStage.EVALUATING_DISTILLED, strategy=strategy
         )
 
-    # ── Stage: checking_quality_gates ─────────────────────────────────────
-    gate_map: dict[str, QualityGateResult] = {}
-    for strategy in ("dbscan", "hdbscan"):
-        if strategy not in eval_map:
-            continue
-        if await is_stage_complete(
-            session, job_id, PipelineStage.CHECKING_QUALITY_GATES, strategy=strategy
-        ):
-            continue
-        await _set_stage(session, job_id, PipelineStage.CHECKING_QUALITY_GATES)
-        db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
-        schemas = [_db_synth_to_schema(r) for r in db_synth]
-        prompt_text, _ = compile_prompt(task, schemas, strategy)
-        gate = check_quality_gates(
-            strategy=strategy,
-            distilled_eval=eval_map[strategy],
-            baseline_eval=baseline_eval,
-            cases=cases,
-            task_mode=task.task_mode,
-            task_gates=task.quality_gates,
-            settings_defaults=settings.default_quality_gate,
-            prompt_token_count=count_tokens_approx(prompt_text),
-        )
-        gate_map[strategy] = gate
-        await mark_stage_complete(
-            session, job_id, PipelineStage.CHECKING_QUALITY_GATES, strategy=strategy
-        )
+    if phase in {"evaluate_dbscan", "evaluate_hdbscan"}:
+        await _persist_collector_records(session, job_id, collector)
+        return
 
-    # ── Stage: selecting_strategy ─────────────────────────────────────────
-    if not await is_stage_complete(session, job_id, PipelineStage.SELECTING_STRATEGY):
-        await _set_stage(session, job_id, PipelineStage.SELECTING_STRATEGY)
-        token_counts: dict[str, int] = {}
+    if run_aggregate:
+        if baseline_eval is None:
+            baseline_eval = await _load_eval_result_from_db(
+                session,
+                job_id=job_id,
+                student_id=eval_student_id,
+                strategy="baseline",
+                split=eval_split,
+            )
         for strategy in ("dbscan", "hdbscan"):
+            if strategy in eval_map:
+                continue
+            loaded = await _load_eval_result_from_db(
+                session,
+                job_id=job_id,
+                student_id=eval_student_id,
+                strategy=strategy,
+                split=eval_split,
+            )
+            if loaded is not None:
+                eval_map[strategy] = loaded
+
+        # ── Stage: checking_quality_gates ─────────────────────────────────
+        gate_map: dict[str, QualityGateResult] = {}
+        for strategy in ("dbscan", "hdbscan"):
+            strategy_eval = eval_map.get(strategy)
+            if strategy_eval is None:
+                continue
+            gate_stage_complete = await is_stage_complete(
+                session, job_id, PipelineStage.CHECKING_QUALITY_GATES, strategy=strategy
+            )
+            if not gate_stage_complete:
+                await _set_stage(session, job_id, PipelineStage.CHECKING_QUALITY_GATES)
             db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
             schemas = [_db_synth_to_schema(r) for r in db_synth]
-            pt, _ = compile_prompt(task, schemas, strategy)
-            token_counts[strategy] = count_tokens_approx(pt)
-        comparison = build_strategy_comparison(
-            baseline_eval=baseline_eval,
-            dbscan_eval=eval_map.get("dbscan"),
-            hdbscan_eval=eval_map.get("hdbscan"),
-            dbscan_gate=gate_map.get("dbscan"),
-            hdbscan_gate=gate_map.get("hdbscan"),
-            task_mode=task.task_mode,
-            dbscan_token_count=token_counts.get("dbscan", 0),
-            hdbscan_token_count=token_counts.get("hdbscan", 0),
-        )
-        if comparison.selected_strategy and comparison.selected_strategy != "baseline":
-            await mark_prompt_version_selected(session, job_id, comparison.selected_strategy)
-        logger.info(
-            "strategy_selected",
-            job_id=job_id,
-            strategy=comparison.selected_strategy,
-            reason=comparison.selection_reason,
-        )
-        await mark_stage_complete(session, job_id, PipelineStage.SELECTING_STRATEGY)
+            prompt_text, _ = compile_prompt(task, schemas, strategy)
+            gate = check_quality_gates(
+                strategy=strategy,
+                distilled_eval=strategy_eval,
+                baseline_eval=baseline_eval,
+                cases=cases,
+                task_mode=task.task_mode,
+                task_gates=task.quality_gates,
+                settings_defaults=settings.default_quality_gate,
+                prompt_token_count=count_tokens_approx(prompt_text),
+            )
+            gate_map[strategy] = gate
+            if not gate_stage_complete:
+                await mark_stage_complete(
+                    session, job_id, PipelineStage.CHECKING_QUALITY_GATES, strategy=strategy
+                )
 
-    # ── Stage: analyzing_failures ─────────────────────────────────────────
-    if not await is_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES):
-        await _set_stage(session, job_id, PipelineStage.ANALYZING_FAILURES)
-        selected_strategy = "hdbscan" if "hdbscan" in eval_map else "dbscan"
-        selected_eval = eval_map.get(selected_strategy)
-        if selected_eval:
-            db_synth = await get_selected_synthesized_rules_for_job(
+        # ── Stage: selecting_strategy ─────────────────────────────────────
+        if not await is_stage_complete(session, job_id, PipelineStage.SELECTING_STRATEGY):
+            await _set_stage(session, job_id, PipelineStage.SELECTING_STRATEGY)
+            token_counts: dict[str, int] = {}
+            for strategy in ("dbscan", "hdbscan"):
+                db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
+                schemas = [_db_synth_to_schema(r) for r in db_synth]
+                pt, _ = compile_prompt(task, schemas, strategy)
+                token_counts[strategy] = count_tokens_approx(pt)
+            comparison = build_strategy_comparison(
+                baseline_eval=baseline_eval,
+                dbscan_eval=eval_map.get("dbscan"),
+                hdbscan_eval=eval_map.get("hdbscan"),
+                dbscan_gate=gate_map.get("dbscan"),
+                hdbscan_gate=gate_map.get("hdbscan"),
+                task_mode=task.task_mode,
+                dbscan_token_count=token_counts.get("dbscan", 0),
+                hdbscan_token_count=token_counts.get("hdbscan", 0),
+            )
+            if comparison.selected_strategy and comparison.selected_strategy != "baseline":
+                await mark_prompt_version_selected(session, job_id, comparison.selected_strategy)
+            logger.info(
+                "strategy_selected",
+                job_id=job_id,
+                strategy=comparison.selected_strategy,
+                reason=comparison.selection_reason,
+            )
+            await mark_stage_complete(session, job_id, PipelineStage.SELECTING_STRATEGY)
+
+        # ── Stage: analyzing_failures ─────────────────────────────────────
+        if not await is_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES):
+            await _set_stage(session, job_id, PipelineStage.ANALYZING_FAILURES)
+            selected_strategy = "hdbscan" if "hdbscan" in eval_map else "dbscan"
+            selected_eval = eval_map.get(selected_strategy)
+            if selected_eval:
+                db_synth = await get_selected_synthesized_rules_for_job(
+                    session, job_id, selected_strategy
+                )
+                selected_schemas = [_db_synth_to_schema(r) for r in db_synth]
+                analyze_failures(baseline_eval, selected_eval, selected_schemas)
+            await mark_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES)
+
+        # ── Late stages ───────────────────────────────────────────────────
+        if not await is_stage_complete(session, job_id, PipelineStage.LOGGING_ARTIFACTS):
+            await _set_stage(session, job_id, PipelineStage.LOGGING_ARTIFACTS)
+            selected_strategy = "hdbscan" if "hdbscan" in eval_map else "dbscan"
+            selected_db = await get_selected_synthesized_rules_for_job(
                 session, job_id, selected_strategy
             )
-            selected_schemas = [_db_synth_to_schema(r) for r in db_synth]
-            analyze_failures(baseline_eval, selected_eval, selected_schemas)
-        await mark_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES)
+            selected_schemas = [_db_synth_to_schema(r) for r in selected_db]
+            _pt, prompt_hash = compile_prompt(task, selected_schemas, selected_strategy)
 
-    # ── Late stages ───────────────────────────────────────────────────────
-    if not await is_stage_complete(session, job_id, PipelineStage.LOGGING_ARTIFACTS):
-        await _set_stage(session, job_id, PipelineStage.LOGGING_ARTIFACTS)
-        selected_strategy = "hdbscan" if "hdbscan" in eval_map else "dbscan"
-        selected_db = await get_selected_synthesized_rules_for_job(
-            session, job_id, selected_strategy
-        )
-        selected_schemas = [_db_synth_to_schema(r) for r in selected_db]
-        _pt, prompt_hash = compile_prompt(task, selected_schemas, selected_strategy)
-
-        mlflow_run_id = create_run(
-            settings.mlflow_tracking_uri,
-            settings.mlflow_experiment_name,
-            job_id=job_id,
-            task_id=task.task_id,
-            task_name=task.task_name,
-        )
-        run_params: dict[str, str] = {
-            **build_run_params(
+            mlflow_run_id = create_run(
+                settings.mlflow_tracking_uri,
+                settings.mlflow_experiment_name,
                 job_id=job_id,
                 task_id=task.task_id,
+                task_name=task.task_name,
+            )
+            run_params: dict[str, str] = {
+                **build_run_params(
+                    job_id=job_id,
+                    task_id=task.task_id,
+                    strategy=selected_strategy,
+                    prompt_hash=prompt_hash,
+                ),
+                **build_provider_params(payload),
+                "baseline_prompt_source": baseline_prompt_source,
+                "baseline_prompt_compiler": task.baseline_prompt_policy.compiler,
+            }
+            log_params(settings.mlflow_tracking_uri, mlflow_run_id, run_params)
+            logger.info(
+                "mlflow_params_logged",
+                job_id=job_id,
+                run_id=mlflow_run_id,
                 strategy=selected_strategy,
-                prompt_hash=prompt_hash,
-            ),
-            **build_provider_params(payload),
-            "baseline_prompt_source": baseline_prompt_source,
-            "baseline_prompt_compiler": task.baseline_prompt_policy.compiler,
-        }
-        log_params(settings.mlflow_tracking_uri, mlflow_run_id, run_params)
-        logger.info(
-            "mlflow_params_logged",
-            job_id=job_id,
-            run_id=mlflow_run_id,
-            strategy=selected_strategy,
-        )
-        await mark_stage_complete(session, job_id, PipelineStage.LOGGING_ARTIFACTS)
+            )
+            await mark_stage_complete(session, job_id, PipelineStage.LOGGING_ARTIFACTS)
 
-    if not await is_stage_complete(session, job_id, PipelineStage.EXPORTING_ARTIFACTS):
-        await _set_stage(session, job_id, PipelineStage.EXPORTING_ARTIFACTS)
-        artifact_root = _artifact_root(settings.artifact_root, job_id)
-        _write_baseline_prompt_artifact(artifact_root, baseline_prompt_text)
+        if not await is_stage_complete(session, job_id, PipelineStage.EXPORTING_ARTIFACTS):
+            await _set_stage(session, job_id, PipelineStage.EXPORTING_ARTIFACTS)
+            artifact_root = _artifact_root(settings.artifact_root, job_id)
+            _write_baseline_prompt_artifact(artifact_root, baseline_prompt_text)
 
-        # ── Aggregate and persist token/cost usage ─────────────────────────
-        records = collector.records
-        aggregator = ModelUsageAggregator()
-        usage_summary = aggregator.aggregate(records)
+            records = collector.records
+            if records:
+                await bulk_insert_model_call_events(session, job_id, records)
 
-        if records:
-            await bulk_insert_model_call_events(session, job_id, records)
+            if phase == "full":
+                aggregator = ModelUsageAggregator()
+                usage_summary = aggregator.aggregate(records)
+            else:
+                usage_summary = await _summarize_persisted_model_calls(session, job_id)
+
             await update_job_usage_totals(session, job_id, usage_summary)
+            write_token_cost_summary(artifact_root, usage_summary)
 
-        write_token_cost_summary(artifact_root, usage_summary)
+            try:
+                mlflow_run_id_path = artifact_root / "exports" / "mlflow_run_id.txt"
+                if mlflow_run_id_path.exists():
+                    mlflow_run_id_for_cost = mlflow_run_id_path.read_text(encoding="utf-8").strip()
+                    log_token_cost_metrics(
+                        settings.mlflow_tracking_uri,
+                        mlflow_run_id_for_cost,
+                        usage_summary,
+                    )
+            except Exception as exc:
+                logger.warning("mlflow_cost_logging_failed", error=str(exc), job_id=job_id)
 
-        # ── Log token/cost metrics to MLflow ───────────────────────────────
-        # Retrieve mlflow_run_id from artifact (written in LOGGING_ARTIFACTS)
-        try:
-            mlflow_run_id_path = artifact_root / "exports" / "mlflow_run_id.txt"
-            if mlflow_run_id_path.exists():
-                mlflow_run_id_for_cost = mlflow_run_id_path.read_text(encoding="utf-8").strip()
-                log_token_cost_metrics(
-                    settings.mlflow_tracking_uri, mlflow_run_id_for_cost, usage_summary
-                )
-        except Exception as exc:
-            logger.warning("mlflow_cost_logging_failed", error=str(exc), job_id=job_id)
+            await mark_stage_complete(session, job_id, PipelineStage.EXPORTING_ARTIFACTS)
 
-        await mark_stage_complete(session, job_id, PipelineStage.EXPORTING_ARTIFACTS)
-
-    await update_job_status(session, job_id, status="completed", stage=PipelineStage.COMPLETED)
-    logger.info("pipeline_completed", job_id=job_id)
+        await update_job_status(session, job_id, status="completed", stage=PipelineStage.COMPLETED)
+        logger.info("pipeline_completed", job_id=job_id)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+async def _persist_collector_records(
+    session: AsyncSession,
+    job_id: str,
+    collector: ModelCallCollector,
+) -> None:
+    if not collector.records:
+        return
+    await bulk_insert_model_call_events(session, job_id, collector.records)
+    await session.commit()
+
+
+async def _load_eval_result_from_db(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    student_id: str,
+    strategy: str,
+    split: str,
+) -> EvalResult | None:
+    eval_runs = await get_eval_runs_for_job(session, job_id)
+    run = next((row for row in eval_runs if row.strategy == strategy and row.split == split), None)
+    if run is None:
+        return None
+
+    case_rows = await get_eval_case_results(
+        session,
+        job_id=job_id,
+        student_id=student_id,
+        strategy=strategy,
+        split=split,
+    )
+    case_results = [_eval_case_record_to_schema(row) for row in case_rows]
+
+    confusion_matrix_raw = run.confusion_matrix or {}
+    confusion_matrix: dict[str, dict[str, int]] = {
+        str(expected): {
+            str(actual): int(count)
+            for actual, count in actuals.items()
+        }
+        for expected, actuals in confusion_matrix_raw.items()
+    }
+
+    return EvalResult(
+        strategy=run.strategy,
+        model=run.model,
+        split=run.split,
+        accuracy=run.accuracy,
+        macro_f1=run.macro_f1,
+        weighted_case_score=run.weighted_case_score,
+        malformed_output_rate=run.malformed_output_rate or 0.0,
+        per_outcome_precision=dict(run.per_outcome_precision or {}),
+        per_outcome_recall=dict(run.per_outcome_recall or {}),
+        confusion_matrix=confusion_matrix,
+        case_results=case_results,
+    )
+
+
+async def _summarize_persisted_model_calls(
+    session: AsyncSession,
+    job_id: str,
+) -> dict[str, object]:
+    rows = await session.execute(
+        select(ModelCallEvent).where(ModelCallEvent.job_id == job_id)
+    )
+    events = list(rows.scalars().all())
+
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_tokens = 0
+    total_cost = Decimal("0")
+    has_estimated_usage = False
+
+    by_role: dict[str, dict[str, object]] = {}
+
+    for event in events:
+        input_tokens = event.input_tokens or 0
+        output_tokens = event.output_tokens or 0
+        token_total = event.total_tokens or (input_tokens + output_tokens)
+        cost = Decimal(str(event.total_cost_usd or 0))
+
+        total_input_tokens += input_tokens
+        total_output_tokens += output_tokens
+        total_tokens += token_total
+        total_cost += cost
+        has_estimated_usage = has_estimated_usage or event.usage_estimated or event.cost_estimated
+
+        role = event.role
+        if role not in by_role:
+            by_role[role] = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+                "call_count": 0,
+            }
+        bucket = by_role[role]
+        bucket["input_tokens"] = int(bucket["input_tokens"]) + input_tokens
+        bucket["output_tokens"] = int(bucket["output_tokens"]) + output_tokens
+        bucket["total_tokens"] = int(bucket["total_tokens"]) + token_total
+        bucket["cost_usd"] = float(bucket["cost_usd"]) + float(cost)
+        bucket["call_count"] = int(bucket["call_count"]) + 1
+
+    return {
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "total_tokens": total_tokens,
+        "estimated_total_cost_usd": float(total_cost),
+        "teacher_cost_usd": float(by_role.get("teacher", {}).get("cost_usd", 0.0)),
+        "student_cost_usd": float(by_role.get("student", {}).get("cost_usd", 0.0)),
+        "embedding_cost_usd": float(by_role.get("embedding", {}).get("cost_usd", 0.0)),
+        "judge_cost_usd": float(by_role.get("judge", {}).get("cost_usd", 0.0)),
+        "has_estimated_usage": has_estimated_usage,
+        "total_model_calls": len(events),
+        "by_role": by_role,
+    }
 
 
 async def _set_stage(session: AsyncSession, job_id: str, stage: PipelineStage) -> None:
@@ -771,6 +1057,89 @@ def _eval_to_db(job_id: str, prompt_version_id: str | None, result: EvalResult) 
         malformed_output_rate=result.malformed_output_rate,
         confusion_matrix={k: dict(v) for k, v in result.confusion_matrix.items()},
     )
+
+
+def _eval_case_record_to_schema(row: EvalCaseResultRecord) -> CaseEvalResult:
+    actual_output = row.actual_json
+    if actual_output is None and row.raw_output is not None:
+        actual_output = row.raw_output
+
+    return CaseEvalResult(
+        case_id=row.case_id,
+        score=row.case_score,
+        passed=row.passed,
+        malformed=row.malformed,
+        assertion_scores=dict(row.assertion_scores or {}),
+        actual_output=actual_output,
+        error=row.error_message,
+    )
+
+
+def _build_eval_case_upsert_payload(
+    *,
+    job_id: str,
+    student_id: str,
+    strategy: str,
+    split: str,
+    case: RuleKilnCase,
+    result: CaseEvalResult,
+) -> EvalCaseResultUpsert:
+    expected_json: dict[str, object] | str | None
+    if isinstance(case.expected, dict):
+        expected_json = case.expected
+    elif isinstance(case.expected, str):
+        expected_json = case.expected
+    else:
+        expected_json = None
+
+    actual_json = result.actual_output
+    raw_output = _actual_output_to_raw_text(result.actual_output)
+    invalid_label = _is_invalid_label(case, result.actual_output)
+
+    return EvalCaseResultUpsert(
+        job_id=job_id,
+        student_id=student_id,
+        strategy=strategy,
+        split=split,
+        case_id=result.case_id,
+        expected_json=expected_json,
+        actual_json=actual_json,
+        raw_output=raw_output,
+        assertion_scores=result.assertion_scores,
+        passed=result.passed,
+        case_score=result.score,
+        malformed=result.malformed,
+        invalid_label=invalid_label,
+        error_type="MalformedOutput" if result.malformed else None,
+        error_message=result.error,
+    )
+
+
+def _actual_output_to_raw_text(
+    actual_output: dict[str, str | int | float | bool | None] | str | None,
+) -> str | None:
+    if actual_output is None:
+        return None
+    if isinstance(actual_output, str):
+        return actual_output
+    return json.dumps(actual_output, ensure_ascii=False)
+
+
+def _is_invalid_label(
+    case: RuleKilnCase,
+    actual_output: dict[str, str | int | float | bool | None] | str | None,
+) -> bool:
+    if case.task_mode not in {"classification", "routing"}:
+        return False
+
+    if actual_output is None:
+        return True
+
+    if isinstance(actual_output, dict):
+        label = actual_output.get("label")
+        return not isinstance(label, str) or label.strip() == ""
+
+    return actual_output.strip() == ""
 
 
 def _artifact_root(artifact_root_setting: str, job_id: str) -> "Path":

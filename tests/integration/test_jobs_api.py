@@ -31,6 +31,7 @@ def test_settings() -> AppSettings:
     return AppSettings(
         DATABASE_URL=_IN_MEMORY_URL,
         MLFLOW_TRACKING_URI="file:///tmp/mlflow-test",
+        EXECUTION_BACKEND="background_tasks",
         provider_profiles={
             "teacher": ProviderProfile(
                 provider="fake", supports_chat=True, supports_embeddings=False
@@ -113,3 +114,32 @@ async def test_create_job_with_legacy_field_returns_422(client) -> None:
     payload = {**_valid_payload(), "task_name": "legacy"}
     resp = await client.post("/v1/jobs/", json=payload)
     assert resp.status_code == 422
+
+
+async def test_create_job_with_dbos_backend_returns_pending(client, test_settings, monkeypatch) -> None:
+    test_settings.execution_backend = "dbos"
+    monkeypatch.setattr("rulekiln.api.routes.distillation_jobs.require_dbos_available", lambda: None)
+
+    resp = await client.post("/v1/jobs/", json=_valid_payload())
+    assert resp.status_code == 202
+    body = resp.json()
+    assert body["status"] == "pending"
+
+
+async def test_create_job_with_dbos_backend_missing_runtime_returns_503(
+    client,
+    test_settings,
+    monkeypatch,
+) -> None:
+    test_settings.execution_backend = "dbos"
+
+    def _raise_runtime() -> None:
+        raise RuntimeError("dbos unavailable")
+
+    monkeypatch.setattr(
+        "rulekiln.api.routes.distillation_jobs.require_dbos_available",
+        _raise_runtime,
+    )
+
+    resp = await client.post("/v1/jobs/", json=_valid_payload())
+    assert resp.status_code == 503
