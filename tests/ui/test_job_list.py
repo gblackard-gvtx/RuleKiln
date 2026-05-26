@@ -34,6 +34,7 @@ class TestJobList:
         response = await client.get("/ui/jobs")
         assert response.status_code == 200
         assert "No jobs yet" in response.text
+        assert "Open Source Quick Start" in response.text
 
     async def test_jobs_appear_in_list(self, client: AsyncClient, db_session_factory) -> None:
         await _insert_job(db_session_factory, task_name="Alpha Job")

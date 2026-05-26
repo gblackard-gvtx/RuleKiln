@@ -23,10 +23,13 @@
 
   {# ── Top navigation ─────────────────────────────────────────────────── #}
   <nav class="bg-white border-b border-gray-200 shadow-sm">
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center h-14 gap-6">
-      <a href="/ui/jobs" class="font-bold text-lg tracking-tight text-indigo-700 hover:text-indigo-900">
-        RuleKiln
-      </a>
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex items-center justify-between h-14 gap-6">
+      <div class="flex items-center gap-5">
+        <a href="/ui/jobs" class="font-bold text-lg tracking-tight text-indigo-700 hover:text-indigo-900">
+          RuleKiln
+        </a>
+        <span class="hidden sm:inline text-xs text-gray-400">Open Source Operator UI</span>
+      </div>
       <div class="flex items-center gap-5 text-sm font-medium">
         <a href="/ui/jobs"
            class="text-gray-600 hover:text-gray-900 {% if request.url.path.startswith('/ui/jobs') and not request.url.path.endswith('/new') %}text-gray-900 underline underline-offset-4{% endif %}">
@@ -35,6 +38,11 @@
         <a href="/ui/jobs/new"
            class="text-gray-600 hover:text-gray-900 {% if request.url.path.endswith('/new') %}text-gray-900 underline underline-offset-4{% endif %}">
           New Job
+        </a>
+        <a href="/docs" class="text-gray-600 hover:text-gray-900">API Docs</a>
+        <a href="https://github.com/gblackard-gvtx/RuleKiln" target="_blank" rel="noopener noreferrer"
+           class="text-gray-600 hover:text-gray-900">
+          GitHub
         </a>
       </div>
     </div>
@@ -51,7 +59,11 @@
   </main>
 
   <footer class="border-t border-gray-200 mt-auto py-4">
-    <p class="text-center text-xs text-gray-400">RuleKiln</p>
+    <p class="text-center text-xs text-gray-400">
+      RuleKiln · Built for open source workflows ·
+      <a href="https://github.com/gblackard-gvtx/RuleKiln" target="_blank" rel="noopener noreferrer"
+         class="hover:text-gray-600 underline underline-offset-2">Contribute on GitHub</a>
+    </p>
   </footer>
 
   {% block scripts %}{% endblock %}

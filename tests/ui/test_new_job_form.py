@@ -23,3 +23,8 @@ class TestNewJobForm:
         response = await client.get("/ui/jobs/new")
         assert "multipart/form-data" in response.text
         assert "/ui/jobs/preview" in response.text
+
+    async def test_form_contains_open_source_setup_help(self, client: AsyncClient) -> None:
+        response = await client.get("/ui/jobs/new")
+        assert "Before you start" in response.text
+        assert "PROVIDER_PROFILES__FAKE__" in response.text

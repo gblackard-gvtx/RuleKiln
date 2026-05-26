@@ -61,12 +61,23 @@
 </div>
 {% else %}
 <div class="card text-center py-16">
-  <p class="text-gray-500 text-lg mb-4">No jobs yet. Create your first distillation job.</p>
-  <a href="/ui/jobs/new"
-     class="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white
-            text-sm font-medium px-5 py-2.5 rounded-md transition-colors">
-    + New Job
-  </a>
+  <p class="text-gray-700 text-lg mb-2">No jobs yet.</p>
+  <p class="text-gray-500 text-sm mb-6 max-w-xl mx-auto">
+    New to RuleKiln? Start with the open source quick start, then create your first distillation job.
+  </p>
+  <div class="flex flex-wrap gap-3 justify-center">
+    <a href="/ui/jobs/new"
+       class="inline-flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-700 text-white
+              text-sm font-medium px-5 py-2.5 rounded-md transition-colors">
+      + New Job
+    </a>
+    <a href="https://github.com/gblackard-gvtx/RuleKiln#quick-start"
+       target="_blank" rel="noopener noreferrer"
+       class="inline-flex items-center gap-1.5 border border-gray-300 text-gray-700 hover:bg-gray-50
+              text-sm font-medium px-5 py-2.5 rounded-md transition-colors">
+      Open Source Quick Start
+    </a>
+  </div>
 </div>
 {% endif %}
 {% endblock %}
