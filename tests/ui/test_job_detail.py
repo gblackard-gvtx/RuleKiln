@@ -89,3 +89,23 @@ class TestJobDetail:
         response = await client.get(f"/ui/jobs/{job_id}/status-fragment")
         assert response.status_code == 200
         assert "hx-get" not in response.text
+
+    async def test_running_job_shows_cancel_button(
+        self,
+        client: AsyncClient,
+        db_session_factory,
+    ) -> None:
+        job_id = await _insert_job(db_session_factory, status="running")
+        response = await client.get(f"/ui/jobs/{job_id}")
+        assert response.status_code == 200
+        assert 'id="cancel-pipeline-btn"' in response.text
+
+    async def test_completed_job_hides_cancel_button(
+        self,
+        client: AsyncClient,
+        db_session_factory,
+    ) -> None:
+        job_id = await _insert_job(db_session_factory, status="completed")
+        response = await client.get(f"/ui/jobs/{job_id}")
+        assert response.status_code == 200
+        assert 'id="cancel-pipeline-btn"' not in response.text

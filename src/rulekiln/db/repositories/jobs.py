@@ -32,10 +32,14 @@ async def get_job(session: AsyncSession, job_id: str) -> DistillationJob | None:
 async def list_recent_jobs(
     session: AsyncSession,
     limit: int = 50,
+    include_drafts: bool = False,
 ) -> list[DistillationJob]:
     """Return the most recent jobs ordered by created_at descending."""
+    query = select(DistillationJob)
+    if not include_drafts:
+        query = query.where(DistillationJob.status != "draft")
     result = await session.execute(
-        select(DistillationJob).order_by(DistillationJob.created_at.desc()).limit(limit)
+        query.order_by(DistillationJob.created_at.desc()).limit(limit)
     )
     return list(result.scalars().all())
 
@@ -349,6 +353,28 @@ async def complete_job(session: AsyncSession, job_id: str) -> None:
             locked_by=None,
             locked_at=None,
             lease_expires_at=None,
+        )
+    )
+    await session.commit()
+
+
+async def cancel_job(
+    session: AsyncSession,
+    job_id: str,
+    *,
+    error_message: str = "Cancelled by operator.",
+) -> None:
+    """Mark a job as cancelled with terminal status and cleared queue lease state."""
+    await session.execute(
+        update(DistillationJob)
+        .where(DistillationJob.id == job_id)
+        .values(
+            queue_status="failed",
+            status="failed_terminal",
+            locked_by=None,
+            locked_at=None,
+            lease_expires_at=None,
+            error_message=error_message,
         )
     )
     await session.commit()

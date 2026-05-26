@@ -21,6 +21,7 @@ from rulekiln.api.validators.request_shape import (
 from rulekiln.config.settings import AppSettings, get_settings
 from rulekiln.db.models import DistillationJob
 from rulekiln.db.repositories.jobs import (
+    cancel_job,
     create_job,
     get_eval_runs_for_job,
     get_job,
@@ -44,7 +45,7 @@ from rulekiln.ui.view_models import (
     ProviderRouteView,
     ResultsSummaryView,
 )
-from rulekiln.workers.dbos_runtime import require_dbos_available
+from rulekiln.workers.dbos_runtime import ensure_dbos_runtime_launched, require_dbos_available
 from rulekiln.workers.distillation_worker import run_distillation_pipeline
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
@@ -473,6 +474,53 @@ async def job_detail(
         error_message=job.error_message,
     )
     return templates.TemplateResponse(request, "jobs/detail.html", {"job": detail})
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job_from_ui(
+    job_id: str,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[AppSettings, Depends(get_settings)],
+) -> RedirectResponse:
+    """Cancel a queued/running job from the operator UI.
+
+    For DBOS backend, this performs a best-effort workflow cancellation.
+    For all backends, it marks the job terminal with failed_terminal status.
+    """
+    job = await get_job(session, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+
+    terminal_statuses = {"completed", "failed", "failed_terminal", "failed_retryable"}
+    if job.status in terminal_statuses:
+        return RedirectResponse(
+            url=f"/ui/jobs/{job.id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    if settings.execution_backend == "dbos":
+        try:
+            ensure_dbos_runtime_launched(settings)
+            from dbos import DBOS  # imported lazily to keep optional dependency behavior
+
+            workflow_id = f"rulekiln-job-{job.id}"
+            workflow_status = DBOS.get_workflow_status(workflow_id)
+            if workflow_status is not None:
+                DBOS.cancel_workflow(workflow_id)
+                logger.info("ui_dbos_workflow_cancelled", job_id=job.id, workflow_id=workflow_id)
+        except Exception as exc:
+            logger.warning(
+                "ui_dbos_workflow_cancel_failed",
+                job_id=job.id,
+                error=str(exc),
+            )
+
+    await cancel_job(session, job.id, error_message="Cancelled by operator.")
+    logger.info("ui_job_cancelled", job_id=job.id, status="failed_terminal")
+    return RedirectResponse(
+        url=f"/ui/jobs/{job.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.get("/jobs/{job_id}/status-fragment")
