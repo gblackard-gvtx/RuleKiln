@@ -20,7 +20,7 @@
   </div>
 
   {% if not profile_names %}
-  <div class="flash-error mb-6" role="alert">
+  <div id="profiles-missing-help" class="flash-error mb-6" role="alert">
     No provider profiles are configured. Set <span class="font-mono">PROVIDER_PROFILES__*</span>
     environment variables, then refresh this page.
   </div>
@@ -78,6 +78,8 @@
                  for="{{ role }}_profile">{{ label }} — profile</label>
           <select id="{{ role }}_profile" name="{{ role }}_profile" required
                   {% if not profile_names %}disabled{% endif %}
+                  aria-disabled="{{ 'true' if not profile_names else 'false' }}"
+                  {% if not profile_names %}aria-describedby="profiles-missing-help"{% endif %}
                   class="w-full rounded border border-gray-300 text-sm px-2.5 py-1.5
                          focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
             <option value="" disabled selected>Select profile…</option>
@@ -146,6 +148,8 @@
     <div class="flex justify-end pt-2">
       <button type="submit"
               {% if not profile_names %}disabled{% endif %}
+              aria-disabled="{{ 'true' if not profile_names else 'false' }}"
+              {% if not profile_names %}aria-describedby="profiles-missing-help"{% endif %}
               class="bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium
                      px-6 py-2 rounded-md transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
         Validate &amp; Preview →
