@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha1
+from hashlib import sha1, sha256
 import uuid
 from decimal import Decimal
 from enum import StrEnum
@@ -39,6 +39,7 @@ from rulekiln.db.repositories.jobs import (
     is_stage_complete,
     mark_prompt_version_selected,
     mark_stage_complete,
+    set_mlflow_run_id,
     update_job_status,
     update_synthesized_rule_pruning,
 )
@@ -47,22 +48,38 @@ from rulekiln.db.repositories.eval_case_results import (
     get_eval_case_results,
     upsert_eval_case_result,
 )
-from rulekiln.artifacts.writer import write_token_cost_summary
+from rulekiln.artifacts.settings_snapshot import write_settings_snapshot
+from rulekiln.artifacts.writer import (
+    write_baseline_prompt,
+    write_cases_normalized,
+    write_eval_report,
+    write_manifest,
+    write_mlflow_run_id,
+    write_prompt,
+    write_selected_prompt,
+    write_strategy_comparison,
+    write_task,
+    write_token_cost_summary,
+)
 from rulekiln.db.repositories.model_calls import (
     bulk_insert_model_call_events,
     update_job_usage_totals,
 )
 from rulekiln.db.session import get_session_factory
 from rulekiln.integrations.mlflow_tracker import (
+    build_demo_eval_metrics,
+    build_demo_params,
     build_provider_params,
     build_run_params,
     create_run,
+    log_artifacts_dir,
+    log_metrics,
     log_params,
     log_token_cost_metrics,
 )
 from rulekiln.observability.logging import get_logger
 from rulekiln.pipeline.clustering import cluster_dbscan, cluster_hdbscan
-from rulekiln.pipeline.evaluator import evaluate_prompt
+from rulekiln.pipeline.evaluator import evaluate_prompt, get_primary_metric
 from rulekiln.pipeline.failure_analysis import analyze_failures
 from rulekiln.pipeline.prompt_compiler import (
     compile_baseline_prompt,
@@ -231,6 +248,8 @@ async def _run(
     judge_chat = get_chat_client(judge_config)
     eval_student_id = student_config.model
     eval_split = "train"
+    primary_metric = _resolve_primary_metric(payload, task.task_mode)
+    dataset = _build_dataset_identifier(cases)
 
     if run_compile_phase:
         # ── Stage: extracting_rules ───────────────────────────────────────
@@ -809,31 +828,36 @@ async def _run(
                     session, job_id, PipelineStage.CHECKING_QUALITY_GATES, strategy=strategy
                 )
 
+        token_counts: dict[str, int] = {}
+        compiled_prompts: dict[str, str] = {}
+        for strategy in ("dbscan", "hdbscan"):
+            db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
+            schemas = [_db_synth_to_schema(r) for r in db_synth]
+            prompt_text, _ = compile_prompt(task, schemas, strategy)
+            compiled_prompts[strategy] = prompt_text
+            token_counts[strategy] = count_tokens_approx(prompt_text)
+
+        comparison = build_strategy_comparison(
+            baseline_eval=baseline_eval,
+            dbscan_eval=eval_map.get("dbscan"),
+            hdbscan_eval=eval_map.get("hdbscan"),
+            dbscan_gate=gate_map.get("dbscan"),
+            hdbscan_gate=gate_map.get("hdbscan"),
+            task_mode=task.task_mode,
+            dbscan_token_count=token_counts.get("dbscan", 0),
+            hdbscan_token_count=token_counts.get("hdbscan", 0),
+        )
+        selected_strategy = comparison.selected_strategy or "baseline"
+
         # ── Stage: selecting_strategy ─────────────────────────────────────
         if not await is_stage_complete(session, job_id, PipelineStage.SELECTING_STRATEGY):
             await _set_stage(session, job_id, PipelineStage.SELECTING_STRATEGY)
-            token_counts: dict[str, int] = {}
-            for strategy in ("dbscan", "hdbscan"):
-                db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
-                schemas = [_db_synth_to_schema(r) for r in db_synth]
-                pt, _ = compile_prompt(task, schemas, strategy)
-                token_counts[strategy] = count_tokens_approx(pt)
-            comparison = build_strategy_comparison(
-                baseline_eval=baseline_eval,
-                dbscan_eval=eval_map.get("dbscan"),
-                hdbscan_eval=eval_map.get("hdbscan"),
-                dbscan_gate=gate_map.get("dbscan"),
-                hdbscan_gate=gate_map.get("hdbscan"),
-                task_mode=task.task_mode,
-                dbscan_token_count=token_counts.get("dbscan", 0),
-                hdbscan_token_count=token_counts.get("hdbscan", 0),
-            )
-            if comparison.selected_strategy and comparison.selected_strategy != "baseline":
-                await mark_prompt_version_selected(session, job_id, comparison.selected_strategy)
+            if selected_strategy != "baseline":
+                await mark_prompt_version_selected(session, job_id, selected_strategy)
             logger.info(
                 "strategy_selected",
                 job_id=job_id,
-                strategy=comparison.selected_strategy,
+                strategy=selected_strategy,
                 reason=comparison.selection_reason,
             )
             await mark_stage_complete(session, job_id, PipelineStage.SELECTING_STRATEGY)
@@ -841,9 +865,8 @@ async def _run(
         # ── Stage: analyzing_failures ─────────────────────────────────────
         if not await is_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES):
             await _set_stage(session, job_id, PipelineStage.ANALYZING_FAILURES)
-            selected_strategy = "hdbscan" if "hdbscan" in eval_map else "dbscan"
             selected_eval = eval_map.get(selected_strategy)
-            if selected_eval:
+            if selected_eval and selected_strategy in {"dbscan", "hdbscan"}:
                 db_synth = await get_selected_synthesized_rules_for_job(
                     session, job_id, selected_strategy
                 )
@@ -854,12 +877,17 @@ async def _run(
         # ── Late stages ───────────────────────────────────────────────────
         if not await is_stage_complete(session, job_id, PipelineStage.LOGGING_ARTIFACTS):
             await _set_stage(session, job_id, PipelineStage.LOGGING_ARTIFACTS)
-            selected_strategy = "hdbscan" if "hdbscan" in eval_map else "dbscan"
-            selected_db = await get_selected_synthesized_rules_for_job(
-                session, job_id, selected_strategy
-            )
-            selected_schemas = [_db_synth_to_schema(r) for r in selected_db]
-            _pt, prompt_hash = compile_prompt(task, selected_schemas, selected_strategy)
+            selected_prompt_text = compiled_prompts.get(selected_strategy)
+            if selected_strategy in {"dbscan", "hdbscan"} and selected_prompt_text is None:
+                selected_db = await get_selected_synthesized_rules_for_job(
+                    session, job_id, selected_strategy
+                )
+                selected_schemas = [_db_synth_to_schema(r) for r in selected_db]
+                selected_prompt_text, _ = compile_prompt(task, selected_schemas, selected_strategy)
+                compiled_prompts[selected_strategy] = selected_prompt_text
+
+            prompt_hash_source = selected_prompt_text or baseline_prompt_text
+            prompt_hash = sha256(prompt_hash_source.encode("utf-8")).hexdigest()
 
             mlflow_run_id = create_run(
                 settings.mlflow_tracking_uri,
@@ -868,6 +896,10 @@ async def _run(
                 task_id=task.task_id,
                 task_name=task.task_name,
             )
+            await set_mlflow_run_id(session, job_id, mlflow_run_id)
+            artifact_root = _artifact_root(settings.artifact_root, job_id)
+            write_mlflow_run_id(artifact_root, mlflow_run_id)
+
             run_params: dict[str, str] = {
                 **build_run_params(
                     job_id=job_id,
@@ -876,10 +908,68 @@ async def _run(
                     prompt_hash=prompt_hash,
                 ),
                 **build_provider_params(payload),
+                **build_demo_params(
+                    task_id=task.task_id,
+                    task_mode=task.task_mode,
+                    dataset=dataset,
+                    teacher_provider=teacher_config.provider,
+                    teacher_model=teacher_config.model,
+                    student_provider=student_config.provider,
+                    student_model=student_config.model,
+                    embedding_model=embedding_config.model,
+                    selected_strategy=selected_strategy,
+                    primary_metric=primary_metric,
+                ),
                 "baseline_prompt_source": baseline_prompt_source,
                 "baseline_prompt_compiler": task.baseline_prompt_policy.compiler,
             }
             log_params(settings.mlflow_tracking_uri, mlflow_run_id, run_params)
+
+            selected_eval_for_metrics = (
+                baseline_eval
+                if selected_strategy == "baseline"
+                else eval_map.get(selected_strategy)
+            )
+            selected_gate = (
+                gate_map.get(selected_strategy)
+                if selected_strategy in {"dbscan", "hdbscan"}
+                else None
+            )
+            eval_metrics = build_demo_eval_metrics(
+                baseline_macro_f1=baseline_eval.macro_f1 if baseline_eval else None,
+                baseline_accuracy=baseline_eval.accuracy if baseline_eval else None,
+                baseline_malformed_output_rate=(
+                    baseline_eval.malformed_output_rate if baseline_eval else None
+                ),
+                dbscan_macro_f1=eval_map.get("dbscan").macro_f1 if eval_map.get("dbscan") else None,
+                dbscan_accuracy=eval_map.get("dbscan").accuracy if eval_map.get("dbscan") else None,
+                dbscan_delta_vs_baseline=_delta_vs_baseline(
+                    eval_map.get("dbscan"), baseline_eval, primary_metric
+                ),
+                hdbscan_macro_f1=(
+                    eval_map.get("hdbscan").macro_f1 if eval_map.get("hdbscan") else None
+                ),
+                hdbscan_accuracy=(
+                    eval_map.get("hdbscan").accuracy if eval_map.get("hdbscan") else None
+                ),
+                hdbscan_delta_vs_baseline=_delta_vs_baseline(
+                    eval_map.get("hdbscan"), baseline_eval, primary_metric
+                ),
+                selected_primary_score=_primary_score_for_metric(
+                    selected_eval_for_metrics,
+                    primary_metric,
+                ),
+                selected_delta_vs_baseline=_delta_vs_baseline(
+                    selected_eval_for_metrics,
+                    baseline_eval,
+                    primary_metric,
+                ),
+                selected_passed_quality_gates=(
+                    selected_gate.passed if selected_gate is not None else False
+                ),
+            )
+            log_metrics(settings.mlflow_tracking_uri, mlflow_run_id, eval_metrics)
+
             logger.info(
                 "mlflow_params_logged",
                 job_id=job_id,
@@ -891,7 +981,28 @@ async def _run(
         if not await is_stage_complete(session, job_id, PipelineStage.EXPORTING_ARTIFACTS):
             await _set_stage(session, job_id, PipelineStage.EXPORTING_ARTIFACTS)
             artifact_root = _artifact_root(settings.artifact_root, job_id)
-            _write_baseline_prompt_artifact(artifact_root, baseline_prompt_text)
+            written_artifacts = [
+                write_task(artifact_root, task),
+                write_cases_normalized(artifact_root, cases),
+                write_baseline_prompt(artifact_root, baseline_prompt_text),
+                write_eval_report(artifact_root, comparison),
+                write_strategy_comparison(artifact_root, comparison),
+                write_settings_snapshot(artifact_root, settings),
+            ]
+
+            for strategy in ("dbscan", "hdbscan"):
+                prompt_text = compiled_prompts.get(strategy)
+                if prompt_text is None:
+                    db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
+                    schemas = [_db_synth_to_schema(r) for r in db_synth]
+                    prompt_text, _ = compile_prompt(task, schemas, strategy)
+                    compiled_prompts[strategy] = prompt_text
+                written_artifacts.append(write_prompt(artifact_root, strategy, prompt_text))
+
+            if selected_strategy in {"dbscan", "hdbscan"}:
+                selected_prompt_text = compiled_prompts.get(selected_strategy)
+                if selected_prompt_text:
+                    written_artifacts.append(write_selected_prompt(artifact_root, selected_prompt_text))
 
             records = collector.records
             if records:
@@ -904,12 +1015,27 @@ async def _run(
                 usage_summary = await _summarize_persisted_model_calls(session, job_id)
 
             await update_job_usage_totals(session, job_id, usage_summary)
-            write_token_cost_summary(artifact_root, usage_summary)
+            written_artifacts.append(write_token_cost_summary(artifact_root, usage_summary))
+
+            mlflow_run_id_path = artifact_root / "exports" / "mlflow_run_id.txt"
+            if mlflow_run_id_path.exists():
+                written_artifacts.append(mlflow_run_id_path)
+
+            manifest_entries = _build_manifest_entries(artifact_root, written_artifacts)
+            manifest_path = write_manifest(artifact_root, manifest_entries)
+            manifest_entries_with_manifest = sorted(
+                {*manifest_entries, str(manifest_path.relative_to(artifact_root))}
+            )
+            write_manifest(artifact_root, manifest_entries_with_manifest)
 
             try:
-                mlflow_run_id_path = artifact_root / "exports" / "mlflow_run_id.txt"
                 if mlflow_run_id_path.exists():
                     mlflow_run_id_for_cost = mlflow_run_id_path.read_text(encoding="utf-8").strip()
+                    log_artifacts_dir(
+                        settings.mlflow_tracking_uri,
+                        mlflow_run_id_for_cost,
+                        artifact_root,
+                    )
                     log_token_cost_metrics(
                         settings.mlflow_tracking_uri,
                         mlflow_run_id_for_cost,
@@ -1253,13 +1379,60 @@ def _is_invalid_label(
     return actual_output.strip() == ""
 
 
+def _resolve_primary_metric(payload: DistillationRequest, task_mode: str) -> str:
+    if payload.metric and payload.metric.strip():
+        return payload.metric.strip()
+    return get_primary_metric(task_mode)
+
+
+def _build_dataset_identifier(cases: list[RuleKilnCase]) -> str:
+    sorted_cases = sorted(cases, key=lambda case: case.id)
+    case_payloads = [case.model_dump(mode="json") for case in sorted_cases]
+    serialized = json.dumps(case_payloads, sort_keys=True, ensure_ascii=False)
+    digest = sha256(serialized.encode("utf-8")).hexdigest()
+    return f"cases_sha256:{digest}"
+
+
+def _primary_score_for_metric(result: EvalResult | None, primary_metric: str) -> float:
+    if result is None:
+        return 0.0
+    metric_name = primary_metric.strip().lower()
+    if metric_name == "macro_f1":
+        return float(result.macro_f1 or 0.0)
+    if metric_name == "accuracy":
+        return float(result.accuracy or 0.0)
+    return float(result.weighted_case_score or 0.0)
+
+
+def _delta_vs_baseline(
+    result: EvalResult | None,
+    baseline: EvalResult | None,
+    primary_metric: str,
+) -> float:
+    if result is None or baseline is None:
+        return 0.0
+    return _primary_score_for_metric(result, primary_metric) - _primary_score_for_metric(
+        baseline, primary_metric
+    )
+
+
+def _build_manifest_entries(root: "Path", paths: list[object]) -> list[str]:
+    from pathlib import Path
+
+    entries: set[str] = set()
+    for entry in paths:
+        if not isinstance(entry, Path):
+            continue
+        if not entry.exists():
+            continue
+        try:
+            entries.add(str(entry.relative_to(root)))
+        except ValueError:
+            continue
+    return sorted(entries)
+
+
 def _artifact_root(artifact_root_setting: str, job_id: str) -> "Path":
     from pathlib import Path
 
     return Path(artifact_root_setting) / job_id
-
-
-def _write_baseline_prompt_artifact(root: "Path", baseline_prompt: str) -> None:
-    from rulekiln.artifacts.writer import write_baseline_prompt
-
-    write_baseline_prompt(root, baseline_prompt)

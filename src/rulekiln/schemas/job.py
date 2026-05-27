@@ -63,6 +63,8 @@ class JobStatusResponse(BaseModel):
     progress: JobProgress | None = None
     error_message: str | None = None
     usage: JobUsageSummary | None = None
+    mlflow_run_id: str | None = None
+    mlflow_run_url: str | None = None
 
 
 class CreateJobResponse(BaseModel):

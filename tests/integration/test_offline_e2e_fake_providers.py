@@ -3,6 +3,9 @@
 Exercises the full pipeline orchestration in-process with SQLite + fake chat/embedding.
 """
 
+import json
+from pathlib import Path
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -139,6 +142,79 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
     assert db_job is not None
     assert db_job.status == "completed"
     assert db_job.stage == PipelineStage.COMPLETED
+    assert db_job.mlflow_run_id is not None
+
+    import mlflow  # type: ignore[import-untyped]
+
+    client = mlflow.tracking.MlflowClient(tracking_uri=fake_settings.mlflow_tracking_uri)
+    run = client.get_run(db_job.mlflow_run_id)
+
+    required_params = {
+        "task_id",
+        "task_mode",
+        "dataset",
+        "teacher_provider",
+        "teacher_model",
+        "student_provider",
+        "student_model",
+        "embedding_model",
+        "selected_strategy",
+        "primary_metric",
+    }
+    run_params = run.data.params
+    for key in required_params:
+        assert key in run_params
+
+    required_metrics = {
+        "eval.baseline.macro_f1",
+        "eval.baseline.accuracy",
+        "eval.baseline.malformed_output_rate",
+        "eval.dbscan.macro_f1",
+        "eval.dbscan.accuracy",
+        "eval.dbscan.delta_vs_baseline",
+        "eval.hdbscan.macro_f1",
+        "eval.hdbscan.accuracy",
+        "eval.hdbscan.delta_vs_baseline",
+        "selected.primary_score",
+        "selected.delta_vs_baseline",
+        "selected.passed_quality_gates",
+    }
+    run_metrics = run.data.metrics
+    for key in required_metrics:
+        assert key in run_metrics
+
+    top_level_artifacts = {
+        item.path for item in client.list_artifacts(db_job.mlflow_run_id)
+    }
+    assert "task.yaml" in top_level_artifacts
+    assert "cases.normalized.jsonl" in top_level_artifacts
+    assert "outputs" in top_level_artifacts
+    assert "metadata" in top_level_artifacts
+
+    artifact_root = Path(fake_settings.artifact_root) / job_id
+    required_artifacts = [
+        "task.yaml",
+        "cases.normalized.jsonl",
+        "outputs/baseline_prompt.md",
+        "outputs/distilled_prompt_dbscan.md",
+        "outputs/distilled_prompt_hdbscan.md",
+        "outputs/eval_report.json",
+        "outputs/strategy_comparison.json",
+        "metadata/settings_snapshot.json",
+        "metadata/manifest.json",
+    ]
+    for relative_path in required_artifacts:
+        assert (artifact_root / relative_path).exists()
+
+    manifest_path = artifact_root / "metadata" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_entries = set(manifest.get("artifacts", []))
+    for relative_path in required_artifacts:
+        assert relative_path in manifest_entries
+
+    selected_prompt_path = artifact_root / "outputs" / "selected_distilled_prompt.md"
+    if selected_prompt_path.exists():
+        assert "outputs/selected_distilled_prompt.md" in manifest_entries
 
 
 @pytest.mark.asyncio

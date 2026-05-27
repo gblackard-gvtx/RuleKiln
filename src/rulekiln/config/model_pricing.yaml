@@ -1,5 +1,37 @@
 pricing:
   openai:
+    gpt-5.5:
+      input_per_1m_tokens_usd: "5.00"
+      cached_input_per_1m_tokens_usd: "0.50"
+      output_per_1m_tokens_usd: "30.00"
+      batch_discount: "0.50"
+      effective_date: "2026-05-27"
+      source: "openai_api_pricing"
+
+    gpt-5.4:
+      input_per_1m_tokens_usd: "2.50"
+      cached_input_per_1m_tokens_usd: "0.25"
+      output_per_1m_tokens_usd: "15.00"
+      batch_discount: "0.50"
+      effective_date: "2026-05-27"
+      source: "openai_api_pricing"
+
+    gpt-5.4-mini:
+      input_per_1m_tokens_usd: "0.75"
+      cached_input_per_1m_tokens_usd: "0.075"
+      output_per_1m_tokens_usd: "4.50"
+      batch_discount: "0.50"
+      effective_date: "2026-05-27"
+      source: "openai_api_pricing"
+
+    gpt-5.2:
+      input_per_1m_tokens_usd: "1.75"
+      cached_input_per_1m_tokens_usd: "0.175"
+      output_per_1m_tokens_usd: "14.00"
+      batch_discount: "0.50"
+      effective_date: "2026-05-27"
+      source: "openai_api_pricing"
+
     gpt-4o:
       input_per_1m_tokens_usd: "2.50"
       output_per_1m_tokens_usd: "10.00"

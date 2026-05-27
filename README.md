@@ -182,7 +182,7 @@ Copy `.env.example` to `.env` and adjust values. The key variables are:
 |----------|-------------|
 | `DATABASE_URL` | PostgreSQL async DSN (`postgresql+asyncpg://...`) |
 | `MLFLOW_TRACKING_URI` | MLflow server URI or `file:///path/to/local` |
-| `MLFLOW_ALLOWED_HOSTS` | Optional MLflow server host allowlist (mainly for Docker Compose service-to-service calls) |
+| `MLFLOW_ALLOWED_HOSTS` | Optional MLflow server host allowlist. Include browser Host header forms (for example, `localhost:5000`, `127.0.0.1:5000`) to avoid MLflow "Invalid Host header" rejections. |
 | `ARTIFACT_ROOT` | Local path for job artifact output (default: `.rulekiln/runs`) |
 | `ENABLE_PGVECTOR` | Enable pgvector for embedding storage (default: `false`) |
 | `EXECUTION_BACKEND` | `dbos` (default), `postgres_queue`, or `background_tasks` — see [Execution backends](#execution-backends) |

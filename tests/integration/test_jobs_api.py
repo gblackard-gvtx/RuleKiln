@@ -6,6 +6,7 @@ The pipeline background task is mocked so these tests only exercise the API laye
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from rulekiln.api.app import create_app
@@ -104,6 +105,34 @@ async def test_get_job_returns_status(client) -> None:
     assert get_resp.status_code == 200
     body = get_resp.json()
     assert body["job_id"] == job_id
+
+
+async def test_get_job_includes_mlflow_traceability_fields(
+    client,
+    db_session_factory,
+    test_settings,
+) -> None:
+    test_settings.mlflow_ui_base_url = "http://localhost:5000"
+
+    create_resp = await client.post("/v1/jobs/", json=_valid_payload())
+    job_id = create_resp.json()["job_id"]
+    run_id = "run-abc123"
+
+    async with db_session_factory() as session:
+        from rulekiln.db.models import DistillationJob
+
+        await session.execute(
+            update(DistillationJob)
+            .where(DistillationJob.id == job_id)
+            .values(mlflow_run_id=run_id)
+        )
+        await session.commit()
+
+    get_resp = await client.get(f"/v1/jobs/{job_id}")
+    assert get_resp.status_code == 200
+    body = get_resp.json()
+    assert body["mlflow_run_id"] == run_id
+    assert body["mlflow_run_url"] == f"http://localhost:5000/#/experiments/1/runs/{run_id}"
 
 
 async def test_get_unknown_job_returns_404(client) -> None:

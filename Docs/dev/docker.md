@@ -39,7 +39,7 @@ mlflow server \
   --backend-store-uri ./mlruns \
   --default-artifact-root ./mlartifacts \
   --host 0.0.0.0 \
-  --allowed-hosts localhost,127.0.0.1,mlflow,mlflow:5000 \
+  --allowed-hosts localhost,localhost:5000,127.0.0.1,127.0.0.1:5000,mlflow,mlflow:5000 \
   --port 5000
 ```
 
@@ -114,7 +114,7 @@ Both workflows use the same `.env` contract. Key differences:
 |----------|-------------|---------------|
 | `DATABASE_URL` | `postgresql+asyncpg://rulekiln:rulekiln@localhost:5432/rulekiln` | `postgresql+asyncpg://rulekiln:rulekiln@postgres:5432/rulekiln` |
 | `MLFLOW_TRACKING_URI` | `http://localhost:5000` or `file:///...` | `http://mlflow:5000` |
-| `MLFLOW_ALLOWED_HOSTS` | Optional host allowlist for MLflow server | `localhost,127.0.0.1,mlflow,mlflow:5000` |
+| `MLFLOW_ALLOWED_HOSTS` | Optional host allowlist for MLflow server | `localhost,localhost:5000,127.0.0.1,127.0.0.1:5000,mlflow,mlflow:5000` |
 | `ARTIFACT_ROOT` | `.rulekiln/runs` | `.rulekiln/runs` (mounted into container) |
 | `EXECUTION_BACKEND` | `dbos` (default) | `dbos` (set in compose override) |
 | `WORKER_POLL_INTERVAL_SECONDS` | `2` (default) | `2` unless overridden in `.env` |

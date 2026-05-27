@@ -86,6 +86,7 @@ async def create_distillation_job(
 async def get_distillation_job(
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[AppSettings, Depends(get_settings)],
 ) -> JobStatusResponse:
     job = await get_job(session, job_id)
     if job is None:
@@ -106,10 +107,18 @@ async def get_distillation_job(
             judge_cost_usd=float(job.judge_cost_usd) if job.judge_cost_usd is not None else None,
         )
 
+    mlflow_run_url: str | None = None
+    if job.mlflow_run_id and settings.mlflow_ui_base_url:
+        mlflow_run_url = (
+            f"{settings.mlflow_ui_base_url.rstrip('/')}/#/experiments/1/runs/{job.mlflow_run_id}"
+        )
+
     return JobStatusResponse(
         job_id=job.id,
         status=job.status,
         stage=job.stage,
         error_message=job.error_message,
         usage=usage,
+        mlflow_run_id=job.mlflow_run_id,
+        mlflow_run_url=mlflow_run_url,
     )
