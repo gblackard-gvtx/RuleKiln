@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha1
 import uuid
 from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rulekiln.agents.rule_conflict_review import review_rule_for_conflicts
@@ -29,7 +30,6 @@ from rulekiln.db.repositories.jobs import (
     bulk_insert_cases,
     bulk_insert_micro_rules,
     bulk_insert_rule_clusters,
-    bulk_insert_synthesized_rules,
     get_eval_runs_for_job,
     get_micro_rules_for_job,
     get_selected_synthesized_rules_for_job,
@@ -40,7 +40,6 @@ from rulekiln.db.repositories.jobs import (
     mark_prompt_version_selected,
     mark_stage_complete,
     update_job_status,
-    update_synthesized_rule_conflict,
     update_synthesized_rule_pruning,
 )
 from rulekiln.db.repositories.eval_case_results import (
@@ -94,6 +93,7 @@ from rulekiln.schemas.pipeline import (
 )
 from rulekiln.schemas.task_case import RuleKilnCase
 from rulekiln.usage.aggregator import ModelUsageAggregator
+from rulekiln.workers.error_classification import format_worker_error_message
 
 logger = get_logger(__name__)
 
@@ -142,13 +142,14 @@ async def run_distillation_pipeline(
         try:
             await _run(session, job_id, payload)
         except Exception as exc:
-            logger.error("pipeline_failed", job_id=job_id, error=str(exc))
+            error_message = format_worker_error_message(exc)
+            logger.error("pipeline_failed", job_id=job_id, error=error_message)
             await update_job_status(
                 session,
                 job_id,
                 status="failed",
                 stage=PipelineStage.FAILED,
-                error_message=str(exc),
+                error_message=error_message,
             )
             raise
 
@@ -236,7 +237,13 @@ async def _run(
         if not await is_stage_complete(session, job_id, PipelineStage.EXTRACTING_RULES):
             await _set_stage(session, job_id, PipelineStage.EXTRACTING_RULES)
             train_cases = [c for c in cases if c.split in ("train", "validation")]
-            micro_rules: list[MicroRule] = []
+            existing_micro_rules = await get_micro_rules_for_job(session, job_id)
+            extracted_case_ids: set[str] = {
+                _payload_case_id_from_db_case_id(job_id, db_rule.case_id)
+                for db_rule in existing_micro_rules
+            }
+            inserted_rule_count = 0
+            skipped_case_count = 0
             set_tracking_context(
                 ModelCallContext(
                     job_id=job_id,
@@ -249,10 +256,21 @@ async def _run(
                 collector,
             )
             for case in train_cases:
+                case_marker = _extracting_case_marker(case.id)
+                if case.id in extracted_case_ids or await is_stage_complete(
+                    session,
+                    job_id,
+                    PipelineStage.EXTRACTING_RULES,
+                    artifact_type=case_marker,
+                ):
+                    skipped_case_count += 1
+                    continue
+
                 update_tracking_context(case_id=case.id)
                 extraction = await extract_rules_for_case(task, case, teacher_chat, teacher_config)
+                case_micro_rules: list[MicroRule] = []
                 for rule in extraction.rules:
-                    micro_rules.append(
+                    case_micro_rules.append(
                         MicroRule(
                             id=str(uuid.uuid4()),
                             job_id=job_id,
@@ -267,9 +285,25 @@ async def _run(
                             negative_cues=rule.negative_cues,
                         )
                     )
-            await bulk_insert_micro_rules(session, micro_rules)
+                if case_micro_rules:
+                    await bulk_insert_micro_rules(session, case_micro_rules)
+                    inserted_rule_count += len(case_micro_rules)
+
+                await mark_stage_complete(
+                    session,
+                    job_id,
+                    PipelineStage.EXTRACTING_RULES,
+                    artifact_type=case_marker,
+                )
+                extracted_case_ids.add(case.id)
+
             await mark_stage_complete(session, job_id, PipelineStage.EXTRACTING_RULES)
-            logger.info("rules_extracted", job_id=job_id, count=len(micro_rules))
+            logger.info(
+                "rules_extracted",
+                job_id=job_id,
+                count=inserted_rule_count,
+                skipped_cases=skipped_case_count,
+            )
 
         db_micro_rules = await get_micro_rules_for_job(session, job_id)
         rule_ids = [r.id for r in db_micro_rules]
@@ -326,8 +360,21 @@ async def _run(
                 ),
                 collector,
             )
-            synth_rules: list[SynthesizedRule] = []
+            inserted_rule_count = 0
+            processed_cluster_count = 0
+            skipped_cluster_count = 0
             for cluster in clusters:
+                cluster_marker = _synthesis_cluster_marker(strategy, cluster.rule_ids)
+                if await is_stage_complete(
+                    session,
+                    job_id,
+                    PipelineStage.SYNTHESIZING_RULES,
+                    strategy=strategy,
+                    artifact_type=cluster_marker,
+                ):
+                    skipped_cluster_count += 1
+                    continue
+
                 cluster_micro = [
                     MicroRuleSchema(
                         topic=rule_map[rid].topic,
@@ -353,11 +400,33 @@ async def _run(
                     teacher_chat,
                     teacher_config,
                 )
+                cluster_synth_rules: list[SynthesizedRule] = []
                 for rule in synthesis.rules:
-                    synth_rules.append(_synth_to_db(job_id, strategy, rule))
-            await bulk_insert_synthesized_rules(session, synth_rules)
+                    cluster_synth_rules.append(_synth_to_db(job_id, strategy, rule))
+
+                if cluster_synth_rules:
+                    session.add_all(cluster_synth_rules)
+                    inserted_rule_count += len(cluster_synth_rules)
+
+                await mark_stage_complete(
+                    session,
+                    job_id,
+                    PipelineStage.SYNTHESIZING_RULES,
+                    strategy=strategy,
+                    artifact_type=cluster_marker,
+                )
+                processed_cluster_count += 1
+
             await mark_stage_complete(
                 session, job_id, PipelineStage.SYNTHESIZING_RULES, strategy=strategy
+            )
+            logger.info(
+                "synthesis_done",
+                job_id=job_id,
+                strategy=strategy,
+                processed_clusters=processed_cluster_count,
+                skipped_clusters=skipped_cluster_count,
+                inserted_rules=inserted_rule_count,
             )
 
         # ── Stage: reviewing_rule_conflicts ──────────────────────────────
@@ -381,7 +450,20 @@ async def _run(
                 collector,
             )
             db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
+            reviewed_rule_count = 0
+            skipped_rule_count = 0
             for synth_rule in db_synth:
+                review_marker = _conflict_review_rule_marker(strategy, synth_rule.id)
+                if await is_stage_complete(
+                    session,
+                    job_id,
+                    PipelineStage.REVIEWING_RULE_CONFLICTS,
+                    strategy=strategy,
+                    artifact_type=review_marker,
+                ):
+                    skipped_rule_count += 1
+                    continue
+
                 schema = _db_synth_to_schema(synth_rule)
                 support = len(schema.source_case_ids)
                 ratio = support / total_train_cases if total_train_cases > 0 else 0.0
@@ -421,18 +503,33 @@ async def _run(
                     judge_config,
                 )
                 has_conflicts = review.has_conflicts and review.resolution in ("discard",)
-                await update_synthesized_rule_conflict(
-                    session,
-                    synth_rule.id,
-                    has_conflicts=has_conflicts,
-                    conflict_summary=review.conflict_summary,
-                    conflicting_micro_rule_ids=review.conflicting_micro_rule_ids,
+                await session.execute(
+                    update(SynthesizedRule)
+                    .where(SynthesizedRule.id == synth_rule.id)
+                    .values(
+                        has_conflicts=has_conflicts,
+                        conflict_summary=review.conflict_summary,
+                        conflicting_micro_rule_ids=review.conflicting_micro_rule_ids,
+                    )
                 )
+                await mark_stage_complete(
+                    session,
+                    job_id,
+                    PipelineStage.REVIEWING_RULE_CONFLICTS,
+                    strategy=strategy,
+                    artifact_type=review_marker,
+                )
+                reviewed_rule_count += 1
+
             await mark_stage_complete(
                 session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy
             )
             logger.info(
-                "conflict_review_done", job_id=job_id, strategy=strategy, reviewed=len(db_synth)
+                "conflict_review_done",
+                job_id=job_id,
+                strategy=strategy,
+                reviewed=reviewed_rule_count,
+                skipped=skipped_rule_count,
             )
 
         # ── Stage: pruning_rules ──────────────────────────────────────────
@@ -975,6 +1072,20 @@ def _to_db_case(job_id: str, case: RuleKilnCase) -> Case:
 
 def _db_case_id(job_id: str, payload_case_id: str) -> str:
     return f"{job_id}{_CASE_ID_DELIMITER}{payload_case_id}"
+
+
+def _extracting_case_marker(payload_case_id: str) -> str:
+    return f"extracting_case:{payload_case_id}"
+
+
+def _synthesis_cluster_marker(strategy: str, rule_ids: list[str]) -> str:
+    cluster_key = ",".join(sorted(rule_ids))
+    digest = sha1(cluster_key.encode("utf-8")).hexdigest()[:16]
+    return f"synth_cluster:{strategy}:{digest}"
+
+
+def _conflict_review_rule_marker(strategy: str, synthesized_rule_id: str) -> str:
+    return f"conflict_rule:{strategy}:{synthesized_rule_id}"
 
 
 def _payload_case_id_from_db_case_id(job_id: str, db_case_id: str) -> str:

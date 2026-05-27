@@ -35,6 +35,14 @@ class ErrorClassification(BaseModel):
     error_type: str
 
 
+def format_worker_error_message(exc: Exception) -> str:
+    """Return a stable non-empty error message for logs and persistence."""
+    message = str(exc).strip()
+    if message:
+        return message
+    return type(exc).__name__
+
+
 def classify_worker_error(exc: Exception) -> ErrorClassification:
     """Return retryability classification for a worker exception."""
     error_type = type(exc).__name__
@@ -74,7 +82,7 @@ def classify_worker_error(exc: Exception) -> ErrorClassification:
         if isinstance(exc, httpx_retryable_types):
             return ErrorClassification(retryable=True, error_type=error_type)
 
-    message = str(exc).lower()
+    message = format_worker_error_message(exc).lower()
     if any(token in message for token in _RETRYABLE_SUBSTRINGS):
         return ErrorClassification(retryable=True, error_type=error_type)
 

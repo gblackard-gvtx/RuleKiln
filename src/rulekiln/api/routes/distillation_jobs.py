@@ -63,6 +63,7 @@ async def create_distillation_job(
         status="created",
         stage=None,
         queue_status=queue_status,
+        max_attempts=settings.worker_max_attempts,
         request_json=payload.model_dump(mode="json"),
     )
     await create_job(session, job)

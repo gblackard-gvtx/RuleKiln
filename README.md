@@ -189,6 +189,7 @@ Copy `.env.example` to `.env` and adjust values. The key variables are:
 | `WORKER_POLL_INTERVAL_SECONDS` | How often the queue worker polls for new jobs (default: `2`) |
 | `WORKER_LEASE_SECONDS` | Job lease duration in seconds before a crashed worker's job is reclaimed (default: `1800`) |
 | `WORKER_RETRY_BACKOFF_SECONDS` | Backoff delay before retrying a retryable failed job (default: `30`) |
+| `WORKER_MAX_ATTEMPTS` | Maximum queue claim attempts before a retryable job is marked `failed_retryable` (default: `2`) |
 | `DEFAULT_PROVIDER_MAX_CONCURRENCY` | Max concurrent in-flight calls per provider config (default: `3`) |
 | `DEFAULT_PROVIDER_RATE_LIMIT_RPM` | Global default requests-per-minute cap (default: unset) |
 | `DEFAULT_PROVIDER_RATE_LIMIT_TPM` | Global default tokens-per-minute cap (default: unset) |
@@ -205,6 +206,15 @@ RuleKiln supports three job execution modes, controlled by `EXECUTION_BACKEND`:
 | `dbos` | Yes | Yes | `pending` | Classified retry policy with `waiting_for_retry`, then `failed_retryable` or `failed_terminal` when attempts are exhausted or error is terminal | Full pipeline stage chain | `uv run rulekiln-worker` (or `uv run rulekiln-dbos-worker`) |
 | `postgres_queue` | No | Yes | `pending` | Same classified retry policy as DBOS worker-backed queue processing | Full pipeline stage chain (legacy queue worker path) | `uv run rulekiln-postgres-worker` |
 | `background_tasks` | No | No | `created` | No queue lease recovery or worker retry loop | Full legacy stage chain | Not required |
+
+Manual retry from the Operator UI (`Retry Pipeline`) requeues the same job record for failed statuses (`failed`, `failed_terminal`, `failed_retryable`) and resumes from persisted progress.
+
+Granular resume coverage for costly stages:
+
+- `extracting_rules`: per case
+- `synthesizing_rules`: per cluster
+- `reviewing_rule_conflicts`: per synthesized rule
+- `evaluating_baseline` / `evaluating_distilled`: per case
 
 ### Provider profiles
 
@@ -230,6 +240,12 @@ Per-profile rate limiting (applied after `DEFAULT_PROVIDER_RATE_LIMIT_*` default
 PROVIDER_PROFILES__OPENAI_DEFAULT__RATE_LIMIT_RPM=60
 PROVIDER_PROFILES__OPENAI_DEFAULT__RATE_LIMIT_TPM=100000
 PROVIDER_PROFILES__OPENAI_DEFAULT__MAX_CONCURRENCY=5
+```
+
+Per-profile timeout and provider-call retries (defaults: `timeout_seconds=120`, `max_retries=3`):
+```env
+PROVIDER_PROFILES__OPENAI_DEFAULT__TIMEOUT_SECONDS=120
+PROVIDER_PROFILES__OPENAI_DEFAULT__MAX_RETRIES=3
 ```
 
 **OpenAI-compatible** (Ollama, vLLM, LiteLLM proxy):
@@ -367,6 +383,7 @@ http://localhost:8000/ui/jobs/new
 3. **Run Pipeline** — submit the validated job; execution is delegated by `EXECUTION_BACKEND` (`dbos`/`postgres_queue` queue + worker, or `background_tasks` in-process).
 4. **Monitor** — the job detail page polls live status every 2 seconds via HTMX until the job finishes.
 5. **Review results** — navigate to Results, Prompt, Rules, Eval Report, Failures, or Artifacts from the detail page.
+6. **Retry failed jobs** — use **Retry Pipeline** on the job detail page to requeue and resume from persisted progress.
 
 ### Environment variables for the UI
 

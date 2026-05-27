@@ -397,6 +397,35 @@ async def fail_job(session: AsyncSession, job_id: str, error_message: str) -> No
     await session.commit()
 
 
+async def retry_job(
+    session: AsyncSession,
+    job_id: str,
+    *,
+    queue_backed: bool,
+) -> str:
+    """Requeue an existing job for manual retry.
+
+    Returns the status written to distillation_jobs.status.
+    """
+    status = "waiting_for_retry" if queue_backed else "created"
+    queue_status = "pending" if queue_backed else "created"
+    await session.execute(
+        update(DistillationJob)
+        .where(DistillationJob.id == job_id)
+        .values(
+            status=status,
+            queue_status=queue_status,
+            locked_by=None,
+            locked_at=None,
+            lease_expires_at=None,
+            next_run_at=datetime.now(tz=UTC),
+            error_message=None,
+        )
+    )
+    await session.commit()
+    return status
+
+
 async def apply_job_failure_policy(
     session: AsyncSession,
     job_id: str,

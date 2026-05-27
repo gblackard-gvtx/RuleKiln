@@ -23,6 +23,17 @@
       </button>
     </form>
     {% endif %}
+    {% set retryable = job.status in ["failed", "failed_terminal", "failed_retryable"] %}
+    {% if retryable %}
+    <form action="/ui/jobs/{{ job.job_id }}/retry" method="post" class="inline"
+          onsubmit="return confirm('Retry this pipeline run from the last unfinished point?')">
+      <button type="submit"
+              id="retry-pipeline-btn"
+              class="bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold px-4 py-2 rounded-md transition-colors">
+        Retry Pipeline
+      </button>
+    </form>
+    {% endif %}
     {% set status = job.status %}
     {% include "components/job_status_badge.html" %}
   </div>

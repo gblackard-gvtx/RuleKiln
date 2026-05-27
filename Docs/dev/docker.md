@@ -117,11 +117,25 @@ Both workflows use the same `.env` contract. Key differences:
 | `MLFLOW_ALLOWED_HOSTS` | Optional host allowlist for MLflow server | `localhost,127.0.0.1,mlflow,mlflow:5000` |
 | `ARTIFACT_ROOT` | `.rulekiln/runs` | `.rulekiln/runs` (mounted into container) |
 | `EXECUTION_BACKEND` | `dbos` (default) | `dbos` (set in compose override) |
+| `WORKER_POLL_INTERVAL_SECONDS` | `2` (default) | `2` unless overridden in `.env` |
+| `WORKER_LEASE_SECONDS` | `1800` (default) | `1800` unless overridden in `.env` |
 | `WORKER_RETRY_BACKOFF_SECONDS` | `30` (default) | `30` unless overridden in `.env` |
+| `WORKER_MAX_ATTEMPTS` | `2` (default) | `2` unless overridden in `.env` |
 
 The Compose stack sets `DATABASE_URL` and `MLFLOW_TRACKING_URI` directly in `docker-compose.yml`, overriding whatever is in `.env` for those two keys.
 
 If you want to run the legacy queue worker path instead of the default DBOS worker path, set `EXECUTION_BACKEND=postgres_queue` and run `uv run rulekiln-postgres-worker` (native) or change the worker command in `docker-compose.yml` to `python -m rulekiln.workers.queue_worker`.
+
+### Retrying failed jobs
+
+From the job detail page in the Operator UI, use **Retry Pipeline** for failed jobs (`failed`, `failed_terminal`, `failed_retryable`).
+
+Retry requeues the same job row and resumes from durable progress markers, including granular checkpoints for costly stages:
+
+- extraction resume by case
+- synthesis resume by cluster
+- conflict review resume by synthesized rule
+- evaluation resume by case
 
 ---
 

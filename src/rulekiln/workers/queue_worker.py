@@ -20,7 +20,10 @@ from rulekiln.db.repositories.jobs import (
 )
 from rulekiln.db.session import get_session_factory
 from rulekiln.schemas.job import DistillationRequest
-from rulekiln.workers.error_classification import classify_worker_error
+from rulekiln.workers.error_classification import (
+    classify_worker_error,
+    format_worker_error_message,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -105,9 +108,10 @@ async def worker_loop(worker_id: str) -> None:
             log.info("job_completed")
         except Exception as exc:
             classification = classify_worker_error(exc)
+            error_message = format_worker_error_message(exc)
             log.error(
                 "job_failed",
-                error=str(exc),
+                error=error_message,
                 error_type=classification.error_type,
                 retryable=classification.retryable,
             )
@@ -115,7 +119,7 @@ async def worker_loop(worker_id: str) -> None:
                 status = await apply_job_failure_policy(
                     session,
                     job.id,
-                    error_message=str(exc),
+                    error_message=error_message,
                     retryable=classification.retryable,
                     retry_backoff_seconds=settings.worker_retry_backoff_seconds,
                 )

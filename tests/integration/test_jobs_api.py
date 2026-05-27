@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from rulekiln.api.app import create_app
 from rulekiln.config.settings import AppSettings, ProviderProfile, get_settings
 from rulekiln.db.models import Base
+from rulekiln.db.repositories.jobs import get_job
 from rulekiln.db.session import get_db_session, override_session_factory
 
 _IN_MEMORY_URL = "sqlite+aiosqlite://"
@@ -143,3 +144,21 @@ async def test_create_job_with_dbos_backend_missing_runtime_returns_503(
 
     resp = await client.post("/v1/jobs/", json=_valid_payload())
     assert resp.status_code == 503
+
+
+async def test_create_job_applies_worker_max_attempts(
+    client,
+    db_session_factory,
+    test_settings,
+) -> None:
+    test_settings.worker_max_attempts = 2
+
+    create_resp = await client.post("/v1/jobs/", json=_valid_payload())
+    assert create_resp.status_code == 202
+    job_id = create_resp.json()["job_id"]
+
+    async with db_session_factory() as session:
+        job = await get_job(session, job_id)
+
+    assert job is not None
+    assert job.max_attempts == test_settings.worker_max_attempts

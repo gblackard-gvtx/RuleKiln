@@ -25,6 +25,7 @@ from rulekiln.db.repositories.jobs import (
     create_job,
     get_eval_runs_for_job,
     get_job,
+    retry_job,
     get_selected_prompt_version,
     get_synthesized_rules_for_job,
     list_recent_jobs,
@@ -364,6 +365,7 @@ async def preview_job(
         task_mode=task.task_mode,
         status="draft",
         stage=None,
+        max_attempts=settings.worker_max_attempts,
         request_json=distillation_request.model_dump(mode="json"),
     )
     await create_job(session, draft)
@@ -422,6 +424,10 @@ async def create_job_from_ui(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail=str(exc),
             ) from exc
+
+    # Ensure draft jobs (including older rows) use the current retry cap.
+    job.max_attempts = settings.worker_max_attempts
+    await session.commit()
 
     if settings.execution_backend == "background_tasks":
         await update_job_status(session, job.id, status="created")
@@ -517,6 +523,72 @@ async def cancel_job_from_ui(
 
     await cancel_job(session, job.id, error_message="Cancelled by operator.")
     logger.info("ui_job_cancelled", job_id=job.id, status="failed_terminal")
+    return RedirectResponse(
+        url=f"/ui/jobs/{job.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_job_from_ui(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[AppSettings, Depends(get_settings)],
+) -> RedirectResponse:
+    """Requeue a failed job and resume from existing persisted progress."""
+    job = await get_job(session, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+
+    retryable_statuses = {"failed", "failed_terminal", "failed_retryable"}
+    if job.status not in retryable_statuses:
+        return RedirectResponse(
+            url=f"/ui/jobs/{job.id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    if settings.execution_backend == "dbos":
+        try:
+            require_dbos_available()
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+
+    queue_backends = {"postgres_queue", "dbos"}
+    if settings.execution_backend in queue_backends:
+        resulting_status = await retry_job(session, job.id, queue_backed=True)
+        logger.info(
+            "ui_job_retried",
+            job_id=job.id,
+            resulting_status=resulting_status,
+            execution_backend=settings.execution_backend,
+            queued=True,
+        )
+        return RedirectResponse(
+            url=f"/ui/jobs/{job.id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    try:
+        payload = DistillationRequest.model_validate(job.request_json)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Validation failed: {exc}",
+        ) from exc
+
+    resulting_status = await retry_job(session, job.id, queue_backed=False)
+    background_tasks.add_task(run_distillation_pipeline, job.id, payload)
+    logger.info(
+        "ui_job_retried",
+        job_id=job.id,
+        resulting_status=resulting_status,
+        execution_backend=settings.execution_backend,
+        queued=False,
+    )
     return RedirectResponse(
         url=f"/ui/jobs/{job.id}",
         status_code=status.HTTP_303_SEE_OTHER,

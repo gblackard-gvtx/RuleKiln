@@ -26,7 +26,7 @@ class ProviderConfig(BaseModel):
     region: str | None = None
     base_url: str | None = None
     api_key: str | None = None  # resolved from api_key_env_var at config build time
-    timeout_seconds: int = 60
+    timeout_seconds: int = 120
     max_retries: int = 3
 
     # Effective rate limits (resolved from route override → profile → app default)

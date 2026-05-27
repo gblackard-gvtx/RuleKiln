@@ -27,7 +27,7 @@ class ProviderProfile(BaseModel):
     api_key_env_var: str | None = None
     supports_chat: bool = True
     supports_embeddings: bool = False
-    timeout_seconds: int = 60
+    timeout_seconds: int = 120
     max_retries: int = 3
 
     # Rate limiting
@@ -86,6 +86,7 @@ class AppSettings(BaseSettings):
     worker_poll_interval_seconds: int = Field(default=2, alias="WORKER_POLL_INTERVAL_SECONDS")
     worker_lease_seconds: int = Field(default=1800, alias="WORKER_LEASE_SECONDS")
     worker_retry_backoff_seconds: int = Field(default=30, alias="WORKER_RETRY_BACKOFF_SECONDS")
+    worker_max_attempts: int = Field(default=2, ge=1, alias="WORKER_MAX_ATTEMPTS")
 
     # ── Provider rate limiting defaults ──────────────────────────────────────
     default_provider_max_concurrency: int = Field(

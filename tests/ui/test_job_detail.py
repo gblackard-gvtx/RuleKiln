@@ -109,3 +109,23 @@ class TestJobDetail:
         response = await client.get(f"/ui/jobs/{job_id}")
         assert response.status_code == 200
         assert 'id="cancel-pipeline-btn"' not in response.text
+
+    async def test_failed_retryable_job_shows_retry_button(
+        self,
+        client: AsyncClient,
+        db_session_factory,
+    ) -> None:
+        job_id = await _insert_job(db_session_factory, status="failed_retryable")
+        response = await client.get(f"/ui/jobs/{job_id}")
+        assert response.status_code == 200
+        assert 'id="retry-pipeline-btn"' in response.text
+
+    async def test_running_job_hides_retry_button(
+        self,
+        client: AsyncClient,
+        db_session_factory,
+    ) -> None:
+        job_id = await _insert_job(db_session_factory, status="running")
+        response = await client.get(f"/ui/jobs/{job_id}")
+        assert response.status_code == 200
+        assert 'id="retry-pipeline-btn"' not in response.text
