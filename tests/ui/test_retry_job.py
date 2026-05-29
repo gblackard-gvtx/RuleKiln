@@ -7,6 +7,8 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from rulekiln.db.models import DistillationJob
+
+
 def _valid_request_json() -> dict[str, object]:
     return {
         "task": {

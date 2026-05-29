@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
 
@@ -34,10 +34,10 @@ from rulekiln.db.repositories.jobs import (
     create_job,
     get_eval_runs_for_job,
     get_job,
-    retry_job,
     get_selected_prompt_version,
     get_synthesized_rules_for_job,
     list_recent_jobs,
+    retry_job,
     update_job_status,
 )
 from rulekiln.db.repositories.model_calls import summarize_model_call_events

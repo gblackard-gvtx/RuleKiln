@@ -20,11 +20,11 @@ from rulekiln.db.repositories.jobs import (
 )
 from rulekiln.db.session import get_session_factory
 from rulekiln.schemas.job import DistillationRequest
+from rulekiln.workers.dbos_runtime import ensure_dbos_runtime_launched
 from rulekiln.workers.error_classification import (
     classify_worker_error,
     format_worker_error_message,
 )
-from rulekiln.workers.dbos_runtime import ensure_dbos_runtime_launched
 
 logger = structlog.get_logger(__name__)
 

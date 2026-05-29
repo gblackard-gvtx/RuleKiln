@@ -57,7 +57,10 @@ async def client(db_session_factory, test_settings, monkeypatch):
         async with db_session_factory() as session:
             yield session
 
-    monkeypatch.setattr("rulekiln.api.routes.distillation_jobs.require_dbos_available", lambda: None)
+    monkeypatch.setattr(
+        "rulekiln.api.routes.distillation_jobs.require_dbos_available",
+        lambda: None,
+    )
 
     app.dependency_overrides[get_db_session] = _override_session
     app.dependency_overrides[get_settings] = lambda: test_settings
@@ -140,7 +143,10 @@ async def test_create_job_with_legacy_field_returns_422(client) -> None:
 
 
 async def test_create_job_with_dbos_backend_returns_pending(client, monkeypatch) -> None:
-    monkeypatch.setattr("rulekiln.api.routes.distillation_jobs.require_dbos_available", lambda: None)
+    monkeypatch.setattr(
+        "rulekiln.api.routes.distillation_jobs.require_dbos_available",
+        lambda: None,
+    )
 
     resp = await client.post("/v1/jobs/", json=_valid_payload())
     assert resp.status_code == 202
