@@ -1,0 +1,389 @@
+{
+  "baseline_eval": {
+    "strategy": "baseline",
+    "model": "Qwen_Qwen3.5-4B-Q5_K_L.gguf",
+    "split": "train",
+    "accuracy": 0.65625,
+    "macro_f1": 0.18219541945971413,
+    "weighted_case_score": 0.0,
+    "malformed_output_rate": 0.0,
+    "per_outcome_precision": {
+      "card_arrival": 0.8118811881188119,
+      "card_linking": 1.0,
+      "exchange_rate": 0.7233009708737864,
+      "card_acceptance": 0.0,
+      "country_support": 0.0,
+      "exchange_charge": 0.0,
+      "receiving_money": 0.0,
+      "top_up_reverted": 0.0,
+      "transfer_timing": 0.0,
+      "activate_my_card": 0.0,
+      "card_not_working": 0.0,
+      "compromised_card": 0.0,
+      "exchange_via_app": 0.0,
+      "get_physical_card": 0.0,
+      "getting_spare_card": 0.0,
+      "lost_or_stolen_card": 0.0,
+      "order_physical_card": 0.0,
+      "card_about_to_expire": 0.0,
+      "getting_virtual_card": 0.0,
+      "fiat_currency_support": 0.967741935483871,
+      "getting_physical_card": 0.0,
+      "card_delivery_estimate": 0.13178294573643412,
+      "cash_withdrawal_charge": 0.0,
+      "contactless_not_working": 0.0,
+      "pending_cash_withdrawal": 0.96875,
+      "card_payment_fee_charged": 0.0,
+      "declined_cash_withdrawal": 0.0,
+      "extra_charge_on_statement": 0.8974358974358975,
+      "transaction_charged_twice": 0.0,
+      "cash_withdrawal_not_recognised": 0.0,
+      "card_payment_wrong_exchange_rate": 0.9855072463768116
+    },
+    "per_outcome_recall": {
+      "card_arrival": 0.42487046632124353,
+      "card_linking": 0.6312849162011173,
+      "exchange_rate": 0.9802631578947368,
+      "card_acceptance": 0.0,
+      "country_support": 0.0,
+      "exchange_charge": 0.0,
+      "receiving_money": 0.0,
+      "top_up_reverted": 0.0,
+      "transfer_timing": 0.0,
+      "activate_my_card": 0.0,
+      "card_not_working": 0.0,
+      "compromised_card": 0.0,
+      "exchange_via_app": 0.0,
+      "get_physical_card": 0.0,
+      "getting_spare_card": 0.0,
+      "lost_or_stolen_card": 0.0,
+      "order_physical_card": 0.0,
+      "card_about_to_expire": 0.0,
+      "getting_virtual_card": 0.0,
+      "fiat_currency_support": 0.75,
+      "getting_physical_card": 0.0,
+      "card_delivery_estimate": 0.85,
+      "cash_withdrawal_charge": 0.0,
+      "contactless_not_working": 0.0,
+      "pending_cash_withdrawal": 0.775,
+      "card_payment_fee_charged": 0.0,
+      "declined_cash_withdrawal": 0.0,
+      "extra_charge_on_statement": 0.875,
+      "transaction_charged_twice": 0.0,
+      "cash_withdrawal_not_recognised": 0.0,
+      "card_payment_wrong_exchange_rate": 0.5
+    },
+    "confusion_matrix": {
+      "card_arrival": {
+        "card_arrival": 82,
+        "card_not_working": 1,
+        "card_delivery_estimate": 110
+      },
+      "card_linking": {
+        "card_arrival": 16,
+        "card_linking": 113,
+        "card_acceptance": 1,
+        "activate_my_card": 3,
+        "card_not_working": 8,
+        "compromised_card": 3,
+        "get_physical_card": 4,
+        "getting_spare_card": 10,
+        "lost_or_stolen_card": 13,
+        "order_physical_card": 1,
+        "card_about_to_expire": 1,
+        "getting_virtual_card": 2,
+        "getting_physical_card": 1,
+        "card_delivery_estimate": 1,
+        "contactless_not_working": 1,
+        "card_payment_wrong_exchange_rate": 1
+      },
+      "exchange_rate": {
+        "exchange_rate": 149,
+        "receiving_money": 1,
+        "exchange_via_app": 1,
+        "fiat_currency_support": 1
+      },
+      "fiat_currency_support": {
+        "exchange_rate": 5,
+        "country_support": 2,
+        "receiving_money": 1,
+        "exchange_via_app": 2,
+        "fiat_currency_support": 30
+      },
+      "card_delivery_estimate": {
+        "card_arrival": 3,
+        "card_delivery_estimate": 17
+      },
+      "pending_cash_withdrawal": {
+        "transfer_timing": 1,
+        "card_not_working": 1,
+        "card_delivery_estimate": 1,
+        "cash_withdrawal_charge": 1,
+        "pending_cash_withdrawal": 31,
+        "declined_cash_withdrawal": 3,
+        "cash_withdrawal_not_recognised": 2
+      },
+      "extra_charge_on_statement": {
+        "exchange_charge": 2,
+        "top_up_reverted": 1,
+        "pending_cash_withdrawal": 1,
+        "extra_charge_on_statement": 35,
+        "transaction_charged_twice": 1
+      },
+      "card_payment_wrong_exchange_rate": {
+        "exchange_rate": 52,
+        "exchange_charge": 11,
+        "card_payment_fee_charged": 1,
+        "extra_charge_on_statement": 4,
+        "card_payment_wrong_exchange_rate": 68
+      }
+    },
+    "violated_rule_counts": {},
+    "failed_assertion_path_counts": {},
+    "failures": []
+  },
+  "dbscan_eval": {
+    "strategy": "dbscan",
+    "model": "Qwen_Qwen3.5-4B-Q5_K_L.gguf",
+    "split": "train",
+    "accuracy": 0.8275,
+    "macro_f1": 0.26398913499253474,
+    "weighted_case_score": 0.0,
+    "malformed_output_rate": 0.0,
+    "per_outcome_precision": {
+      "atm_support": 0.0,
+      "card_arrival": 0.9588235294117647,
+      "card_linking": 1.0,
+      "exchange_rate": 0.7389162561576355,
+      "cancel_transfer": 0.0,
+      "card_acceptance": 0.0,
+      "country_support": 0.0,
+      "exchange_charge": 0.0,
+      "receiving_money": 0.0,
+      "activate_my_card": 0.0,
+      "card_not_working": 0.0,
+      "compromised_card": 0.0,
+      "pending_transfer": 0.0,
+      "get_physical_card": 0.0,
+      "getting_spare_card": 0.0,
+      "lost_or_stolen_card": 0.0,
+      "fiat_currency_support": 0.9696969696969697,
+      "reverted_card_payment": 0.0,
+      "transfer_into_account": 0.0,
+      "card_delivery_estimate": 0.34782608695652173,
+      "pending_cash_withdrawal": 1.0,
+      "declined_cash_withdrawal": 0.0,
+      "extra_charge_on_statement": 0.9047619047619048,
+      "card_payment_not_recognised": 0.0,
+      "card_payment_wrong_exchange_rate": 1.0
+    },
+    "per_outcome_recall": {
+      "atm_support": 0.0,
+      "card_arrival": 0.844559585492228,
+      "card_linking": 0.8324022346368715,
+      "exchange_rate": 0.9868421052631579,
+      "cancel_transfer": 0.0,
+      "card_acceptance": 0.0,
+      "country_support": 0.0,
+      "exchange_charge": 0.0,
+      "receiving_money": 0.0,
+      "activate_my_card": 0.0,
+      "card_not_working": 0.0,
+      "compromised_card": 0.0,
+      "pending_transfer": 0.0,
+      "get_physical_card": 0.0,
+      "getting_spare_card": 0.0,
+      "lost_or_stolen_card": 0.0,
+      "fiat_currency_support": 0.8,
+      "reverted_card_payment": 0.0,
+      "transfer_into_account": 0.0,
+      "card_delivery_estimate": 0.8,
+      "pending_cash_withdrawal": 0.85,
+      "declined_cash_withdrawal": 0.0,
+      "extra_charge_on_statement": 0.95,
+      "card_payment_not_recognised": 0.0,
+      "card_payment_wrong_exchange_rate": 0.5882352941176471
+    },
+    "confusion_matrix": {
+      "card_arrival": {
+        "card_arrival": 163,
+        "card_delivery_estimate": 30
+      },
+      "card_linking": {
+        "card_arrival": 5,
+        "card_linking": 149,
+        "card_acceptance": 1,
+        "activate_my_card": 4,
+        "card_not_working": 1,
+        "compromised_card": 2,
+        "get_physical_card": 2,
+        "getting_spare_card": 3,
+        "lost_or_stolen_card": 11,
+        "card_payment_not_recognised": 1
+      },
+      "exchange_rate": {
+        "exchange_rate": 150,
+        "fiat_currency_support": 1,
+        "transfer_into_account": 1
+      },
+      "fiat_currency_support": {
+        "exchange_rate": 5,
+        "country_support": 2,
+        "receiving_money": 1,
+        "fiat_currency_support": 32
+      },
+      "card_delivery_estimate": {
+        "card_arrival": 2,
+        "get_physical_card": 2,
+        "card_delivery_estimate": 16
+      },
+      "pending_cash_withdrawal": {
+        "atm_support": 1,
+        "cancel_transfer": 1,
+        "pending_cash_withdrawal": 34,
+        "declined_cash_withdrawal": 3,
+        "card_payment_not_recognised": 1
+      },
+      "extra_charge_on_statement": {
+        "pending_transfer": 1,
+        "reverted_card_payment": 1,
+        "extra_charge_on_statement": 38
+      },
+      "card_payment_wrong_exchange_rate": {
+        "exchange_rate": 48,
+        "exchange_charge": 4,
+        "extra_charge_on_statement": 4,
+        "card_payment_wrong_exchange_rate": 80
+      }
+    },
+    "violated_rule_counts": {},
+    "failed_assertion_path_counts": {},
+    "failures": []
+  },
+  "hdbscan_eval": {
+    "strategy": "hdbscan",
+    "model": "Qwen_Qwen3.5-4B-Q5_K_L.gguf",
+    "split": "train",
+    "accuracy": 0.895,
+    "macro_f1": 0.33081916946398165,
+    "weighted_case_score": 0.0,
+    "malformed_output_rate": 0.0,
+    "per_outcome_precision": {
+      "card_arrival": 0.9936305732484076,
+      "card_linking": 0.9943820224719101,
+      "exchange_rate": 0.8963414634146342,
+      "pending_top_up": 0.0,
+      "country_support": 0.0,
+      "exchange_charge": 0.0,
+      "receiving_money": 0.0,
+      "top_up_reverted": 0.0,
+      "activate_my_card": 0.0,
+      "exchange_via_app": 0.0,
+      "get_physical_card": 0.0,
+      "lost_or_stolen_card": 0.0,
+      "order_physical_card": 0.0,
+      "fiat_currency_support": 0.9487179487179487,
+      "transfer_into_account": 0.0,
+      "card_delivery_estimate": 0.3,
+      "pending_cash_withdrawal": 1.0,
+      "declined_cash_withdrawal": 0.0,
+      "extra_charge_on_statement": 0.95,
+      "card_payment_wrong_exchange_rate": 0.9911504424778761,
+      "balance_not_updated_after_cash_or_cheque_deposit": 0.0
+    },
+    "per_outcome_recall": {
+      "card_arrival": 0.8082901554404145,
+      "card_linking": 0.9888268156424581,
+      "exchange_rate": 0.9671052631578947,
+      "pending_top_up": 0.0,
+      "country_support": 0.0,
+      "exchange_charge": 0.0,
+      "receiving_money": 0.0,
+      "top_up_reverted": 0.0,
+      "activate_my_card": 0.0,
+      "exchange_via_app": 0.0,
+      "get_physical_card": 0.0,
+      "lost_or_stolen_card": 0.0,
+      "order_physical_card": 0.0,
+      "fiat_currency_support": 0.925,
+      "transfer_into_account": 0.0,
+      "card_delivery_estimate": 0.75,
+      "pending_cash_withdrawal": 0.85,
+      "declined_cash_withdrawal": 0.0,
+      "extra_charge_on_statement": 0.95,
+      "card_payment_wrong_exchange_rate": 0.8235294117647058,
+      "balance_not_updated_after_cash_or_cheque_deposit": 0.0
+    },
+    "confusion_matrix": {
+      "card_arrival": {
+        "card_arrival": 156,
+        "card_linking": 1,
+        "card_delivery_estimate": 35,
+        "card_payment_wrong_exchange_rate": 1
+      },
+      "card_linking": {
+        "card_linking": 177,
+        "activate_my_card": 1,
+        "lost_or_stolen_card": 1
+      },
+      "exchange_rate": {
+        "exchange_rate": 147,
+        "receiving_money": 1,
+        "exchange_via_app": 2,
+        "fiat_currency_support": 2
+      },
+      "fiat_currency_support": {
+        "country_support": 2,
+        "fiat_currency_support": 37,
+        "transfer_into_account": 1
+      },
+      "card_delivery_estimate": {
+        "card_arrival": 1,
+        "get_physical_card": 2,
+        "order_physical_card": 2,
+        "card_delivery_estimate": 15
+      },
+      "pending_cash_withdrawal": {
+        "pending_cash_withdrawal": 34,
+        "declined_cash_withdrawal": 5,
+        "balance_not_updated_after_cash_or_cheque_deposit": 1
+      },
+      "extra_charge_on_statement": {
+        "pending_top_up": 1,
+        "top_up_reverted": 1,
+        "extra_charge_on_statement": 38
+      },
+      "card_payment_wrong_exchange_rate": {
+        "exchange_rate": 17,
+        "exchange_charge": 5,
+        "extra_charge_on_statement": 2,
+        "card_payment_wrong_exchange_rate": 112
+      }
+    },
+    "violated_rule_counts": {},
+    "failed_assertion_path_counts": {},
+    "failures": []
+  },
+  "dbscan_gate": {
+    "strategy": "dbscan",
+    "passed": true,
+    "metric_delta": 0.08179371553282061,
+    "regression_rate": 0.0,
+    "golden_failures": 0,
+    "malformed_output_rate": 0.0,
+    "prompt_tokens": 1169,
+    "violations": []
+  },
+  "hdbscan_gate": {
+    "strategy": "hdbscan",
+    "passed": true,
+    "metric_delta": 0.14862375000426753,
+    "regression_rate": 0.0,
+    "golden_failures": 0,
+    "malformed_output_rate": 0.0,
+    "prompt_tokens": 6986,
+    "violations": []
+  },
+  "selected_strategy": "hdbscan",
+  "selection_reason": "HDBSCAN has higher primary metric (0.3308 vs 0.2640)."
+}

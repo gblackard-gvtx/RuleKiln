@@ -312,15 +312,29 @@ Content-Type: application/json
 
 {
   "task": {
+    "schema_version": "rulekiln.task.v1",
     "task_id": "intent-router",
     "task_name": "Intent Router",
-    "task_mode": "classification"
+    "task_mode": "classification",
+    "description": "Route user intent to one label.",
+    "input_template": "{{input.user_message}}"
   },
   "cases": [
     {
-      "case_id": "c1",
+      "schema_version": "rulekiln.case.v1",
+      "id": "c1",
+      "split": "train",
+      "task_mode": "classification",
       "input": {"user_message": "Book a flight"},
-      "expected_output": {"label": "travel"}
+      "expected": {"label": "travel"}
+    },
+    {
+      "schema_version": "rulekiln.case.v1",
+      "id": "c2",
+      "split": "validation",
+      "task_mode": "classification",
+      "input": {"user_message": "I need to change my reservation"},
+      "expected": {"label": "travel"}
     }
   ],
   "teacher": {"provider_profile": "openai_default", "model": "gpt-4o"},
@@ -380,9 +394,14 @@ http://localhost:8000/ui/jobs/new
 
 1. **New Job** — upload a `task.yaml` and `cases.jsonl`, choose provider profiles and model IDs.
 2. **Preview** — validate files, review split counts, estimated API calls, and provider routes before committing.
+  - Split policy is centralized: extraction uses `train`; evaluation prefers `validation`, then falls back to `train`, `test`, or `golden`.
+  - When fallback is used, preview surfaces a warning before submission.
 3. **Run Pipeline** — submit the validated job; execution is delegated by `EXECUTION_BACKEND` (`dbos`/`postgres_queue` queue + worker, or `background_tasks` in-process).
 4. **Monitor** — the job detail page polls live status every 2 seconds via HTMX until the job finishes.
+  - Job detail includes split totals, execution progress (`teacher extraction`, `student eval` per strategy), and pipeline diagnostics (model-call counts and rule counts).
 5. **Review results** — navigate to Results, Prompt, Rules, Eval Report, Failures, or Artifacts from the detail page.
+  - Results includes recommendation metrics: **Best strategy**, **Baseline macro_f1**, **Relative lift**, and **Accuracy lift**.
+  - Eval Report displays an evaluation-split fallback banner when non-validation evaluation was used.
 6. **Retry failed jobs** — use **Retry Pipeline** on the job detail page to requeue and resume from persisted progress.
 
 ### Environment variables for the UI
@@ -444,6 +463,12 @@ Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
     settings_snapshot.json
     manifest.json
 ```
+
+---
+
+## Benchmark examples
+
+- [BANKING77 benchmark README](src/examples/datasets/banking77/README.md) — benchmark setup, initial results, reporting template, and root README snapshot format.
 
 ---
 

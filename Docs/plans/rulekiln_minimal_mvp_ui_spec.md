@@ -324,6 +324,7 @@ Server-side validation:
 - validate provider profile references
 - validate required model routes
 - count splits
+- resolve split policy (extraction uses `train`; evaluation prefers `validation`, then falls back to `train`/`test`/`golden`)
 - detect evaluation methods
 - estimate model calls
 
@@ -344,6 +345,7 @@ provider route status
 estimated teacher calls
 estimated student eval calls
 estimated embedding calls
+split fallback warning (when evaluation is not on validation)
 warnings
 errors
 ```
@@ -394,16 +396,20 @@ Display:
 
 - status
 - stage
-- progress count when available
-- created time
-- updated time
+- case split counts (total / train / validation / test / golden)
+- execution progress:
+  - teacher extraction completed vs total train cases
+  - student evaluation split
+  - student baseline/DBSCAN/HDBSCAN completed vs eval total
+- pipeline diagnostics:
+  - total model calls and calls by role (teacher/student/embedding/judge)
+  - micro rules, synthesized rules, selected rules
 - task name
 - task mode
-- provider/model routes
 - selected strategy when available
 - quality gate status when available
 - MLflow run link when available
-- artifact links when available
+- links to results / prompt / rules / eval-report / failures / artifacts
 
 If job is running, include HTMX polling fragment.
 
@@ -440,8 +446,8 @@ Display:
 
 Polling behavior:
 
-- poll every 2 seconds while status is `queued` or `running`
-- stop polling once status is `completed` or `failed`
+- poll every 2 seconds while status is `queued`, `running`, `created`, or `waiting_for_retry`
+- stop polling once status is terminal (`completed`, `failed`, `failed_terminal`, `failed_retryable`)
 
 HTMX can do this by rendering a fragment without the polling attributes for terminal states.
 
@@ -464,15 +470,19 @@ Display:
 - HDBSCAN score
 - selected strategy
 - metric delta
+- recommendation metrics:
+  - best strategy
+  - baseline macro_f1
+  - best macro_f1
+  - relative lift
+  - accuracy lift (percentage points)
 - quality gate result
 - golden failures
 - malformed output rate
-- prompt token count
 - fixed count
 - broken count
-- unchanged wrong count
-- MLflow run link
-- artifact download links
+- cost/usage summary (total and per-role cost, total tokens, model-call count)
+- links to full eval report and artifact downloads
 
 Do not build advanced charts yet. Use simple metric cards and tables.
 
@@ -546,16 +556,13 @@ Show detailed evaluation summary.
 Display:
 
 - primary metric
-- baseline metrics
-- DBSCAN metrics
-- HDBSCAN metrics
-- selected strategy
-- assertion pass rate
-- rubric score
+- per-run rows including strategy and split
+- score for selected primary metric
+- accuracy
+- macro_f1
 - malformed output rate
-- golden case status
-- confusion matrix when available
-- quality gate details
+- model identifier
+- evaluation split fallback warning banner when non-validation evaluation is used
 
 ---
 
@@ -567,11 +574,11 @@ GET /ui/jobs/{job_id}/failures
 
 Purpose:
 
-Show fixed, broken, and unchanged failures.
+Show fixed and broken failures.
 
 MVP filters:
 
-- failure class: fixed / broken / unchanged wrong
+- failure class: fixed / broken
 - split: validation / golden / test
 - output path
 - assertion type
@@ -617,7 +624,8 @@ Required links:
 
 ```text
 selected_distilled_prompt.md
-rules.jsonl
+rules_dbscan.jsonl
+rules_hdbscan.jsonl
 eval_report.json
 strategy_comparison.json
 failures_fixed.jsonl
@@ -668,6 +676,26 @@ class JobDetailView(BaseModel):
     mlflow_run_id: str | None
     mlflow_run_url: str | None
     error_message: str | None
+    total_cases: int | None
+    train_cases: int | None
+    validation_cases: int | None
+    test_cases: int | None
+    golden_cases: int | None
+    teacher_extraction_completed: int | None
+    teacher_extraction_total: int | None
+    student_eval_split: str | None
+    student_eval_total: int | None
+    student_baseline_completed: int | None
+    student_dbscan_completed: int | None
+    student_hdbscan_completed: int | None
+    total_model_calls: int | None
+    teacher_model_calls: int | None
+    student_model_calls: int | None
+    embedding_model_calls: int | None
+    judge_model_calls: int | None
+    micro_rules_count: int | None
+    synthesized_rules_count: int | None
+    selected_rules_count: int | None
 
 
 class ResultsSummaryView(BaseModel):
@@ -685,6 +713,21 @@ class ResultsSummaryView(BaseModel):
     fixed_count: int | None
     broken_count: int | None
     quality_gates_passed: bool | None
+    best_strategy: str | None
+    baseline_macro_f1: float | None
+    best_macro_f1: float | None
+    macro_f1_delta: float | None
+    macro_f1_relative_lift_percent: float | None
+    accuracy_lift_percentage_points: float | None
+    best_malformed_output_rate: float | None
+    estimated_total_cost_usd: float | None
+    teacher_cost_usd: float | None
+    student_cost_usd: float | None
+    embedding_cost_usd: float | None
+    judge_cost_usd: float | None
+    total_model_calls: int | None
+    total_tokens: int | None
+    has_estimated_usage: bool
 ```
 
 ---
@@ -709,7 +752,6 @@ Examples:
 task.yaml is missing task_id
 cases.jsonl line 14 is invalid JSON
 case_042 task_mode does not match task.task_mode
-no validation cases found
 provider profile bedrock-primary does not support embeddings
 output_schema is missing required fields
 golden cases exist but no assertions were provided
@@ -721,6 +763,7 @@ Warnings:
 
 ```text
 No golden cases provided
+No validation cases detected. Evaluation fell back to split=train.
 No baseline prompt provided
 No judge model configured for rubric_judge assertions
 Large case count may exceed configured model call limits
@@ -958,7 +1001,7 @@ T071 Create results summary page with selected strategy and quality gates
 T072 Create read-only selected prompt view
 T073 Create read-only synthesized rules view
 T074 Create eval report view
-T075 Create failures fixed/broken/unchanged view
+T075 Create failures fixed/broken view
 T076 Create artifact manifest and download links
 T077 Add MLflow run link display
 T078 Add UI tests using fake providers

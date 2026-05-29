@@ -126,24 +126,23 @@ The output field must be exactly one of:
 
 The following 1 rule(s) are distilled from observed examples. Apply them strictly and in order of priority.
 
-## Rule 1: BANKING77 classification: single-label JSON output and mappings for card delivery/linking, FX rates, statement charges, pending cash withdrawal, and fiat currency support
+## Rule 1: BANKING77 classification output + mapping for card delivery/arrival, card linking, exchange rates, extra statement charges, and pending cash withdrawals
 **Applies when:**
-- Classifying a single utterance under the BANKING77 intent taxonomy (mode: classification)
+- Performing BANKING77 intent classification in classification mode for a single utterance.
 **Outcomes:**
 - **card_arrival**: default
 - **card_linking**: default
 - **exchange_rate**: default
-- **fiat_currency_support**: default
+- **output_format**: default
 - **card_delivery_estimate**: default
 - **pending_cash_withdrawal**: default
-- **output_schema_label_only**: default
 - **extra_charge_on_statement**: default
 - **card_payment_wrong_exchange_rate**: default
 **Tie-breakers (in order):**
-- If the utterance disputes a wrong/overcharged FX rate on a specific card transaction, choose 'card_payment_wrong_exchange_rate' over 'exchange_rate'.
-- If the utterance is about linking/adding/re-adding/reactivating a card in the app or card not showing in app, choose 'card_linking' over delivery-related intents.
-- If the utterance is about a specific card that has not arrived yet or its tracking/status, choose 'card_arrival' over 'card_delivery_estimate'.
-- If the utterance is only about general delivery timeframe/urgency/options/scheduling, choose 'card_delivery_estimate'.
-- If the utterance mentions ATM/cash withdrawal and pending status, choose 'pending_cash_withdrawal' over 'extra_charge_on_statement'.
-- If the utterance is about an unknown/extra statement/app charge without ATM cash-withdrawal pending framing, choose 'extra_charge_on_statement'.
-- If still ambiguous, prefer the more specific intent implied by explicit keywords in the utterance (e.g., 'tracking number'->card_arrival; 'in the app'->card_linking; 'pending withdrawal/ATM'->pending_cash_withdrawal; 'exchange rate wrong on purchase'->card_payment_wrong_exchange_rate; 'supported currencies'->fiat_currency_support).
+- If ATM/cash withdrawal + pending/in progress/not posted is present, choose 'pending_cash_withdrawal'.
+- If wrong/incorrect/bad exchange rate is tied to a specific card payment/transaction, choose 'card_payment_wrong_exchange_rate' over 'exchange_rate'.
+- If the issue is an unexpected/extra small charge/fee on a statement/app (including pending extra charge), choose 'extra_charge_on_statement'.
+- If the user is trying to make a card appear in the app or to link/add/re-add/reactivate a card, choose 'card_linking'.
+- If the user reports the card has not arrived/has not been received or asks where it is / tracking status/number, choose 'card_arrival' over 'card_delivery_estimate'.
+- If the user only asks for an ETA/time-to-deliver/options/scheduling/expedite (no non-receipt or tracking/status language), choose 'card_delivery_estimate'.
+- If the utterance is generic/ambiguous with no banking cues, default to 'card_arrival' (as evidenced by cluster rule).

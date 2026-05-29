@@ -476,13 +476,13 @@ Use this compact format in the root README once results are stable.
 ```md
 | Dataset | Task | Student Model | Baseline | RuleKiln-Hardened | Delta |
 |---|---|---:|---:|---:|---:|
-| BANKING77 | Intent classification | TBD | TBD | TBD | TBD |
+| BANKING77 | Intent classification | Qwen3.5 4B (local llama.cpp) | 0.1822 | 0.3308 (HDBSCAN) | +81.6% |
 ```
 
 Add this note:
 
 ```text
-Results depend on model, case split, prompt scaffold, and evaluation configuration.
+In this benchmark, HDBSCAN was selected because it improved Macro F1 by 81.6% relative to baseline while maintaining a 0.00% malformed output rate.
 ```
 
 ---
