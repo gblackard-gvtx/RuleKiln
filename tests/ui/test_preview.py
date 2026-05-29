@@ -5,6 +5,9 @@ from httpx import AsyncClient
 from tests.ui.conftest import VALID_CASE_LINE, VALID_TASK_YAML
 
 
+_TRAIN_FALLBACK_WARNING = "No validation cases detected. Evaluation fell back to split=train."
+
+
 def _form_data() -> dict[str, str]:
     """Default provider form fields."""
     return {
@@ -78,6 +81,39 @@ class TestPreview:
         )
         assert response.status_code == 200
         assert "2" in response.text
+
+    async def test_preview_warns_when_validation_missing(self, client: AsyncClient) -> None:
+        response = await client.post(
+            "/ui/jobs/preview",
+            files={
+                "task_file": ("task.yaml", VALID_TASK_YAML, "application/yaml"),
+                "cases_file": ("cases.jsonl", VALID_CASE_LINE, "application/x-ndjson"),
+            },
+            data=_form_data(),
+        )
+        assert response.status_code == 200
+        assert _TRAIN_FALLBACK_WARNING in response.text
+
+    async def test_preview_train_validation_upload_has_no_train_fallback_warning(
+        self, client: AsyncClient
+    ) -> None:
+        validation_case = (
+            VALID_CASE_LINE.replace(b'"id":"c1"', b'"id":"c2"').replace(
+                b'"split":"train"', b'"split":"validation"'
+            )
+        )
+        combined_cases = VALID_CASE_LINE + validation_case
+
+        response = await client.post(
+            "/ui/jobs/preview",
+            files={
+                "task_file": ("task.yaml", VALID_TASK_YAML, "application/yaml"),
+                "cases_file": ("cases.jsonl", combined_cases, "application/x-ndjson"),
+            },
+            data=_form_data(),
+        )
+        assert response.status_code == 200
+        assert _TRAIN_FALLBACK_WARNING not in response.text
 
     async def test_unknown_provider_profile_returns_error(self, client: AsyncClient) -> None:
         data = _form_data()

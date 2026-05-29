@@ -8,6 +8,12 @@
 
 <h1 class="text-2xl font-bold text-gray-900 mb-6">Evaluation Report</h1>
 
+{% if evaluation_split_warning %}
+<div class="flash-error mb-6" role="alert">
+  <p class="font-semibold text-sm">{{ evaluation_split_warning }}</p>
+</div>
+{% endif %}
+
 {% if eval_runs %}
 <div class="card p-0 overflow-hidden">
   <table class="data-table">
@@ -15,7 +21,7 @@
       <tr>
         <th>Strategy</th>
         <th>Split</th>
-        <th>Score</th>
+        <th>Score ({{ primary_metric }})</th>
         <th>Accuracy</th>
         <th>Macro F1</th>
         <th>Malformed %</th>
@@ -32,7 +38,13 @@
         </td>
         <td class="text-gray-500 text-sm">{{ run.split }}</td>
         <td class="font-mono text-sm">
-          {{ "%.4f" | format(run.weighted_case_score) if run.weighted_case_score is not none else "—" }}
+          {% if primary_metric == "macro_f1" %}
+            {{ "%.4f" | format(run.macro_f1) if run.macro_f1 is not none else "—" }}
+          {% elif primary_metric == "accuracy" %}
+            {{ "%.4f" | format(run.accuracy) if run.accuracy is not none else "—" }}
+          {% else %}
+            {{ "%.4f" | format(run.weighted_case_score) if run.weighted_case_score is not none else "—" }}
+          {% endif %}
         </td>
         <td class="font-mono text-sm">
           {{ "%.4f" | format(run.accuracy) if run.accuracy is not none else "—" }}

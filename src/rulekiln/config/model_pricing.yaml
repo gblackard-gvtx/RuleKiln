@@ -1,0 +1,114 @@
+pricing:
+  openai:
+    gpt-5.5:
+      input_per_1m_tokens_usd: "5.00"
+      cached_input_per_1m_tokens_usd: "0.50"
+      output_per_1m_tokens_usd: "30.00"
+      batch_discount: "0.50"
+      effective_date: "2026-05-27"
+      source: "openai_api_pricing"
+
+    gpt-5.4:
+      input_per_1m_tokens_usd: "2.50"
+      cached_input_per_1m_tokens_usd: "0.25"
+      output_per_1m_tokens_usd: "15.00"
+      batch_discount: "0.50"
+      effective_date: "2026-05-27"
+      source: "openai_api_pricing"
+
+    gpt-5.4-mini:
+      input_per_1m_tokens_usd: "0.75"
+      cached_input_per_1m_tokens_usd: "0.075"
+      output_per_1m_tokens_usd: "4.50"
+      batch_discount: "0.50"
+      effective_date: "2026-05-27"
+      source: "openai_api_pricing"
+
+    gpt-5.2:
+      input_per_1m_tokens_usd: "1.75"
+      cached_input_per_1m_tokens_usd: "0.175"
+      output_per_1m_tokens_usd: "14.00"
+      batch_discount: "0.50"
+      effective_date: "2026-05-27"
+      source: "openai_api_pricing"
+
+    gpt-4o:
+      input_per_1m_tokens_usd: "2.50"
+      output_per_1m_tokens_usd: "10.00"
+      effective_date: "2024-05-13"
+      source: "manual"
+    gpt-4o-mini:
+      input_per_1m_tokens_usd: "0.150"
+      output_per_1m_tokens_usd: "0.600"
+      effective_date: "2024-07-18"
+      source: "manual"
+    gpt-4.1:
+      input_per_1m_tokens_usd: "2.00"
+      output_per_1m_tokens_usd: "8.00"
+      effective_date: "2025-04-14"
+      source: "manual"
+    gpt-4.1-mini:
+      input_per_1m_tokens_usd: "0.40"
+      output_per_1m_tokens_usd: "1.60"
+      effective_date: "2025-04-14"
+      source: "manual"
+    gpt-4.1-nano:
+      input_per_1m_tokens_usd: "0.10"
+      output_per_1m_tokens_usd: "0.40"
+      effective_date: "2025-04-14"
+      source: "manual"
+    o1:
+      input_per_1m_tokens_usd: "15.00"
+      output_per_1m_tokens_usd: "60.00"
+      effective_date: "2024-12-05"
+      source: "manual"
+    o3:
+      input_per_1m_tokens_usd: "10.00"
+      output_per_1m_tokens_usd: "40.00"
+      effective_date: "2025-04-16"
+      source: "manual"
+    o4-mini:
+      input_per_1m_tokens_usd: "1.10"
+      output_per_1m_tokens_usd: "4.40"
+      effective_date: "2025-04-16"
+      source: "manual"
+    text-embedding-3-small:
+      input_per_1m_tokens_usd: "0.020"
+      output_per_1m_tokens_usd: "0.000"
+      effective_date: "2024-01-25"
+      source: "manual"
+    text-embedding-3-large:
+      input_per_1m_tokens_usd: "0.130"
+      output_per_1m_tokens_usd: "0.000"
+      effective_date: "2024-01-25"
+      source: "manual"
+
+  anthropic:
+    claude-opus-4-5:
+      input_per_1m_tokens_usd: "15.00"
+      output_per_1m_tokens_usd: "75.00"
+      effective_date: "2025-08-22"
+      source: "manual"
+    claude-sonnet-4-5:
+      input_per_1m_tokens_usd: "3.00"
+      output_per_1m_tokens_usd: "15.00"
+      effective_date: "2025-07-22"
+      source: "manual"
+    claude-haiku-3-5:
+      input_per_1m_tokens_usd: "0.80"
+      output_per_1m_tokens_usd: "4.00"
+      effective_date: "2024-11-04"
+      source: "manual"
+
+  openai_compatible:
+    # Local models default to zero cost
+    default:
+      input_per_1m_tokens_usd: "0.00"
+      output_per_1m_tokens_usd: "0.00"
+      source: "local"
+
+  fake:
+    default:
+      input_per_1m_tokens_usd: "0.00"
+      output_per_1m_tokens_usd: "0.00"
+      source: "fake"

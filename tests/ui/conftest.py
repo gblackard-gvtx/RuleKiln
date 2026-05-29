@@ -40,6 +40,7 @@ def test_settings() -> AppSettings:
     return AppSettings(
         DATABASE_URL=_IN_MEMORY_URL,
         MLFLOW_TRACKING_URI="file:///tmp/mlflow-test",
+        EXECUTION_BACKEND="background_tasks",
         provider_profiles={
             "fake_chat": ProviderProfile(
                 provider="fake", supports_chat=True, supports_embeddings=False

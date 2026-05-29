@@ -51,3 +51,16 @@ class TestJobList:
         response = await client.get("/ui/jobs")
         assert response.status_code == 200
         assert "badge-failed" in response.text
+
+    async def test_draft_jobs_are_hidden_from_list(
+        self,
+        client: AsyncClient,
+        db_session_factory,
+    ) -> None:
+        await _insert_job(db_session_factory, task_name="Draft Job", status="draft")
+        await _insert_job(db_session_factory, task_name="Visible Job", status="completed")
+
+        response = await client.get("/ui/jobs")
+        assert response.status_code == 200
+        assert "Visible Job" in response.text
+        assert "Draft Job" not in response.text

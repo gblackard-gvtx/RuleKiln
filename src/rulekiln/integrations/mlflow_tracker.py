@@ -151,3 +151,82 @@ def build_provider_params(payload: DistillationRequest) -> dict[str, str]:
         params["judge_provider_profile"] = payload.judge.provider_profile
         params["judge_model"] = payload.judge.model
     return params
+
+
+def build_demo_params(
+    task_id: str,
+    task_mode: str,
+    dataset: str,
+    teacher_provider: str,
+    teacher_model: str,
+    student_provider: str,
+    student_model: str,
+    embedding_model: str,
+    selected_strategy: str,
+    primary_metric: str,
+) -> dict[str, str]:
+    """Build the minimum demo param set for a credible MLflow run."""
+    return {
+        "task_id": task_id,
+        "task_mode": task_mode,
+        "dataset": dataset,
+        "teacher_provider": teacher_provider,
+        "teacher_model": teacher_model,
+        "student_provider": student_provider,
+        "student_model": student_model,
+        "embedding_model": embedding_model,
+        "selected_strategy": selected_strategy,
+        "primary_metric": primary_metric,
+    }
+
+
+def build_demo_eval_metrics(
+    baseline_macro_f1: float | None,
+    baseline_accuracy: float | None,
+    baseline_malformed_output_rate: float | None,
+    dbscan_macro_f1: float | None,
+    dbscan_accuracy: float | None,
+    dbscan_delta_vs_baseline: float,
+    hdbscan_macro_f1: float | None,
+    hdbscan_accuracy: float | None,
+    hdbscan_delta_vs_baseline: float,
+    selected_primary_score: float,
+    selected_delta_vs_baseline: float,
+    selected_passed_quality_gates: bool,
+) -> dict[str, float]:
+    """Build the minimum demo metric set for MLflow logging."""
+    return {
+        "eval.baseline.macro_f1": float(baseline_macro_f1 or 0.0),
+        "eval.baseline.accuracy": float(baseline_accuracy or 0.0),
+        "eval.baseline.malformed_output_rate": float(baseline_malformed_output_rate or 0.0),
+        "eval.dbscan.macro_f1": float(dbscan_macro_f1 or 0.0),
+        "eval.dbscan.accuracy": float(dbscan_accuracy or 0.0),
+        "eval.dbscan.delta_vs_baseline": float(dbscan_delta_vs_baseline),
+        "eval.hdbscan.macro_f1": float(hdbscan_macro_f1 or 0.0),
+        "eval.hdbscan.accuracy": float(hdbscan_accuracy or 0.0),
+        "eval.hdbscan.delta_vs_baseline": float(hdbscan_delta_vs_baseline),
+        "selected.primary_score": float(selected_primary_score),
+        "selected.delta_vs_baseline": float(selected_delta_vs_baseline),
+        "selected.passed_quality_gates": 1.0 if selected_passed_quality_gates else 0.0,
+    }
+
+
+def build_token_cost_metrics(summary: dict[str, object]) -> dict[str, float]:
+    """Build a flat metrics dict from a token/cost summary for MLflow logging."""
+    return {
+        "tokens.total": float(summary.get("total_tokens", 0)),
+        "tokens.input": float(summary.get("total_input_tokens", 0)),
+        "tokens.output": float(summary.get("total_output_tokens", 0)),
+        "cost.total_usd": float(summary.get("estimated_total_cost_usd", 0.0)),
+        "cost.teacher_usd": float(summary.get("teacher_cost_usd", 0.0)),
+        "cost.student_usd": float(summary.get("student_cost_usd", 0.0)),
+        "cost.embedding_usd": float(summary.get("embedding_cost_usd", 0.0)),
+        "cost.judge_usd": float(summary.get("judge_cost_usd", 0.0)),
+        "model_calls.total": float(summary.get("total_model_calls", 0)),
+    }
+
+
+def log_token_cost_metrics(tracking_uri: str, run_id: str, summary: dict[str, object]) -> None:
+    """Compute and log token/cost metrics to an existing MLflow run."""
+    metrics = build_token_cost_metrics(summary)
+    log_metrics(tracking_uri=tracking_uri, run_id=run_id, metrics=metrics)

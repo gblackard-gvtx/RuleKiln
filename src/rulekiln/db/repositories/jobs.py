@@ -1,6 +1,6 @@
 """Job and artifact repository helpers."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -32,10 +32,14 @@ async def get_job(session: AsyncSession, job_id: str) -> DistillationJob | None:
 async def list_recent_jobs(
     session: AsyncSession,
     limit: int = 50,
+    include_drafts: bool = False,
 ) -> list[DistillationJob]:
     """Return the most recent jobs ordered by created_at descending."""
+    query = select(DistillationJob)
+    if not include_drafts:
+        query = query.where(DistillationJob.status != "draft")
     result = await session.execute(
-        select(DistillationJob).order_by(DistillationJob.created_at.desc()).limit(limit)
+        query.order_by(DistillationJob.created_at.desc()).limit(limit)
     )
     return list(result.scalars().all())
 
@@ -301,7 +305,7 @@ async def claim_next_job(
                 status          = 'running',
                 locked_by       = :worker_id,
                 locked_at       = now(),
-                lease_expires_at = now() + (:lease_seconds || ' seconds')::interval,
+                lease_expires_at = now() + make_interval(secs => :lease_seconds),
                 attempt_count   = attempt_count + 1,
                 updated_at      = now()
             FROM next_job
@@ -332,7 +336,7 @@ async def renew_lease(
             DistillationJob.queue_status == "running",
         )
         .values(
-            lease_expires_at=text(f"now() + '{lease_seconds} seconds'::interval"),
+            lease_expires_at=datetime.now(tz=UTC) + timedelta(seconds=lease_seconds),
         )
     )
     await session.commit()
@@ -349,6 +353,28 @@ async def complete_job(session: AsyncSession, job_id: str) -> None:
             locked_by=None,
             locked_at=None,
             lease_expires_at=None,
+        )
+    )
+    await session.commit()
+
+
+async def cancel_job(
+    session: AsyncSession,
+    job_id: str,
+    *,
+    error_message: str = "Cancelled by operator.",
+) -> None:
+    """Mark a job as cancelled with terminal status and cleared queue lease state."""
+    await session.execute(
+        update(DistillationJob)
+        .where(DistillationJob.id == job_id)
+        .values(
+            queue_status="failed",
+            status="failed_terminal",
+            locked_by=None,
+            locked_at=None,
+            lease_expires_at=None,
+            error_message=error_message,
         )
     )
     await session.commit()
@@ -371,6 +397,87 @@ async def fail_job(session: AsyncSession, job_id: str, error_message: str) -> No
     await session.commit()
 
 
+async def retry_job(
+    session: AsyncSession,
+    job_id: str,
+    *,
+    queue_backed: bool,
+) -> str:
+    """Requeue an existing job for manual retry.
+
+    Returns the status written to distillation_jobs.status.
+    """
+    status = "waiting_for_retry" if queue_backed else "created"
+    queue_status = "pending" if queue_backed else "created"
+    await session.execute(
+        update(DistillationJob)
+        .where(DistillationJob.id == job_id)
+        .values(
+            status=status,
+            queue_status=queue_status,
+            locked_by=None,
+            locked_at=None,
+            lease_expires_at=None,
+            next_run_at=datetime.now(tz=UTC),
+            error_message=None,
+        )
+    )
+    await session.commit()
+    return status
+
+
+async def apply_job_failure_policy(
+    session: AsyncSession,
+    job_id: str,
+    *,
+    error_message: str,
+    retryable: bool,
+    retry_backoff_seconds: int,
+) -> str:
+    """Apply retry classification to a failed running job.
+
+    Returns the final status written to distillation_jobs.status.
+    """
+    job = await get_job(session, job_id)
+    if job is None:
+        return "failed_terminal"
+
+    retry_budget_remaining = job.attempt_count < job.max_attempts
+    if retryable and retry_budget_remaining:
+        next_run_at = datetime.now(tz=UTC) + timedelta(seconds=retry_backoff_seconds)
+        await session.execute(
+            update(DistillationJob)
+            .where(DistillationJob.id == job_id)
+            .values(
+                queue_status="pending",
+                status="waiting_for_retry",
+                next_run_at=next_run_at,
+                locked_by=None,
+                locked_at=None,
+                lease_expires_at=None,
+                error_message=error_message,
+            )
+        )
+        await session.commit()
+        return "waiting_for_retry"
+
+    final_status = "failed_retryable" if retryable else "failed_terminal"
+    await session.execute(
+        update(DistillationJob)
+        .where(DistillationJob.id == job_id)
+        .values(
+            queue_status="failed",
+            status=final_status,
+            locked_by=None,
+            locked_at=None,
+            lease_expires_at=None,
+            error_message=error_message,
+        )
+    )
+    await session.commit()
+    return final_status
+
+
 async def recover_expired_leases(
     session: AsyncSession,
 ) -> tuple[int, int]:
@@ -390,7 +497,7 @@ async def recover_expired_leases(
         )
         .values(
             queue_status="pending",
-            status="pending",
+            status="waiting_for_retry",
             locked_by=None,
             locked_at=None,
             lease_expires_at=None,
@@ -407,7 +514,7 @@ async def recover_expired_leases(
         )
         .values(
             queue_status="failed",
-            status="failed",
+            status="failed_retryable",
             locked_by=None,
             locked_at=None,
             lease_expires_at=None,

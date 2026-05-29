@@ -15,7 +15,13 @@ def _cosine_distance_matrix(vectors: list[list[float]]) -> np.ndarray:  # type: 
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1.0, norms)
     normed = mat / norms
-    return 1.0 - normed @ normed.T
+    dist = 1.0 - normed @ normed.T
+    # Numerical jitter can produce tiny negative values (for example, -1e-16)
+    # that violate sklearn's non-negative constraint for precomputed distances.
+    dist = np.nan_to_num(dist, nan=1.0, posinf=2.0, neginf=2.0)
+    np.clip(dist, 0.0, 2.0, out=dist)
+    np.fill_diagonal(dist, 0.0)
+    return (dist + dist.T) / 2.0
 
 
 def _build_clusters(

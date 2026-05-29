@@ -41,12 +41,30 @@ class JobProgress(BaseModel):
     total: int
 
 
+class JobUsageSummary(BaseModel):
+    """Token usage and cost summary for a distillation job."""
+
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+    total_tokens: int = 0
+    estimated_total_cost_usd: float | None = None
+    teacher_cost_usd: float | None = None
+    student_cost_usd: float | None = None
+    embedding_cost_usd: float | None = None
+    judge_cost_usd: float | None = None
+    has_estimated_usage: bool = False
+    total_model_calls: int = 0
+
+
 class JobStatusResponse(BaseModel):
     job_id: str
     status: str
     stage: str | None = None
     progress: JobProgress | None = None
     error_message: str | None = None
+    usage: JobUsageSummary | None = None
+    mlflow_run_id: str | None = None
+    mlflow_run_url: str | None = None
 
 
 class CreateJobResponse(BaseModel):

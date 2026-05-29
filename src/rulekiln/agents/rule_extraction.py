@@ -48,4 +48,7 @@ async def extract_rules_for_case(
         output_schema=ExtractionOutput,
         config=config,
     )
-    return ExtractionOutput.model_validate(result.model_dump())
+    parsed = result.parsed
+    if not isinstance(parsed, ExtractionOutput):
+        return ExtractionOutput.model_validate(parsed.model_dump() if parsed else {})
+    return parsed

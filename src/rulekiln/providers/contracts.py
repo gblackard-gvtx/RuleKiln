@@ -5,6 +5,8 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from rulekiln.schemas.usage import ChatCompletionResult, EmbeddingResult
+
 
 class ProviderConfig(BaseModel):
     """Resolved provider configuration for a single model call."""
@@ -24,7 +26,7 @@ class ProviderConfig(BaseModel):
     region: str | None = None
     base_url: str | None = None
     api_key: str | None = None  # resolved from api_key_env_var at config build time
-    timeout_seconds: int = 60
+    timeout_seconds: int = 120
     max_retries: int = 3
 
     # Effective rate limits (resolved from route override → profile → app default)
@@ -61,8 +63,8 @@ class ChatModelClient(ABC):
         user_prompt: str,
         output_schema: type[BaseModel],
         config: ProviderConfig,
-    ) -> BaseModel:
-        """Call the model and return a structured Pydantic model instance."""
+    ) -> ChatCompletionResult:
+        """Call the model and return a ChatCompletionResult with the parsed model and usage."""
         ...
 
 
@@ -75,6 +77,6 @@ class EmbeddingClient(ABC):
         *,
         texts: list[str],
         config: ProviderConfig,
-    ) -> list[list[float]]:
-        """Embed a list of texts and return a list of float vectors."""
+    ) -> EmbeddingResult:
+        """Embed a list of texts and return an EmbeddingResult with vectors and usage."""
         ...

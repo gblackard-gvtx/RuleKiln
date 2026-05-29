@@ -34,6 +34,26 @@ class JobDetailView(BaseModel):
     mlflow_run_id: str | None
     mlflow_run_url: str | None
     error_message: str | None
+    total_cases: int | None = None
+    train_cases: int | None = None
+    validation_cases: int | None = None
+    test_cases: int | None = None
+    golden_cases: int | None = None
+    teacher_extraction_completed: int | None = None
+    teacher_extraction_total: int | None = None
+    student_eval_split: str | None = None
+    student_eval_total: int | None = None
+    student_baseline_completed: int | None = None
+    student_dbscan_completed: int | None = None
+    student_hdbscan_completed: int | None = None
+    total_model_calls: int | None = None
+    teacher_model_calls: int | None = None
+    student_model_calls: int | None = None
+    embedding_model_calls: int | None = None
+    judge_model_calls: int | None = None
+    micro_rules_count: int | None = None
+    synthesized_rules_count: int | None = None
+    selected_rules_count: int | None = None
 
 
 class ResultsSummaryView(BaseModel):
@@ -53,6 +73,22 @@ class ResultsSummaryView(BaseModel):
     fixed_count: int | None
     broken_count: int | None
     quality_gates_passed: bool | None
+    best_strategy: str | None = None
+    baseline_macro_f1: float | None = None
+    best_macro_f1: float | None = None
+    macro_f1_delta: float | None = None
+    macro_f1_relative_lift_percent: float | None = None
+    accuracy_lift_percentage_points: float | None = None
+    best_malformed_output_rate: float | None = None
+    # Token / cost fields
+    estimated_total_cost_usd: float | None = None
+    teacher_cost_usd: float | None = None
+    student_cost_usd: float | None = None
+    embedding_cost_usd: float | None = None
+    judge_cost_usd: float | None = None
+    total_model_calls: int | None = None
+    total_tokens: int | None = None
+    has_estimated_usage: bool = False
 
 
 class ProviderRouteView(BaseModel):

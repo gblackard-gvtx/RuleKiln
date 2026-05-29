@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, status
+from fastapi.responses import RedirectResponse
 from starlette.staticfiles import StaticFiles
 
 from rulekiln.api.errors import register_exception_handlers
@@ -21,6 +22,11 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+
+    @app.get("/", include_in_schema=False)
+    async def root_redirect() -> RedirectResponse:
+        return RedirectResponse(url="/ui/jobs", status_code=status.HTTP_302_FOUND)
+
     register_exception_handlers(app)
     app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
     app.include_router(jobs_router, prefix="/v1")

@@ -56,8 +56,8 @@ Note: `python-multipart` is already in `pyproject.toml`. Only `jinja2` and `aiof
 
 - [ ] T070 Create `src/rulekiln/ui/view_models.py` with the following models (all `BaseModel`, no bare dicts):
   - `JobListItemView` — `job_id`, `task_name`, `task_mode`, `status`, `stage | None`, `selected_strategy | None`, `primary_metric_delta: float | None`, `created_at: datetime`, `detail_url: str`
-  - `JobDetailView` — `job_id`, `task_name`, `task_mode`, `status`, `stage | None`, `progress_completed: int | None`, `progress_total: int | None`, `selected_strategy | None`, `quality_gates_passed: bool | None`, `mlflow_run_id: str | None`, `mlflow_run_url: str | None`, `error_message: str | None`
-  - `ResultsSummaryView` — `job_id`, `primary_metric: str`, `baseline_score: float | None`, `dbscan_score: float | None`, `hdbscan_score: float | None`, `selected_score: float | None`, `selected_strategy: str | None`, `metric_delta: float | None`, `golden_failures: int | None`, `malformed_output_rate: float | None`, `prompt_token_count: int | None`, `fixed_count: int | None`, `broken_count: int | None`, `quality_gates_passed: bool | None`
+  - `JobDetailView` — core fields above plus split totals (`total_cases`, `train_cases`, `validation_cases`, `test_cases`, `golden_cases`), execution progress (`teacher_extraction_*`, `student_eval_split`, `student_eval_total`, per-strategy student completion counts), and diagnostics (`total_model_calls`, role-specific model calls, `micro_rules_count`, `synthesized_rules_count`, `selected_rules_count`)
+  - `ResultsSummaryView` — core score fields above plus recommendation/cost fields (`best_strategy`, `baseline_macro_f1`, `best_macro_f1`, `macro_f1_delta`, `macro_f1_relative_lift_percent`, `accuracy_lift_percentage_points`, `best_malformed_output_rate`, `estimated_total_cost_usd`, per-role costs, `total_model_calls`, `total_tokens`, `has_estimated_usage`)
   - `ProviderRouteView` — `profile_name: str`, `model_id: str`, `supports_chat: bool`, `supports_embeddings: bool`
   - `PreviewView` — `task_id`, `task_name`, `task_mode`, `case_count: int`, `train_count: int`, `validation_count: int`, `test_count: int`, `golden_count: int`, `evaluation_methods: list[str]`, `output_schema_present: bool`, `provider_routes: list[ProviderRouteView]`, `estimated_teacher_calls: int`, `estimated_student_eval_calls: int`, `estimated_embedding_calls: int`, `warnings: list[str]`, `errors: list[str]`
   - `ArtifactFileView` — `filename: str`, `relative_path: str`, `download_url: str`, `content_type: str`
@@ -104,6 +104,7 @@ Note: `python-multipart` is already in `pyproject.toml`. Only `jinja2` and `aiof
   - Read `cases_file` bytes, parse each line as JSON — collect `cases.jsonl` errors
   - Validate schema versions, task mode consistency, output schema presence, provider profile references using `validate_distillation_request` and custom preview checks
   - Count splits (train / validation / test / golden)
+  - Resolve split policy and include fallback warning when evaluation is not on validation
   - Detect evaluation methods from case `evaluation_json`
   - Estimate model call counts
   - Build `PreviewView` with all errors and warnings
@@ -141,7 +142,7 @@ Note: `python-multipart` is already in `pyproject.toml`. Only `jinja2` and `aiof
 **Purpose**: `GET /ui/jobs/{job_id}` and `GET /ui/jobs/{job_id}/status-fragment` — show live progress.
 
 - [ ] T081 Implement `GET /ui/jobs/{job_id}` handler — load `DistillationJob`, latest `StageMarker`, `EvalRun` for best strategy; build `JobDetailView` (include `mlflow_run_url` if `MLFLOW_UI_BASE_URL` is set); render `jobs/detail.html`
-- [ ] T082 Create `src/rulekiln/templates/jobs/detail.html` — extends `base.html`; status badge, stage, provider/model routes, selected strategy, quality gate status, MLflow run link, artifact links, HTMX polling `<div>` for running/queued jobs; links to results / prompt / rules / eval-report / failures / artifacts sub-pages
+- [ ] T082 Create `src/rulekiln/templates/jobs/detail.html` — extends `base.html`; status badge/stage and HTMX polling fragment, split metric cards, execution progress (teacher extraction + per-strategy student eval counts), pipeline diagnostics (model calls by role + rule counts), MLflow run link, and links to results / prompt / rules / eval-report / failures / artifacts sub-pages
 - [ ] T083 Implement `GET /ui/jobs/{job_id}/status-fragment` handler — return `jobs/status_fragment.html` partial only; omit polling attributes when status is `completed` or `failed`
 - [ ] T084 Create `src/rulekiln/templates/jobs/status_fragment.html` — status badge, current stage, optional progress bar (`progress_completed / progress_total`), last error if failed, last-updated timestamp; includes `hx-get`, `hx-trigger="every 2s"`, `hx-swap="outerHTML"` only while status is `queued` or `running`
 
@@ -154,7 +155,7 @@ Note: `python-multipart` is already in `pyproject.toml`. Only `jinja2` and `aiof
 **Purpose**: `GET /ui/jobs/{job_id}/results` — show metric comparison and quality gate outcome.
 
 - [ ] T085 Implement `GET /ui/jobs/{job_id}/results` handler — load `EvalRun` rows for the job; build `ResultsSummaryView`; render `jobs/results.html`
-- [ ] T086 Create `src/rulekiln/templates/jobs/results.html` — extends `base.html`; metric cards for baseline / DBSCAN / HDBSCAN scores and delta; selected strategy badge; quality gate pass/fail; golden failures count; malformed output rate; fixed/broken counts; MLflow run link; artifact download links; no charts — metric cards and a summary table only
+- [ ] T086 Create `src/rulekiln/templates/jobs/results.html` — extends `base.html`; metric cards for baseline / DBSCAN / HDBSCAN / selected scores and delta; details table (selected strategy, quality gate, golden failures, malformed output, fixed/broken counts); recommendation section (best strategy, baseline macro_f1, relative lift, accuracy lift); run cost and usage summary; links to eval report and artifacts; no charts
 
 **Checkpoint**: `GET /ui/jobs/{job_id}/results` renders scores and selected strategy for a completed job.
 
@@ -175,11 +176,11 @@ Note: `python-multipart` is already in `pyproject.toml`. Only `jinja2` and `aiof
 
 ## Phase 11: Eval Report & Failures Views
 
-**Purpose**: Detailed evaluation breakdown and fixed/broken/unchanged case analysis.
+**Purpose**: Detailed evaluation breakdown and fixed/broken case analysis.
 
-- [ ] T091 Implement `GET /ui/jobs/{job_id}/eval-report` handler — load all `EvalRun` rows; render `jobs/eval_report.html`
-- [ ] T092 Create `src/rulekiln/templates/jobs/eval_report.html` — extends `base.html`; primary metric row, per-strategy metric rows (assertion pass rate, rubric score, malformed output rate, golden case status); quality gate details table
-- [ ] T093 [P] Implement `GET /ui/jobs/{job_id}/failures` handler — attempt to load `failures_fixed.jsonl` / `failures_broken.jsonl` from the artifact root; if files are absent (job still running or incomplete), pass an empty list and an `artifacts_pending: True` flag; support query params `?failure_class=fixed|broken|unchanged&split=validation|golden|test`; render `jobs/failures.html`
+- [ ] T091 Implement `GET /ui/jobs/{job_id}/eval-report` handler — load all `EvalRun` rows, read `outputs/strategy_comparison.json` for `evaluation_split_warning`, and render `jobs/eval_report.html`
+- [ ] T092 Create `src/rulekiln/templates/jobs/eval_report.html` — extends `base.html`; table rows per strategy/split with primary metric score, accuracy, macro_f1, malformed rate, model; show fallback warning banner when `evaluation_split_warning` is present
+- [ ] T093 [P] Implement `GET /ui/jobs/{job_id}/failures` handler — attempt to load `failures_fixed.jsonl` / `failures_broken.jsonl` from the artifact root; if files are absent (job still running or incomplete), pass an empty list and an `artifacts_pending: True` flag; support query params `?failure_class=fixed|broken&split=validation|golden|test`; render `jobs/failures.html`
 - [ ] T094 [P] Create `src/rulekiln/templates/jobs/failures.html` — extends `base.html`; if `artifacts_pending` is true, show _"Artifact files are not yet available — the job must complete before failures can be reviewed."_ and hide the table; otherwise show filter controls (failure class, split) using HTMX `hx-get` on change; table with columns: case_id, split, failure class, expected (truncated), baseline output (truncated), distilled output (truncated), failed assertion, matched rules; expandable row details for long content
 
 **Checkpoint**: Failures page renders with filter controls; filtering changes table content via HTMX.

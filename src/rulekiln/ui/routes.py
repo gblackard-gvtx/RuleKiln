@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 import uuid
 from pathlib import Path
 from typing import Annotated
@@ -11,6 +12,7 @@ import yaml
 from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.responses import FileResponse, RedirectResponse, Response
 
@@ -19,18 +21,30 @@ from rulekiln.api.validators.request_shape import (
     validate_distillation_request,
 )
 from rulekiln.config.settings import AppSettings, get_settings
-from rulekiln.db.models import DistillationJob
+from rulekiln.db.models import (
+    Case,
+    DistillationJob,
+    EvalCaseResultRecord,
+    MicroRule,
+    StageMarker,
+    SynthesizedRule,
+)
 from rulekiln.db.repositories.jobs import (
+    cancel_job,
     create_job,
     get_eval_runs_for_job,
     get_job,
+    retry_job,
     get_selected_prompt_version,
     get_synthesized_rules_for_job,
     list_recent_jobs,
     update_job_status,
 )
+from rulekiln.db.repositories.model_calls import summarize_model_call_events
 from rulekiln.db.session import get_db_session
 from rulekiln.observability.logging import get_logger
+from rulekiln.pipeline.evaluator import get_primary_metric
+from rulekiln.pipeline.split_policy import resolve_split_policy
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask
 from rulekiln.ui.forms import NewJobForm
@@ -43,6 +57,7 @@ from rulekiln.ui.view_models import (
     ProviderRouteView,
     ResultsSummaryView,
 )
+from rulekiln.workers.dbos_runtime import ensure_dbos_runtime_launched, require_dbos_available
 from rulekiln.workers.distillation_worker import run_distillation_pipeline
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
@@ -73,6 +88,8 @@ _KNOWN_ARTIFACT_PATTERNS: list[str] = [
     "outputs/failures_fixed.jsonl",
     "outputs/failures_broken.jsonl",
 ]
+_DB_CASE_ID_DELIMITER = "::"
+_EXTRACTION_CASE_MARKER_PREFIX = "extracting_case:"
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -111,6 +128,254 @@ def _ext_ok(filename: str | None) -> bool:
     if not filename:
         return False
     return Path(filename).suffix.lower() in _ALLOWED_EXTENSIONS
+
+
+def _resolve_primary_metric(job: DistillationJob) -> str:
+    """Resolve primary metric using task config first, then request override, then mode default."""
+    req_json = job.request_json
+    if isinstance(req_json, dict):
+        task_obj = req_json.get("task")
+        if isinstance(task_obj, dict):
+            eval_obj = task_obj.get("evaluation")
+            if isinstance(eval_obj, dict):
+                metric = eval_obj.get("primary_metric")
+                if isinstance(metric, str) and metric.strip():
+                    return metric.strip()
+
+        metric_override = req_json.get("metric")
+        if isinstance(metric_override, str) and metric_override.strip():
+            return metric_override.strip()
+
+    return get_primary_metric(job.task_mode)
+
+
+def _score_for_metric(run: object, primary_metric: str) -> float | None:
+    """Map a primary metric name to the corresponding EvalRun value."""
+    metric = primary_metric.strip().lower()
+    if metric == "macro_f1":
+        return getattr(run, "macro_f1", None)
+    if metric == "accuracy":
+        return getattr(run, "accuracy", None)
+    return getattr(run, "weighted_case_score", None)
+
+
+def _select_summary_eval_run(eval_runs: Sequence[object], strategy: str) -> object | None:
+    """Pick one EvalRun per strategy with split preference: validation -> test -> train."""
+    strategy_runs = [run for run in eval_runs if getattr(run, "strategy", None) == strategy]
+    if not strategy_runs:
+        return None
+
+    for split_name in ("validation", "test", "train"):
+        split_runs = [run for run in strategy_runs if getattr(run, "split", None) == split_name]
+        if split_runs:
+            return split_runs[-1]
+    return strategy_runs[-1]
+
+
+def _load_json_object(path: Path) -> dict[str, object] | None:
+    if not path.exists():
+        return None
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+        return None
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
+
+def _count_non_empty_jsonl_rows(path: Path) -> int:
+    if not path.exists():
+        return 0
+    try:
+        return sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+    except (OSError, UnicodeDecodeError):
+        return 0
+
+
+def _as_float(value: object) -> float | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _as_int(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _as_bool(value: object) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    return None
+
+
+def _empty_split_counts() -> dict[str, int]:
+    return {"train": 0, "validation": 0, "test": 0, "golden": 0}
+
+
+def _split_policy_from_request_json(
+    job: DistillationJob,
+) -> tuple[dict[str, int], int, str, int, set[str]] | None:
+    req_json = job.request_json
+    if not isinstance(req_json, dict):
+        return None
+
+    try:
+        payload = DistillationRequest.model_validate(req_json)
+    except ValidationError:
+        return None
+
+    split_policy = resolve_split_policy(payload.cases)
+    split_counts = _empty_split_counts()
+    for split_name, count in split_policy.split_counts.items():
+        split_counts[split_name] = int(count)
+    train_case_ids = {case.id for case in split_policy.extraction_cases}
+
+    return (
+        split_counts,
+        len(split_policy.extraction_cases),
+        split_policy.evaluation_split,
+        len(split_policy.evaluation_cases),
+        train_case_ids,
+    )
+
+
+async def _load_db_case_split_counts(session: AsyncSession, job_id: str) -> dict[str, int]:
+    counts = _empty_split_counts()
+    result = await session.execute(
+        select(Case.split, func.count()).where(Case.job_id == job_id).group_by(Case.split)
+    )
+    for split_name, count in result.all():
+        split_key = str(split_name)
+        counts[split_key] = int(count)
+    return counts
+
+
+def _payload_case_id_from_db_case_id(job_id: str, db_case_id: str) -> str:
+    prefix = f"{job_id}{_DB_CASE_ID_DELIMITER}"
+    if db_case_id.startswith(prefix):
+        return db_case_id[len(prefix) :]
+    return db_case_id
+
+
+def _payload_case_id_from_extraction_marker(artifact_type: str | None) -> str | None:
+    if artifact_type is None:
+        return None
+    if not artifact_type.startswith(_EXTRACTION_CASE_MARKER_PREFIX):
+        return None
+    return artifact_type[len(_EXTRACTION_CASE_MARKER_PREFIX) :]
+
+
+async def _load_db_train_payload_case_ids(session: AsyncSession, job_id: str) -> set[str]:
+    result = await session.execute(
+        select(Case.id).where(Case.job_id == job_id, Case.split == "train")
+    )
+    payload_case_ids: set[str] = set()
+    for db_case_id in result.scalars().all():
+        payload_case_ids.add(_payload_case_id_from_db_case_id(job_id, str(db_case_id)))
+    return payload_case_ids
+
+
+def _resolve_eval_target_from_split_counts(split_counts: dict[str, int]) -> tuple[str | None, int]:
+    for split_name in ("validation", "train", "test", "golden"):
+        split_count = int(split_counts.get(split_name, 0))
+        if split_count > 0:
+            return split_name, split_count
+    return None, 0
+
+
+async def _load_teacher_extraction_completed_count(
+    session: AsyncSession,
+    job_id: str,
+    *,
+    allowed_payload_case_ids: set[str] | None,
+) -> int:
+    marker_result = await session.execute(
+        select(func.distinct(StageMarker.artifact_type)).where(
+            StageMarker.job_id == job_id,
+            StageMarker.stage == "extracting_rules",
+            StageMarker.artifact_type.like(f"{_EXTRACTION_CASE_MARKER_PREFIX}%"),
+        )
+    )
+    marker_case_ids: set[str] = set()
+    for artifact_type in marker_result.scalars().all():
+        if not isinstance(artifact_type, str):
+            continue
+        payload_case_id = _payload_case_id_from_extraction_marker(artifact_type)
+        if payload_case_id is not None:
+            marker_case_ids.add(payload_case_id)
+
+    micro_rule_result = await session.execute(
+        select(func.distinct(MicroRule.case_id)).where(MicroRule.job_id == job_id)
+    )
+    micro_rule_case_ids: set[str] = set()
+    for db_case_id in micro_rule_result.scalars().all():
+        if not isinstance(db_case_id, str):
+            continue
+        micro_rule_case_ids.add(_payload_case_id_from_db_case_id(job_id, db_case_id))
+
+    if allowed_payload_case_ids is not None:
+        marker_case_ids = marker_case_ids.intersection(allowed_payload_case_ids)
+        micro_rule_case_ids = micro_rule_case_ids.intersection(allowed_payload_case_ids)
+
+    return max(len(marker_case_ids), len(micro_rule_case_ids))
+
+
+async def _load_student_eval_completed_count(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    strategy: str,
+    split: str | None,
+) -> int:
+    if split is None:
+        return 0
+
+    completed_value = await session.scalar(
+        select(func.count(func.distinct(EvalCaseResultRecord.case_id))).where(
+            EvalCaseResultRecord.job_id == job_id,
+            EvalCaseResultRecord.strategy == strategy,
+            EvalCaseResultRecord.split == split,
+        )
+    )
+    return int(completed_value or 0)
+
+
+async def _load_rule_counts(session: AsyncSession, job_id: str) -> tuple[int, int, int]:
+    micro_rules_count_value = await session.scalar(
+        select(func.count()).select_from(MicroRule).where(MicroRule.job_id == job_id)
+    )
+    synthesized_rules_count_value = await session.scalar(
+        select(func.count()).select_from(SynthesizedRule).where(SynthesizedRule.job_id == job_id)
+    )
+    selected_rules_count_value = await session.scalar(
+        select(func.count())
+        .select_from(SynthesizedRule)
+        .where(
+            SynthesizedRule.job_id == job_id,
+            SynthesizedRule.is_pruned == False,  # noqa: E712
+        )
+    )
+    return (
+        int(micro_rules_count_value or 0),
+        int(synthesized_rules_count_value or 0),
+        int(selected_rules_count_value or 0),
+    )
+
+
+def _model_call_count_for_role(by_role: object, role: str) -> int | None:
+    if not isinstance(by_role, dict):
+        return None
+    role_bucket = by_role.get(role)
+    if not isinstance(role_bucket, dict):
+        return 0
+    return _as_int(role_bucket.get("call_count")) or 0
 
 
 # ── Phase 4: Job list ─────────────────────────────────────────────────────────
@@ -263,12 +528,20 @@ async def preview_job(
         errors.append(str(exc))
 
     # ── Count splits and detect evaluation methods ──
-    split_counts: dict[str, int] = {"train": 0, "validation": 0, "test": 0, "golden": 0}
+    split_policy = resolve_split_policy(cases)
+    split_counts: dict[str, int] = {
+        "train": split_policy.split_counts.get("train", 0),
+        "validation": split_policy.split_counts.get("validation", 0),
+        "test": split_policy.split_counts.get("test", 0),
+        "golden": split_policy.split_counts.get("golden", 0),
+    }
     eval_method_set: set[str] = set()
     for case in cases:
-        split_counts[case.split] = split_counts.get(case.split, 0) + 1
         for assertion in case.evaluation.assertions:
             eval_method_set.add(assertion.type)
+
+    if split_policy.fallback_warning is not None:
+        warnings.append(split_policy.fallback_warning)
 
     # ── Provider routes for display ──
     route_specs: list[tuple[str, str, str]] = [
@@ -309,7 +582,7 @@ async def preview_job(
         output_schema_present=bool(task.output_schema),
         provider_routes=provider_routes,
         estimated_teacher_calls=train_count,
-        estimated_student_eval_calls=(validation_count + test_count) * 2,
+        estimated_student_eval_calls=len(split_policy.evaluation_cases) * 3,
         estimated_embedding_calls=train_count * 5,
         warnings=warnings,
         errors=errors,
@@ -332,6 +605,7 @@ async def preview_job(
         task_mode=task.task_mode,
         status="draft",
         stage=None,
+        max_attempts=settings.worker_max_attempts,
         request_json=distillation_request.model_dump(mode="json"),
     )
     await create_job(session, draft)
@@ -361,9 +635,16 @@ async def create_job_from_ui(
             detail="Draft job not found.",
         )
     if job.status != "draft":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Job has already been submitted.",
+        logger.info(
+            "ui_job_already_submitted",
+            job_id=job.id,
+            task_id=job.task_id,
+            status=job.status,
+        )
+        # Treat duplicate submits as idempotent and send the user to the job page.
+        return RedirectResponse(
+            url=f"/ui/jobs/{job.id}",
+            status_code=status.HTTP_303_SEE_OTHER,
         )
 
     try:
@@ -375,8 +656,25 @@ async def create_job_from_ui(
             detail=f"Validation failed: {exc}",
         ) from exc
 
-    await update_job_status(session, job.id, status="created")
-    background_tasks.add_task(run_distillation_pipeline, job.id, payload)
+    if settings.execution_backend == "dbos":
+        try:
+            require_dbos_available()
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+
+    # Ensure draft jobs (including older rows) use the current retry cap.
+    job.max_attempts = settings.worker_max_attempts
+    await session.commit()
+
+    if settings.execution_backend == "background_tasks":
+        await update_job_status(session, job.id, status="created")
+        background_tasks.add_task(run_distillation_pipeline, job.id, payload)
+    else:
+        await update_job_status(session, job.id, status="pending")
+
     logger.info("ui_job_submitted", job_id=job.id, task_id=job.task_id)
 
     return RedirectResponse(
@@ -407,6 +705,71 @@ async def job_detail(
             f"{settings.mlflow_ui_base_url.rstrip('/')}/#/experiments/1/runs/{job.mlflow_run_id}"
         )
 
+    request_split_policy = _split_policy_from_request_json(job)
+    db_split_counts = await _load_db_case_split_counts(session, job.id)
+    db_case_total = sum(db_split_counts.values())
+
+    split_counts = db_split_counts if db_case_total > 0 else _empty_split_counts()
+    train_payload_case_ids: set[str] | None = None
+    if db_case_total > 0:
+        train_payload_case_ids = await _load_db_train_payload_case_ids(session, job.id)
+
+    teacher_extraction_total = int(split_counts.get("train", 0))
+    student_eval_split, student_eval_total = _resolve_eval_target_from_split_counts(split_counts)
+
+    if db_case_total == 0 and request_split_policy is not None:
+        (
+            request_split_counts,
+            request_teacher_total,
+            request_eval_split,
+            request_eval_total,
+            request_train_case_ids,
+        ) = request_split_policy
+        split_counts = request_split_counts
+        teacher_extraction_total = request_teacher_total
+        student_eval_split = request_eval_split
+        student_eval_total = request_eval_total
+        train_payload_case_ids = request_train_case_ids
+
+    teacher_extraction_completed = await _load_teacher_extraction_completed_count(
+        session,
+        job.id,
+        allowed_payload_case_ids=train_payload_case_ids,
+    )
+    if teacher_extraction_total > 0:
+        teacher_extraction_completed = min(teacher_extraction_completed, teacher_extraction_total)
+
+    student_baseline_completed = await _load_student_eval_completed_count(
+        session,
+        job_id=job.id,
+        strategy="baseline",
+        split=student_eval_split,
+    )
+    student_dbscan_completed = await _load_student_eval_completed_count(
+        session,
+        job_id=job.id,
+        strategy="dbscan",
+        split=student_eval_split,
+    )
+    student_hdbscan_completed = await _load_student_eval_completed_count(
+        session,
+        job_id=job.id,
+        strategy="hdbscan",
+        split=student_eval_split,
+    )
+
+    usage_summary = await summarize_model_call_events(session, job.id)
+    by_role = usage_summary.get("by_role")
+    total_model_calls = _as_int(usage_summary.get("total_model_calls"))
+    teacher_model_calls = _model_call_count_for_role(by_role, "teacher")
+    student_model_calls = _model_call_count_for_role(by_role, "student")
+    embedding_model_calls = _model_call_count_for_role(by_role, "embedding")
+    judge_model_calls = _model_call_count_for_role(by_role, "judge")
+
+    micro_rules_count, synthesized_rules_count, selected_rules_count = await _load_rule_counts(
+        session, job.id
+    )
+
     detail = JobDetailView(
         job_id=job.id,
         task_name=job.task_name,
@@ -420,8 +783,141 @@ async def job_detail(
         mlflow_run_id=job.mlflow_run_id,
         mlflow_run_url=mlflow_run_url,
         error_message=job.error_message,
+        total_cases=sum(split_counts.values()),
+        train_cases=split_counts.get("train", 0),
+        validation_cases=split_counts.get("validation", 0),
+        test_cases=split_counts.get("test", 0),
+        golden_cases=split_counts.get("golden", 0),
+        teacher_extraction_completed=teacher_extraction_completed,
+        teacher_extraction_total=teacher_extraction_total,
+        student_eval_split=student_eval_split,
+        student_eval_total=student_eval_total,
+        student_baseline_completed=student_baseline_completed,
+        student_dbscan_completed=student_dbscan_completed,
+        student_hdbscan_completed=student_hdbscan_completed,
+        total_model_calls=total_model_calls,
+        teacher_model_calls=teacher_model_calls,
+        student_model_calls=student_model_calls,
+        embedding_model_calls=embedding_model_calls,
+        judge_model_calls=judge_model_calls,
+        micro_rules_count=micro_rules_count,
+        synthesized_rules_count=synthesized_rules_count,
+        selected_rules_count=selected_rules_count,
     )
     return templates.TemplateResponse(request, "jobs/detail.html", {"job": detail})
+
+
+@router.post("/jobs/{job_id}/cancel")
+async def cancel_job_from_ui(
+    job_id: str,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[AppSettings, Depends(get_settings)],
+) -> RedirectResponse:
+    """Cancel a queued/running job from the operator UI.
+
+    For DBOS backend, this performs a best-effort workflow cancellation.
+    For all backends, it marks the job terminal with failed_terminal status.
+    """
+    job = await get_job(session, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+
+    terminal_statuses = {"completed", "failed", "failed_terminal", "failed_retryable"}
+    if job.status in terminal_statuses:
+        return RedirectResponse(
+            url=f"/ui/jobs/{job.id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    if settings.execution_backend == "dbos":
+        try:
+            ensure_dbos_runtime_launched(settings)
+            from dbos import DBOS  # imported lazily to keep optional dependency behavior
+
+            workflow_id = f"rulekiln-job-{job.id}"
+            workflow_status = DBOS.get_workflow_status(workflow_id)
+            if workflow_status is not None:
+                DBOS.cancel_workflow(workflow_id)
+                logger.info("ui_dbos_workflow_cancelled", job_id=job.id, workflow_id=workflow_id)
+        except Exception as exc:
+            logger.warning(
+                "ui_dbos_workflow_cancel_failed",
+                job_id=job.id,
+                error=str(exc),
+            )
+
+    await cancel_job(session, job.id, error_message="Cancelled by operator.")
+    logger.info("ui_job_cancelled", job_id=job.id, status="failed_terminal")
+    return RedirectResponse(
+        url=f"/ui/jobs/{job.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@router.post("/jobs/{job_id}/retry")
+async def retry_job_from_ui(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[AppSettings, Depends(get_settings)],
+) -> RedirectResponse:
+    """Requeue a failed job and resume from existing persisted progress."""
+    job = await get_job(session, job_id)
+    if job is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
+
+    retryable_statuses = {"failed", "failed_terminal", "failed_retryable"}
+    if job.status not in retryable_statuses:
+        return RedirectResponse(
+            url=f"/ui/jobs/{job.id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    if settings.execution_backend == "dbos":
+        try:
+            require_dbos_available()
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=str(exc),
+            ) from exc
+
+    queue_backends = {"postgres_queue", "dbos"}
+    if settings.execution_backend in queue_backends:
+        resulting_status = await retry_job(session, job.id, queue_backed=True)
+        logger.info(
+            "ui_job_retried",
+            job_id=job.id,
+            resulting_status=resulting_status,
+            execution_backend=settings.execution_backend,
+            queued=True,
+        )
+        return RedirectResponse(
+            url=f"/ui/jobs/{job.id}",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    try:
+        payload = DistillationRequest.model_validate(job.request_json)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Validation failed: {exc}",
+        ) from exc
+
+    resulting_status = await retry_job(session, job.id, queue_backed=False)
+    background_tasks.add_task(run_distillation_pipeline, job.id, payload)
+    logger.info(
+        "ui_job_retried",
+        job_id=job.id,
+        resulting_status=resulting_status,
+        execution_backend=settings.execution_backend,
+        queued=False,
+    )
+    return RedirectResponse(
+        url=f"/ui/jobs/{job.id}",
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.get("/jobs/{job_id}/status-fragment")
@@ -433,7 +929,7 @@ async def job_status_fragment(
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
-    polling = job.status in {"queued", "running", "created"}
+    polling = job.status in {"queued", "running", "created", "waiting_for_retry"}
     return templates.TemplateResponse(
         request,
         "jobs/status_fragment.html",
@@ -455,6 +951,7 @@ async def job_results(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[AppSettings, Depends(get_settings)],
 ) -> Response:
     job = await get_job(session, job_id)
     if job is None:
@@ -462,25 +959,118 @@ async def job_results(
 
     eval_runs = await get_eval_runs_for_job(session, job_id)
     selected_strategy = await _get_selected_strategy(session, job)
+    primary_metric = _resolve_primary_metric(job)
+
+    comparison_payload = _load_json_object(
+        Path(settings.artifact_root) / job_id / "outputs" / "strategy_comparison.json"
+    )
+    if selected_strategy is None and comparison_payload is not None:
+        payload_strategy = comparison_payload.get("selected_strategy")
+        if isinstance(payload_strategy, str) and payload_strategy.strip():
+            selected_strategy = payload_strategy.strip()
 
     score_map: dict[str, float | None] = {}
     malformed_map: dict[str, float | None] = {}
-    for run in eval_runs:
-        if run.split in {"validation", "test"}:
-            score_map[run.strategy] = run.weighted_case_score
-            malformed_map[run.strategy] = run.malformed_output_rate
+    run_map: dict[str, object] = {}
+    for strategy in ("baseline", "dbscan", "hdbscan"):
+        run = _select_summary_eval_run(eval_runs, strategy)
+        if run is None:
+            continue
+        run_map[strategy] = run
+        score_map[strategy] = _score_for_metric(run, primary_metric)
+        malformed_map[strategy] = _as_float(getattr(run, "malformed_output_rate", None))
 
     baseline_score = score_map.get("baseline")
     dbscan_score = score_map.get("dbscan")
     hdbscan_score = score_map.get("hdbscan")
     selected_score = score_map.get(selected_strategy or "") if selected_strategy else None
 
+    selected_malformed_output_rate = (
+        malformed_map.get(selected_strategy or "") if selected_strategy else None
+    )
+
+    best_strategy = selected_strategy
+    best_run = run_map.get(selected_strategy or "") if selected_strategy else None
+    if best_run is None:
+        ranked_runs = [
+            (strategy, run)
+            for strategy, run in run_map.items()
+            if _as_float(getattr(run, "macro_f1", None)) is not None
+        ]
+        if ranked_runs:
+            ranked_runs.sort(
+                key=lambda item: _as_float(getattr(item[1], "macro_f1", None)) or 0.0,
+                reverse=True,
+            )
+            best_strategy, best_run = ranked_runs[0]
+
+    baseline_run = run_map.get("baseline")
+    baseline_macro_f1 = _as_float(getattr(baseline_run, "macro_f1", None)) if baseline_run else None
+    best_macro_f1 = _as_float(getattr(best_run, "macro_f1", None)) if best_run else None
+    macro_f1_delta: float | None = None
+    if baseline_macro_f1 is not None and best_macro_f1 is not None:
+        macro_f1_delta = best_macro_f1 - baseline_macro_f1
+
+    macro_f1_relative_lift_percent: float | None = None
+    if macro_f1_delta is not None and baseline_macro_f1 is not None and baseline_macro_f1 != 0:
+        macro_f1_relative_lift_percent = (macro_f1_delta / baseline_macro_f1) * 100.0
+
+    baseline_accuracy = _as_float(getattr(baseline_run, "accuracy", None)) if baseline_run else None
+    best_accuracy = _as_float(getattr(best_run, "accuracy", None)) if best_run else None
+    accuracy_lift_percentage_points: float | None = None
+    if baseline_accuracy is not None and best_accuracy is not None:
+        accuracy_lift_percentage_points = (best_accuracy - baseline_accuracy) * 100.0
+
+    best_malformed_output_rate = (
+        _as_float(getattr(best_run, "malformed_output_rate", None)) if best_run else None
+    )
+
+    quality_gates_passed: bool | None = None
+    golden_failures: int | None = None
+    if comparison_payload is not None and selected_strategy in {"dbscan", "hdbscan"}:
+        gate_key = f"{selected_strategy}_gate"
+        gate_payload = comparison_payload.get(gate_key)
+        if isinstance(gate_payload, dict):
+            quality_gates_passed = _as_bool(gate_payload.get("passed"))
+            golden_failures = _as_int(gate_payload.get("golden_failures"))
+            if selected_malformed_output_rate is None:
+                selected_malformed_output_rate = _as_float(
+                    gate_payload.get("malformed_output_rate")
+                )
+
+    outputs_dir = Path(settings.artifact_root) / job_id / "outputs"
+    fixed_count = _count_non_empty_jsonl_rows(outputs_dir / "failures_fixed.jsonl")
+    broken_count = _count_non_empty_jsonl_rows(outputs_dir / "failures_broken.jsonl")
+
+    usage_summary = await summarize_model_call_events(session, job_id)
+    total_model_calls = _as_int(usage_summary.get("total_model_calls"))
+    has_persisted_usage = (total_model_calls or 0) > 0
+
+    if has_persisted_usage:
+        estimated_total_cost_usd = _as_float(usage_summary.get("estimated_total_cost_usd"))
+        teacher_cost_usd = _as_float(usage_summary.get("teacher_cost_usd"))
+        student_cost_usd = _as_float(usage_summary.get("student_cost_usd"))
+        embedding_cost_usd = _as_float(usage_summary.get("embedding_cost_usd"))
+        judge_cost_usd = _as_float(usage_summary.get("judge_cost_usd"))
+        total_tokens = _as_int(usage_summary.get("total_tokens"))
+        has_estimated_usage = bool(usage_summary.get("has_estimated_usage", False))
+    else:
+        estimated_total_cost_usd = (
+            float(job.estimated_total_cost_usd) if job.estimated_total_cost_usd is not None else None
+        )
+        teacher_cost_usd = float(job.teacher_cost_usd) if job.teacher_cost_usd is not None else None
+        student_cost_usd = float(job.student_cost_usd) if job.student_cost_usd is not None else None
+        embedding_cost_usd = (
+            float(job.embedding_cost_usd) if job.embedding_cost_usd is not None else None
+        )
+        judge_cost_usd = float(job.judge_cost_usd) if job.judge_cost_usd is not None else None
+        total_tokens = job.total_tokens if job.total_tokens > 0 else None
+        total_model_calls = None
+        has_estimated_usage = False
+
     metric_delta: float | None = None
     if selected_score is not None and baseline_score is not None:
         metric_delta = selected_score - baseline_score
-
-    req_json = job.request_json or {}
-    primary_metric = str(req_json.get("metric") or "weighted_case_score")
 
     summary = ResultsSummaryView(
         job_id=job_id,
@@ -491,14 +1081,27 @@ async def job_results(
         selected_score=selected_score,
         selected_strategy=selected_strategy,
         metric_delta=metric_delta,
-        golden_failures=None,
-        malformed_output_rate=malformed_map.get(selected_strategy or "")
-        if selected_strategy
-        else None,
+        golden_failures=golden_failures,
+        malformed_output_rate=selected_malformed_output_rate,
         prompt_token_count=None,
-        fixed_count=None,
-        broken_count=None,
-        quality_gates_passed=None,
+        fixed_count=fixed_count,
+        broken_count=broken_count,
+        quality_gates_passed=quality_gates_passed,
+        best_strategy=best_strategy,
+        baseline_macro_f1=baseline_macro_f1,
+        best_macro_f1=best_macro_f1,
+        macro_f1_delta=macro_f1_delta,
+        macro_f1_relative_lift_percent=macro_f1_relative_lift_percent,
+        accuracy_lift_percentage_points=accuracy_lift_percentage_points,
+        best_malformed_output_rate=best_malformed_output_rate,
+        estimated_total_cost_usd=estimated_total_cost_usd,
+        teacher_cost_usd=teacher_cost_usd,
+        student_cost_usd=student_cost_usd,
+        embedding_cost_usd=embedding_cost_usd,
+        judge_cost_usd=judge_cost_usd,
+        total_model_calls=total_model_calls,
+        total_tokens=total_tokens,
+        has_estimated_usage=has_estimated_usage,
     )
     return templates.TemplateResponse(request, "jobs/results.html", {"summary": summary})
 
@@ -556,13 +1159,31 @@ async def job_eval_report(
     request: Request,
     job_id: str,
     session: Annotated[AsyncSession, Depends(get_db_session)],
+    settings: Annotated[AppSettings, Depends(get_settings)],
 ) -> Response:
     job = await get_job(session, job_id)
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
     eval_runs = await get_eval_runs_for_job(session, job_id)
+    primary_metric = _resolve_primary_metric(job)
+    comparison_payload = _load_json_object(
+        Path(settings.artifact_root) / job_id / "outputs" / "strategy_comparison.json"
+    )
+    evaluation_split_warning: str | None = None
+    if comparison_payload is not None:
+        warning_value = comparison_payload.get("evaluation_split_warning")
+        if isinstance(warning_value, str) and warning_value.strip():
+            evaluation_split_warning = warning_value.strip()
+
     return templates.TemplateResponse(
-        request, "jobs/eval_report.html", {"eval_runs": eval_runs, "job_id": job_id}
+        request,
+        "jobs/eval_report.html",
+        {
+            "eval_runs": eval_runs,
+            "job_id": job_id,
+            "primary_metric": primary_metric,
+            "evaluation_split_warning": evaluation_split_warning,
+        },
     )
 
 

@@ -174,3 +174,4 @@ class StrategyComparison(BaseModel):
     hdbscan_gate: QualityGateResult | None = None
     selected_strategy: str | None = None
     selection_reason: str | None = None
+    evaluation_split_warning: str | None = None
