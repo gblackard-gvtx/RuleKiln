@@ -1,0 +1,16 @@
+{
+  "artifacts": [
+    "cases.normalized.jsonl",
+    "exports/mlflow_run_id.txt",
+    "metadata/manifest.json",
+    "metadata/settings_snapshot.json",
+    "metadata/token_cost_summary.json",
+    "outputs/baseline_prompt.md",
+    "outputs/distilled_prompt_dbscan.md",
+    "outputs/distilled_prompt_hdbscan.md",
+    "outputs/eval_report.json",
+    "outputs/selected_distilled_prompt.md",
+    "outputs/strategy_comparison.json",
+    "task.yaml"
+  ]
+}

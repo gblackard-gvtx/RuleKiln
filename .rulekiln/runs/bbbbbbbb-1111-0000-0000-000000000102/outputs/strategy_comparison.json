@@ -1,0 +1,199 @@
+{
+  "baseline_eval": {
+    "strategy": "baseline",
+    "model": "fake-model",
+    "split": "train",
+    "accuracy": 1.0,
+    "macro_f1": 1.0,
+    "weighted_case_score": 1.0,
+    "malformed_output_rate": 0.0,
+    "per_outcome_precision": {
+      "positive": 1.0
+    },
+    "per_outcome_recall": {
+      "positive": 1.0
+    },
+    "confusion_matrix": {
+      "positive": {
+        "positive": 3
+      }
+    },
+    "case_results": [
+      {
+        "case_id": "case-0",
+        "score": 1.0,
+        "passed": true,
+        "malformed": false,
+        "assertion_scores": {},
+        "actual_output": {
+          "label": "positive"
+        },
+        "error": null
+      },
+      {
+        "case_id": "case-1",
+        "score": 1.0,
+        "passed": true,
+        "malformed": false,
+        "assertion_scores": {},
+        "actual_output": {
+          "label": "positive"
+        },
+        "error": null
+      },
+      {
+        "case_id": "case-2",
+        "score": 1.0,
+        "passed": true,
+        "malformed": false,
+        "assertion_scores": {},
+        "actual_output": {
+          "label": "positive"
+        },
+        "error": null
+      }
+    ],
+    "violated_rule_counts": {},
+    "failed_assertion_path_counts": {},
+    "failures": []
+  },
+  "dbscan_eval": {
+    "strategy": "dbscan",
+    "model": "fake-model",
+    "split": "train",
+    "accuracy": 1.0,
+    "macro_f1": 1.0,
+    "weighted_case_score": 1.0,
+    "malformed_output_rate": 0.0,
+    "per_outcome_precision": {
+      "positive": 1.0
+    },
+    "per_outcome_recall": {
+      "positive": 1.0
+    },
+    "confusion_matrix": {
+      "positive": {
+        "positive": 3
+      }
+    },
+    "case_results": [
+      {
+        "case_id": "case-0",
+        "score": 1.0,
+        "passed": true,
+        "malformed": false,
+        "assertion_scores": {},
+        "actual_output": {
+          "label": "positive"
+        },
+        "error": null
+      },
+      {
+        "case_id": "case-1",
+        "score": 1.0,
+        "passed": true,
+        "malformed": false,
+        "assertion_scores": {},
+        "actual_output": {
+          "label": "positive"
+        },
+        "error": null
+      },
+      {
+        "case_id": "case-2",
+        "score": 1.0,
+        "passed": true,
+        "malformed": false,
+        "assertion_scores": {},
+        "actual_output": {
+          "label": "positive"
+        },
+        "error": null
+      }
+    ],
+    "violated_rule_counts": {},
+    "failed_assertion_path_counts": {},
+    "failures": []
+  },
+  "hdbscan_eval": {
+    "strategy": "hdbscan",
+    "model": "fake-model",
+    "split": "train",
+    "accuracy": 1.0,
+    "macro_f1": 1.0,
+    "weighted_case_score": 1.0,
+    "malformed_output_rate": 0.0,
+    "per_outcome_precision": {
+      "positive": 1.0
+    },
+    "per_outcome_recall": {
+      "positive": 1.0
+    },
+    "confusion_matrix": {
+      "positive": {
+        "positive": 3
+      }
+    },
+    "case_results": [
+      {
+        "case_id": "case-0",
+        "score": 1.0,
+        "passed": true,
+        "malformed": false,
+        "assertion_scores": {},
+        "actual_output": {
+          "label": "positive"
+        },
+        "error": null
+      },
+      {
+        "case_id": "case-1",
+        "score": 1.0,
+        "passed": true,
+        "malformed": false,
+        "assertion_scores": {},
+        "actual_output": {
+          "label": "positive"
+        },
+        "error": null
+      },
+      {
+        "case_id": "case-2",
+        "score": 1.0,
+        "passed": true,
+        "malformed": false,
+        "assertion_scores": {},
+        "actual_output": {
+          "label": "positive"
+        },
+        "error": null
+      }
+    ],
+    "violated_rule_counts": {},
+    "failed_assertion_path_counts": {},
+    "failures": []
+  },
+  "dbscan_gate": {
+    "strategy": "dbscan",
+    "passed": true,
+    "metric_delta": 0.0,
+    "regression_rate": 0.0,
+    "golden_failures": 0,
+    "malformed_output_rate": 0.0,
+    "prompt_tokens": 77,
+    "violations": []
+  },
+  "hdbscan_gate": {
+    "strategy": "hdbscan",
+    "passed": true,
+    "metric_delta": 0.0,
+    "regression_rate": 0.0,
+    "golden_failures": 0,
+    "malformed_output_rate": 0.0,
+    "prompt_tokens": 77,
+    "violations": []
+  },
+  "selected_strategy": "hdbscan",
+  "selection_reason": "All tie-breaks equal; defaulting to HDBSCAN (production default).",
+  "evaluation_split_warning": "No validation cases detected. Evaluation fell back to split=train."
+}
