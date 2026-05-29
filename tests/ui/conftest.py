@@ -40,7 +40,7 @@ def test_settings() -> AppSettings:
     return AppSettings(
         DATABASE_URL=_IN_MEMORY_URL,
         MLFLOW_TRACKING_URI="file:///tmp/mlflow-test",
-        EXECUTION_BACKEND="background_tasks",
+        EXECUTION_BACKEND="dbos",
         provider_profiles={
             "fake_chat": ProviderProfile(
                 provider="fake", supports_chat=True, supports_embeddings=False
@@ -61,13 +61,7 @@ async def client(db_session_factory, test_settings, monkeypatch):
         async with db_session_factory() as session:
             yield session
 
-    async def _noop_pipeline(job_id: str, payload) -> None:  # type: ignore[no-untyped-def]
-        pass
-
-    monkeypatch.setattr(
-        "rulekiln.ui.routes.run_distillation_pipeline",
-        _noop_pipeline,
-    )
+    monkeypatch.setattr("rulekiln.ui.routes.require_dbos_available", lambda: None)
 
     app.dependency_overrides[get_db_session] = _override_session
     app.dependency_overrides[get_settings] = lambda: test_settings

@@ -1204,7 +1204,7 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 - **Functions:**
 
-  - `async run_distillation_pipeline()`: Top-level full pipeline runner used by in-process and Postgres queue worker execution paths.
+  - `async run_distillation_pipeline()`: Top-level full pipeline runner used by the DBOS execution path.
 
   - `async _run()`: Internal helper function supporting the module implementation.
 
@@ -1219,24 +1219,6 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
   - `_db_synth_to_schema()`: Internal helper function supporting the module implementation.
 
   - `_eval_to_db()`: Internal helper function supporting the module implementation.
-
-
-
-## `src/rulekiln/workers/queue_worker.py`
-
-- **Module purpose:** Postgres-backed queue worker loop that claims jobs, renews leases, and runs distillation tasks until shutdown.
-
-- **Models / classes:** none.
-
-- **Functions:**
-
-  - `_install_signal_handlers()`: Internal helper function supporting the module implementation.
-
-  - `async _lease_renewer()`: Periodically renews the job lease until stop_event is set.
-
-  - `async worker_loop()`: Main loop: claim jobs, run pipeline, repeat until shutdown.
-
-  - `main()`: CLI entrypoint for the Postgres queue worker (`rulekiln-postgres-worker`).
 
 
 

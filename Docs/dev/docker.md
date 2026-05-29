@@ -124,7 +124,7 @@ Both workflows use the same `.env` contract. Key differences:
 
 The Compose stack sets `DATABASE_URL` and `MLFLOW_TRACKING_URI` directly in `docker-compose.yml`, overriding whatever is in `.env` for those two keys.
 
-If you want to run the legacy queue worker path instead of the default DBOS worker path, set `EXECUTION_BACKEND=postgres_queue` and run `uv run rulekiln-postgres-worker` (native) or change the worker command in `docker-compose.yml` to `python -m rulekiln.workers.queue_worker`.
+`EXECUTION_BACKEND` is DBOS-only; use `uv run rulekiln-worker` (native) or keep the compose worker command as `python -m rulekiln.workers.dbos_worker`.
 
 ### Retrying failed jobs
 

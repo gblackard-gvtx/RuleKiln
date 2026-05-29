@@ -62,12 +62,6 @@ async def worker_loop(worker_id: str) -> None:
     settings = get_settings()
     ensure_dbos_runtime_launched(settings)
 
-    if settings.execution_backend != "dbos":
-        logger.warning(
-            "dbos_worker_running_with_non_dbos_backend",
-            configured_backend=settings.execution_backend,
-        )
-
     session_factory = get_session_factory()
     logger.info("dbos_worker_started", worker_id=worker_id)
 

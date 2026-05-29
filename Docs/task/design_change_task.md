@@ -4,6 +4,8 @@ description: "Task list for RuleKiln Backend Design Adjustment"
 
 # Tasks: RuleKiln Backend Design Adjustment
 
+> **Status:** Historical/archival implementation task list. It tracks legacy queue/background migration work and is not the current DBOS-only runtime plan.
+
 **Input**: `Docs/plans/rulekiln_backend_design_adjustment_spec.md`
 
 **Prerequisites**: Existing MVP backend is complete and all current tests pass.
