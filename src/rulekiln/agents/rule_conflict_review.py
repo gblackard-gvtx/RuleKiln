@@ -1,8 +1,11 @@
 """Rule conflict review agent: detects and resolves contradictions in synthesized rules."""
 
+from rulekiln.observability.logging import get_logger
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.pipeline import MicroRuleSchema, RuleConflictReview, SynthesizedRuleSchema
 from rulekiln.schemas.task_case import RuleKilnTask
+
+logger = get_logger(__name__)
 
 _CONFLICT_SYSTEM_PROMPT = """\
 You review synthesized task-policy rules for contradictions.
@@ -75,16 +78,77 @@ async def review_rule_for_conflicts(
 ) -> RuleConflictReview:
     """Call the teacher model to review a synthesized rule for conflicts."""
     user_prompt = _build_conflict_review_prompt(task, rule, micro_rules)
-    result = await chat_client.complete_structured(
-        system_prompt=_CONFLICT_SYSTEM_PROMPT,
-        user_prompt=user_prompt,
-        output_schema=RuleConflictReview,
-        config=config,
-    )
-    parsed = result.parsed
-    if not isinstance(parsed, RuleConflictReview):
-        review = RuleConflictReview.model_validate(parsed.model_dump() if parsed else {})
-    else:
-        review = parsed
+    try:
+        result = await chat_client.complete_structured(
+            system_prompt=_CONFLICT_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            output_schema=RuleConflictReview,
+            config=config,
+        )
+        parsed = result.parsed
+        if not isinstance(parsed, RuleConflictReview):
+            review = RuleConflictReview.model_validate(parsed.model_dump() if parsed else {})
+        else:
+            review = parsed
+    except Exception as exc:
+        if _is_output_validation_retry_exhausted(exc):
+            logger.warning(
+                "conflict_review_fallback_applied",
+                synthesized_rule_id=rule.id,
+                error=str(exc),
+            )
+            # Fallback to a conservative keep decision when the provider repeatedly
+            # fails to emit schema-valid structured output.
+            return RuleConflictReview(
+                synthesized_rule_id=rule.id,
+                has_conflicts=False,
+                conflict_summary=(
+                    "Conflict review fallback: provider exhausted output validation retries."
+                ),
+                conflicting_micro_rule_ids=[],
+                resolution="keep",
+                resolved_rules=[],
+            )
+        raise
+
     # Ensure the rule ID is always set on the result
     return review.model_copy(update={"synthesized_rule_id": rule.id})
+
+
+def _is_output_validation_retry_exhausted(exc: Exception) -> bool:
+    for message in _collect_exception_messages(exc):
+        has_retry_exhaustion = "exceeded maximum retries" in message
+        has_validation_failure = (
+            "output validation" in message or "result validation" in message
+        )
+        if has_retry_exhaustion and has_validation_failure:
+            return True
+    return False
+
+
+def _collect_exception_messages(exc: BaseException) -> list[str]:
+    messages: list[str] = []
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+
+    while pending:
+        current = pending.pop()
+        current_id = id(current)
+        if current_id in seen:
+            continue
+        seen.add(current_id)
+
+        message = str(current).strip().lower()
+        if message:
+            messages.append(message)
+
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+
+        if current.__context__ is not None and current.__context__ is not current.__cause__:
+            pending.append(current.__context__)
+
+    return messages

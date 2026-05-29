@@ -8,6 +8,12 @@
 
 <h1 class="text-2xl font-bold text-gray-900 mb-6">Evaluation Report</h1>
 
+{% if evaluation_split_warning %}
+<div class="flash-error mb-6" role="alert">
+  <p class="font-semibold text-sm">{{ evaluation_split_warning }}</p>
+</div>
+{% endif %}
+
 {% if eval_runs %}
 <div class="card p-0 overflow-hidden">
   <table class="data-table">

@@ -116,3 +116,64 @@ async def update_job_usage_totals(
     )
     await session.execute(stmt)
     await session.flush()
+
+
+async def summarize_model_call_events(
+    session: AsyncSession,
+    job_id: str,
+) -> dict[str, object]:
+    """Aggregate persisted model_call_events for one job into token/cost totals."""
+    result = await session.execute(
+        select(ModelCallEvent).where(ModelCallEvent.job_id == job_id)
+    )
+    events = list(result.scalars().all())
+
+    total_input_tokens = 0
+    total_output_tokens = 0
+    total_tokens = 0
+    total_cost = Decimal("0")
+    has_estimated_usage = False
+
+    by_role: dict[str, dict[str, object]] = {}
+
+    for event in events:
+        input_tokens = event.input_tokens or 0
+        output_tokens = event.output_tokens or 0
+        token_total = event.total_tokens or (input_tokens + output_tokens)
+        cost = Decimal(str(event.total_cost_usd or 0))
+
+        total_input_tokens += input_tokens
+        total_output_tokens += output_tokens
+        total_tokens += token_total
+        total_cost += cost
+        has_estimated_usage = has_estimated_usage or event.usage_estimated or event.cost_estimated
+
+        role = event.role
+        if role not in by_role:
+            by_role[role] = {
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+                "call_count": 0,
+            }
+        bucket = by_role[role]
+        bucket["input_tokens"] = int(bucket["input_tokens"]) + input_tokens
+        bucket["output_tokens"] = int(bucket["output_tokens"]) + output_tokens
+        bucket["total_tokens"] = int(bucket["total_tokens"]) + token_total
+        bucket["cost_usd"] = float(bucket["cost_usd"]) + float(cost)
+        bucket["call_count"] = int(bucket["call_count"]) + 1
+
+    return {
+        "total_input_tokens": total_input_tokens,
+        "total_output_tokens": total_output_tokens,
+        "total_tokens": total_tokens,
+        "estimated_total_cost_usd": float(total_cost),
+        "teacher_cost_usd": float(by_role.get("teacher", {}).get("cost_usd", 0.0)),
+        "student_cost_usd": float(by_role.get("student", {}).get("cost_usd", 0.0)),
+        "embedding_cost_usd": float(by_role.get("embedding", {}).get("cost_usd", 0.0)),
+        "judge_cost_usd": float(by_role.get("judge", {}).get("cost_usd", 0.0)),
+        "has_estimated_usage": has_estimated_usage,
+        "total_model_calls": len(events),
+        "by_role": by_role,
+    }

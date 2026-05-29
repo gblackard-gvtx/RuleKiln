@@ -263,6 +263,7 @@ class _FakeDBOSErrorStatus:
     def __init__(self) -> None:
         self.start_calls: list[str] = []
         self.resume_calls: list[str] = []
+        self.delete_calls: list[str] = []
 
     async def get_workflow_status_async(self, workflow_id: str) -> _FakeStatus:
         _ = workflow_id
@@ -272,6 +273,9 @@ class _FakeDBOSErrorStatus:
         _ = args
         self.start_calls.append("start")
         return _FakeHandle()
+
+    async def delete_workflow_async(self, workflow_id: str) -> None:
+        self.delete_calls.append(workflow_id)
 
     async def resume_workflow_async(self, workflow_id: str) -> _FakeHandle:
         self.resume_calls.append(workflow_id)
@@ -298,15 +302,16 @@ class _FakeDBOSNoStatus:
 
 
 @pytest.mark.asyncio
-async def test_dbos_stage_workflow_uses_resume_on_error_status(monkeypatch) -> None:
+async def test_dbos_stage_workflow_restarts_on_error_status(monkeypatch) -> None:
     fake_dbos = _FakeDBOSErrorStatus()
     monkeypatch.setattr("rulekiln.workers.dbos_workflow.DBOS", fake_dbos)
     monkeypatch.setattr("rulekiln.workers.dbos_workflow.SetWorkflowID", _FakeSetWorkflowID)
 
     await run_dbos_stage_workflow("job-resume", _build_payload())
 
-    assert fake_dbos.start_calls == []
-    assert fake_dbos.resume_calls == ["rulekiln-job-job-resume"]
+    assert fake_dbos.start_calls == ["start"]
+    assert fake_dbos.resume_calls == []
+    assert fake_dbos.delete_calls == ["rulekiln-job-job-resume"]
 
 
 @pytest.mark.asyncio

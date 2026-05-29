@@ -60,6 +60,102 @@
   {% include "components/metric_card.html" %}
 </div>
 
+<div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+  {% set metric_label = "Total Cases" %}{% set metric_value = job.total_cases %}
+  {% include "components/metric_card.html" %}
+  {% set metric_label = "Train" %}{% set metric_value = job.train_cases %}
+  {% include "components/metric_card.html" %}
+  {% set metric_label = "Validation" %}{% set metric_value = job.validation_cases %}
+  {% include "components/metric_card.html" %}
+  {% set metric_label = "Test" %}{% set metric_value = job.test_cases %}
+  {% include "components/metric_card.html" %}
+  {% set metric_label = "Golden" %}{% set metric_value = job.golden_cases %}
+  {% include "components/metric_card.html" %}
+</div>
+
+<div class="card mb-6">
+  <h2 class="text-lg font-semibold mb-3">Execution Progress</h2>
+  <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+    <dt class="text-gray-500">Teacher extraction cases</dt>
+    <dd>
+      {% set teacher_completed = job.teacher_extraction_completed if job.teacher_extraction_completed is not none else 0 %}
+      {% set teacher_total = job.teacher_extraction_total if job.teacher_extraction_total is not none else 0 %}
+      {{ teacher_completed }}
+      /
+      {{ teacher_total }}
+      {% if teacher_total > 0 %}
+      ({{ "%.1f" | format((teacher_completed / teacher_total) * 100) }}%)
+      {% endif %}
+    </dd>
+
+    <dt class="text-gray-500">Student evaluation split</dt>
+    <dd>{{ job.student_eval_split if job.student_eval_split else "—" }}</dd>
+
+    <dt class="text-gray-500">Student baseline eval cases</dt>
+    <dd>
+      {% set student_eval_total = job.student_eval_total if job.student_eval_total is not none else 0 %}
+      {% set baseline_completed = job.student_baseline_completed if job.student_baseline_completed is not none else 0 %}
+      {{ baseline_completed }}
+      /
+      {{ student_eval_total }}
+      {% if student_eval_total > 0 %}
+      ({{ "%.1f" | format((baseline_completed / student_eval_total) * 100) }}%)
+      {% endif %}
+    </dd>
+
+    <dt class="text-gray-500">Student DBSCAN eval cases</dt>
+    <dd>
+      {% set dbscan_completed = job.student_dbscan_completed if job.student_dbscan_completed is not none else 0 %}
+      {{ dbscan_completed }}
+      /
+      {{ student_eval_total }}
+      {% if student_eval_total > 0 %}
+      ({{ "%.1f" | format((dbscan_completed / student_eval_total) * 100) }}%)
+      {% endif %}
+    </dd>
+
+    <dt class="text-gray-500">Student HDBSCAN eval cases</dt>
+    <dd>
+      {% set hdbscan_completed = job.student_hdbscan_completed if job.student_hdbscan_completed is not none else 0 %}
+      {{ hdbscan_completed }}
+      /
+      {{ student_eval_total }}
+      {% if student_eval_total > 0 %}
+      ({{ "%.1f" | format((hdbscan_completed / student_eval_total) * 100) }}%)
+      {% endif %}
+    </dd>
+  </dl>
+</div>
+
+<div class="card mb-6">
+  <h2 class="text-lg font-semibold mb-3">Pipeline Diagnostics</h2>
+  <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+    <dt class="text-gray-500">Total model calls</dt>
+    <dd>{{ job.total_model_calls if job.total_model_calls is not none else "—" }}</dd>
+
+    <dt class="text-gray-500">Teacher model calls</dt>
+    <dd>{{ job.teacher_model_calls if job.teacher_model_calls is not none else "—" }}</dd>
+
+    <dt class="text-gray-500">Student model calls</dt>
+    <dd>{{ job.student_model_calls if job.student_model_calls is not none else "—" }}</dd>
+
+    <dt class="text-gray-500">Embedding model calls</dt>
+    <dd>{{ job.embedding_model_calls if job.embedding_model_calls is not none else "—" }}</dd>
+
+    <dt class="text-gray-500">Judge model calls</dt>
+    <dd>{{ job.judge_model_calls if job.judge_model_calls is not none else "—" }}</dd>
+
+    <dt class="text-gray-500">Micro rules</dt>
+    <dd>{{ job.micro_rules_count if job.micro_rules_count is not none else "—" }}</dd>
+
+    <dt class="text-gray-500">Synthesized rules</dt>
+    <dd>{{ job.synthesized_rules_count if job.synthesized_rules_count is not none else "—" }}</dd>
+
+    <dt class="text-gray-500">Selected rules</dt>
+    <dd>{{ job.selected_rules_count if job.selected_rules_count is not none else "—" }}</dd>
+  </dl>
+</div>
+
 {% if job.mlflow_run_url %}
 <div class="mb-4">
   <a href="{{ job.mlflow_run_url }}" target="_blank" rel="noopener noreferrer"

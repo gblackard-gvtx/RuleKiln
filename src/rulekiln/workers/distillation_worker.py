@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 from hashlib import sha1, sha256
 import uuid
-from decimal import Decimal
 from enum import StrEnum
 from typing import Literal
 
-from sqlalchemy import select, update
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rulekiln.agents.rule_conflict_review import review_rule_for_conflicts
@@ -21,7 +20,6 @@ from rulekiln.db.models import (
     EvalCaseResultRecord,
     EvalRun,
     MicroRule,
-    ModelCallEvent,
     PromptVersion,
     RuleCluster,
     SynthesizedRule,
@@ -63,6 +61,7 @@ from rulekiln.artifacts.writer import (
 )
 from rulekiln.db.repositories.model_calls import (
     bulk_insert_model_call_events,
+    summarize_model_call_events,
     update_job_usage_totals,
 )
 from rulekiln.db.session import get_session_factory
@@ -88,6 +87,7 @@ from rulekiln.pipeline.prompt_compiler import (
 )
 from rulekiln.pipeline.quality_gates import check_quality_gates
 from rulekiln.pipeline.rule_pruning import prune_rules
+from rulekiln.pipeline.split_policy import resolve_split_policy
 from rulekiln.pipeline.strategy_selection import build_strategy_comparison
 from rulekiln.providers.chat import get_chat_client
 from rulekiln.providers.embedding import get_embedding_client
@@ -109,7 +109,6 @@ from rulekiln.schemas.pipeline import (
     SynthesizedRuleSchema,
 )
 from rulekiln.schemas.task_case import RuleKilnCase
-from rulekiln.usage.aggregator import ModelUsageAggregator
 from rulekiln.workers.error_classification import format_worker_error_message
 
 logger = get_logger(__name__)
@@ -193,7 +192,28 @@ async def _run(
     task = payload.task
     cases = payload.cases
     case_by_id = {case.id: case for case in cases}
+    split_policy = resolve_split_policy(cases)
+    extraction_cases = split_policy.extraction_cases
+    eval_cases = split_policy.evaluation_cases
+    eval_split = split_policy.evaluation_split
     collector = ModelCallCollector()
+
+    logger.info(
+        "split_policy_resolved",
+        job_id=job_id,
+        split_counts=split_policy.split_counts,
+        extraction_split=split_policy.extraction_split,
+        extraction_case_count=len(extraction_cases),
+        evaluation_split=eval_split,
+        evaluation_case_count=len(eval_cases),
+    )
+    if split_policy.fallback_warning is not None:
+        logger.warning(
+            "evaluation_split_fallback",
+            job_id=job_id,
+            warning=split_policy.fallback_warning,
+            split_counts=split_policy.split_counts,
+        )
 
     run_validate = phase in {"full", "validate_project", "compile_prompts"}
     run_compile_phase = phase in {"full", "compile_prompts"}
@@ -247,7 +267,6 @@ async def _run(
     embedding_client = get_embedding_client(embedding_config)
     judge_chat = get_chat_client(judge_config)
     eval_student_id = student_config.model
-    eval_split = "train"
     primary_metric = _resolve_primary_metric(payload, task.task_mode)
     dataset = _build_dataset_identifier(cases)
 
@@ -255,7 +274,6 @@ async def _run(
         # ── Stage: extracting_rules ───────────────────────────────────────
         if not await is_stage_complete(session, job_id, PipelineStage.EXTRACTING_RULES):
             await _set_stage(session, job_id, PipelineStage.EXTRACTING_RULES)
-            train_cases = [c for c in cases if c.split in ("train", "validation")]
             existing_micro_rules = await get_micro_rules_for_job(session, job_id)
             extracted_case_ids: set[str] = {
                 _payload_case_id_from_db_case_id(job_id, db_rule.case_id)
@@ -274,7 +292,7 @@ async def _run(
                 ),
                 collector,
             )
-            for case in train_cases:
+            for case in extraction_cases:
                 case_marker = _extracting_case_marker(case.id)
                 if case.id in extracted_case_ids or await is_stage_complete(
                     session,
@@ -449,7 +467,7 @@ async def _run(
             )
 
         # ── Stage: reviewing_rule_conflicts ──────────────────────────────
-        total_train_cases = len([c for c in cases if c.split in ("train", "validation")])
+        total_train_cases = len(extraction_cases)
         for strategy in ("dbscan", "hdbscan"):
             if await is_stage_complete(
                 session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy
@@ -670,7 +688,7 @@ async def _run(
 
         baseline_eval = await evaluate_prompt(
             baseline_prompt_text,
-            cases,
+            eval_cases,
             task,
             student_chat,
             student_config,
@@ -752,7 +770,7 @@ async def _run(
         prompt_text, _ = compile_prompt(task, schemas, strategy)
         ev = await evaluate_prompt(
             prompt_text,
-            cases,
+            eval_cases,
             task,
             student_chat,
             student_config,
@@ -847,6 +865,7 @@ async def _run(
             dbscan_token_count=token_counts.get("dbscan", 0),
             hdbscan_token_count=token_counts.get("hdbscan", 0),
         )
+        comparison.evaluation_split_warning = split_policy.fallback_warning
         selected_strategy = comparison.selected_strategy or "baseline"
 
         # ── Stage: selecting_strategy ─────────────────────────────────────
@@ -1008,11 +1027,7 @@ async def _run(
             if records:
                 await bulk_insert_model_call_events(session, job_id, records)
 
-            if phase == "full":
-                aggregator = ModelUsageAggregator()
-                usage_summary = aggregator.aggregate(records)
-            else:
-                usage_summary = await _summarize_persisted_model_calls(session, job_id)
+            usage_summary = await summarize_model_call_events(session, job_id)
 
             await update_job_usage_totals(session, job_id, usage_summary)
             written_artifacts.append(write_token_cost_summary(artifact_root, usage_summary))
@@ -1108,66 +1123,6 @@ async def _load_eval_result_from_db(
         confusion_matrix=confusion_matrix,
         case_results=case_results,
     )
-
-
-async def _summarize_persisted_model_calls(
-    session: AsyncSession,
-    job_id: str,
-) -> dict[str, object]:
-    rows = await session.execute(
-        select(ModelCallEvent).where(ModelCallEvent.job_id == job_id)
-    )
-    events = list(rows.scalars().all())
-
-    total_input_tokens = 0
-    total_output_tokens = 0
-    total_tokens = 0
-    total_cost = Decimal("0")
-    has_estimated_usage = False
-
-    by_role: dict[str, dict[str, object]] = {}
-
-    for event in events:
-        input_tokens = event.input_tokens or 0
-        output_tokens = event.output_tokens or 0
-        token_total = event.total_tokens or (input_tokens + output_tokens)
-        cost = Decimal(str(event.total_cost_usd or 0))
-
-        total_input_tokens += input_tokens
-        total_output_tokens += output_tokens
-        total_tokens += token_total
-        total_cost += cost
-        has_estimated_usage = has_estimated_usage or event.usage_estimated or event.cost_estimated
-
-        role = event.role
-        if role not in by_role:
-            by_role[role] = {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-                "cost_usd": 0.0,
-                "call_count": 0,
-            }
-        bucket = by_role[role]
-        bucket["input_tokens"] = int(bucket["input_tokens"]) + input_tokens
-        bucket["output_tokens"] = int(bucket["output_tokens"]) + output_tokens
-        bucket["total_tokens"] = int(bucket["total_tokens"]) + token_total
-        bucket["cost_usd"] = float(bucket["cost_usd"]) + float(cost)
-        bucket["call_count"] = int(bucket["call_count"]) + 1
-
-    return {
-        "total_input_tokens": total_input_tokens,
-        "total_output_tokens": total_output_tokens,
-        "total_tokens": total_tokens,
-        "estimated_total_cost_usd": float(total_cost),
-        "teacher_cost_usd": float(by_role.get("teacher", {}).get("cost_usd", 0.0)),
-        "student_cost_usd": float(by_role.get("student", {}).get("cost_usd", 0.0)),
-        "embedding_cost_usd": float(by_role.get("embedding", {}).get("cost_usd", 0.0)),
-        "judge_cost_usd": float(by_role.get("judge", {}).get("cost_usd", 0.0)),
-        "has_estimated_usage": has_estimated_usage,
-        "total_model_calls": len(events),
-        "by_role": by_role,
-    }
 
 
 async def _set_stage(session: AsyncSession, job_id: str, stage: PipelineStage) -> None:

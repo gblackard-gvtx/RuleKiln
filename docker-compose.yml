@@ -69,6 +69,7 @@ services:
       ARTIFACT_ROOT: .rulekiln/runs
       ENABLE_PGVECTOR: "false"
       EXECUTION_BACKEND: dbos
+      PYTHONPATH: /app/src
     depends_on:
       postgres:
         condition: service_healthy
@@ -97,6 +98,7 @@ services:
       ARTIFACT_ROOT: .rulekiln/runs
       ENABLE_PGVECTOR: "false"
       EXECUTION_BACKEND: dbos
+      PYTHONPATH: /app/src
     depends_on:
       postgres:
         condition: service_healthy

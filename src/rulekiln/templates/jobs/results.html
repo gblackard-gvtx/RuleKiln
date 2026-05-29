@@ -90,6 +90,44 @@
 </div>
 {% endif %}
 
+<div class="card mb-6">
+  <h2 class="text-lg font-semibold mb-3">Recommendation</h2>
+  <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+    <dt class="text-gray-500">Best strategy</dt>
+    <dd>{{ summary.best_strategy.upper() if summary.best_strategy else "—" }}</dd>
+
+    <dt class="text-gray-500">Baseline macro_f1</dt>
+    <dd>{{ "%.4f" | format(summary.baseline_macro_f1) if summary.baseline_macro_f1 is not none else "—" }}</dd>
+
+    <dt class="text-gray-500">Best macro_f1</dt>
+    <dd>{{ "%.4f" | format(summary.best_macro_f1) if summary.best_macro_f1 is not none else "—" }}</dd>
+
+    <dt class="text-gray-500">Delta</dt>
+    <dd>{{ "%+.4f" | format(summary.macro_f1_delta) if summary.macro_f1_delta is not none else "—" }}</dd>
+
+    <dt class="text-gray-500">Relative lift</dt>
+    <dd>{{ "%+.1f" | format(summary.macro_f1_relative_lift_percent) if summary.macro_f1_relative_lift_percent is not none else "—" }}{% if summary.macro_f1_relative_lift_percent is not none %}%{% endif %}</dd>
+
+    <dt class="text-gray-500">Accuracy lift</dt>
+    <dd>
+      {% if summary.accuracy_lift_percentage_points is not none %}
+        {{ "%+.2f" | format(summary.accuracy_lift_percentage_points) }} percentage points
+      {% else %}
+        —
+      {% endif %}
+    </dd>
+
+    <dt class="text-gray-500">Malformed outputs</dt>
+    <dd>
+      {% if summary.best_malformed_output_rate is not none %}
+        {{ "%.2f" | format(summary.best_malformed_output_rate * 100) }}%
+      {% else %}
+        —
+      {% endif %}
+    </dd>
+  </dl>
+</div>
+
 <div class="flex gap-3">
   <a href="/ui/jobs/{{ summary.job_id }}/artifacts"
      class="border border-gray-300 text-gray-700 hover:bg-gray-50 text-sm font-medium

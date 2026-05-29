@@ -153,6 +153,20 @@ def _workflow_id_for_job(job_id: str) -> str:
     return f"rulekiln-job-{job_id}"
 
 
+async def _start_stage_workflow(
+    workflow_id: str,
+    job_id: str,
+    payload_json: dict[str, object],
+) -> None:
+    assert DBOS is not None  # noqa: S101
+    assert SetWorkflowID is not None  # noqa: S101
+    with SetWorkflowID(workflow_id):
+        handle = await _await_if_needed(
+            DBOS.start_workflow_async(_run_rulekiln_stage_workflow, job_id, payload_json)
+        )
+    await _await_if_needed(handle.get_result())
+
+
 async def run_dbos_stage_workflow(job_id: str, payload: DistillationRequest) -> None:
     """Start or resume the DBOS stage workflow for one RuleKiln job."""
     payload_json = payload.model_dump(mode="json")
@@ -166,26 +180,21 @@ async def run_dbos_stage_workflow(job_id: str, payload: DistillationRequest) -> 
     existing_status = await _await_if_needed(DBOS.get_workflow_status_async(workflow_id))
 
     if existing_status is None:
-        with SetWorkflowID(workflow_id):
-            handle = await _await_if_needed(
-                DBOS.start_workflow_async(_run_rulekiln_stage_workflow, job_id, payload_json)
-            )
-        await _await_if_needed(handle.get_result())
+        await _start_stage_workflow(workflow_id, job_id, payload_json)
         return
 
     status_value = str(getattr(existing_status, "status", "") or "").upper()
     if status_value in {"ERROR", "CANCELLED"}:
-        handle = await _await_if_needed(DBOS.resume_workflow_async(workflow_id))
-        await _await_if_needed(handle.get_result())
+        # Resume can replay the last failure immediately when step outcomes are
+        # already persisted. Deleting and starting fresh preserves stage-marker
+        # idempotency while allowing patched logic to run.
+        await _await_if_needed(DBOS.delete_workflow_async(workflow_id))
+        await _start_stage_workflow(workflow_id, job_id, payload_json)
         return
 
     # For running/success/pending states, reusing the same workflow ID returns
     # the existing execution handle/result without duplicating completed steps.
-    with SetWorkflowID(workflow_id):
-        handle = await _await_if_needed(
-            DBOS.start_workflow_async(_run_rulekiln_stage_workflow, job_id, payload_json)
-        )
-    await _await_if_needed(handle.get_result())
+    await _start_stage_workflow(workflow_id, job_id, payload_json)
 
 
 async def run_dbos_spike_workflow(
