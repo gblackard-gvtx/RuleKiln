@@ -481,6 +481,12 @@ See [Docs/reference/python_module_reference.md](Docs/reference/python_module_ref
 
 ---
 
+## Contributing
+
+See `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, and `SECURITY.md` before contributing.
+
+---
+
 ## Research Inspiration
 
 RuleKiln is inspired by recent work on prompt-level distillation, including ["Prompt-Level Distillation: A Non-Parametric Alternative to Model Fine-Tuning for Efficient Reasoning"](https://doi.org/10.48550/arXiv.2602.21103) by Sanket Badhe and Deep Shah.
