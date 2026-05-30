@@ -4,7 +4,7 @@
 
 # RuleKiln
 
-> **⚠️ Work in Progress** — This project is under active development. The `main` branch is not yet stable or fully functional. APIs, configuration, and behaviour may change without notice. Not recommended for production use.
+> **Stable Alpha** — RuleKiln has reached a stable alpha milestone. Core pipeline and Operator UI workflows are stable for internal pilots and evaluation. APIs, configuration, and behaviour may still evolve before beta. Not recommended for production use.
 
 A prompt compiler that turns labelled cases into tested, versioned, auditable system prompts.
 
