@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
-from hashlib import sha1, sha256
 import uuid
 from enum import StrEnum
+from hashlib import sha256
+from pathlib import Path
 from typing import Literal
 
 from sqlalchemy import update
@@ -14,6 +15,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from rulekiln.agents.rule_conflict_review import review_rule_for_conflicts
 from rulekiln.agents.rule_extraction import extract_rules_for_case
 from rulekiln.agents.rule_synthesis import synthesize_cluster
+from rulekiln.artifacts.settings_snapshot import write_settings_snapshot
+from rulekiln.artifacts.writer import (
+    write_baseline_prompt,
+    write_cases_normalized,
+    write_eval_report,
+    write_manifest,
+    write_mlflow_run_id,
+    write_prompt,
+    write_selected_prompt,
+    write_strategy_comparison,
+    write_task,
+    write_token_cost_summary,
+)
 from rulekiln.config.settings import get_settings
 from rulekiln.db.models import (
     Case,
@@ -23,6 +37,11 @@ from rulekiln.db.models import (
     PromptVersion,
     RuleCluster,
     SynthesizedRule,
+)
+from rulekiln.db.repositories.eval_case_results import (
+    EvalCaseResultUpsert,
+    get_eval_case_results,
+    upsert_eval_case_result,
 )
 from rulekiln.db.repositories.jobs import (
     bulk_insert_cases,
@@ -40,24 +59,6 @@ from rulekiln.db.repositories.jobs import (
     set_mlflow_run_id,
     update_job_status,
     update_synthesized_rule_pruning,
-)
-from rulekiln.db.repositories.eval_case_results import (
-    EvalCaseResultUpsert,
-    get_eval_case_results,
-    upsert_eval_case_result,
-)
-from rulekiln.artifacts.settings_snapshot import write_settings_snapshot
-from rulekiln.artifacts.writer import (
-    write_baseline_prompt,
-    write_cases_normalized,
-    write_eval_report,
-    write_manifest,
-    write_mlflow_run_id,
-    write_prompt,
-    write_selected_prompt,
-    write_strategy_comparison,
-    write_task,
-    write_token_cost_summary,
 )
 from rulekiln.db.repositories.model_calls import (
     bulk_insert_model_call_events,
@@ -218,8 +219,6 @@ async def _run(
     run_validate = phase in {"full", "validate_project", "compile_prompts"}
     run_compile_phase = phase in {"full", "compile_prompts"}
     run_baseline_eval = phase in {"full", "evaluate_baseline"}
-    run_dbscan_eval = phase in {"full", "evaluate_dbscan"}
-    run_hdbscan_eval = phase in {"full", "evaluate_hdbscan"}
     run_aggregate = phase in {"full", "aggregate_evaluation_report"}
 
     teacher_profile = payload.teacher.provider_profile
@@ -229,7 +228,9 @@ async def _run(
     judge_profile = judge_route.provider_profile
 
     # ── Stage: validating_project ──────────────────────────────────────────
-    if run_validate and not await is_stage_complete(session, job_id, PipelineStage.VALIDATING_PROJECT):
+    if run_validate and not await is_stage_complete(
+        session, job_id, PipelineStage.VALIDATING_PROJECT
+    ):
         await _set_stage(session, job_id, PipelineStage.VALIDATING_PROJECT)
         await bulk_insert_cases(session, [_to_db_case(job_id, c) for c in cases])
         await mark_stage_complete(session, job_id, PipelineStage.VALIDATING_PROJECT)
@@ -426,8 +427,12 @@ async def _run(
                     for rid in cluster.rule_ids
                     if rid in rule_map
                 ]
-                case_ids = list({rule_map[rid].case_id for rid in cluster.rule_ids if rid in rule_map})
-                case_ids = [_payload_case_id_from_db_case_id(job_id, case_id) for case_id in case_ids]
+                case_ids = list(
+                    {rule_map[rid].case_id for rid in cluster.rule_ids if rid in rule_map}
+                )
+                case_ids = [
+                    _payload_case_id_from_db_case_id(job_id, case_id) for case_id in case_ids
+                ]
                 synthesis = await synthesize_cluster(
                     task,
                     cluster.topic,
@@ -646,7 +651,9 @@ async def _run(
         baseline_prompt_source = "compiled"
 
     baseline_eval: EvalResult | None = None
-    if run_baseline_eval and not await is_stage_complete(session, job_id, PipelineStage.EVALUATING_BASELINE):
+    if run_baseline_eval and not await is_stage_complete(
+        session, job_id, PipelineStage.EVALUATING_BASELINE
+    ):
         await _set_stage(session, job_id, PipelineStage.EVALUATING_BASELINE)
         set_tracking_context(
             ModelCallContext(
@@ -668,8 +675,7 @@ async def _run(
             split=eval_split,
         )
         completed_baseline_results = {
-            row.case_id: _eval_case_record_to_schema(row)
-            for row in existing_baseline_rows
+            row.case_id: _eval_case_record_to_schema(row) for row in existing_baseline_rows
         }
 
         async def _persist_baseline_case(case_result: CaseEvalResult) -> None:
@@ -747,18 +753,21 @@ async def _run(
             split=eval_split,
         )
         completed_case_results = {
-            row.case_id: _eval_case_record_to_schema(row)
-            for row in existing_rows
+            row.case_id: _eval_case_record_to_schema(row) for row in existing_rows
         }
 
-        async def _persist_strategy_case(case_result: CaseEvalResult) -> None:
+        async def _persist_strategy_case(
+            case_result: CaseEvalResult,
+            *,
+            strategy_name: str = strategy,
+        ) -> None:
             case = case_by_id.get(case_result.case_id)
             if case is None:
                 return
             payload_row = _build_eval_case_upsert_payload(
                 job_id=job_id,
                 student_id=eval_student_id,
-                strategy=strategy,
+                strategy=strategy_name,
                 split=eval_split,
                 case=case,
                 result=case_result,
@@ -1012,7 +1021,9 @@ async def _run(
             for strategy in ("dbscan", "hdbscan"):
                 prompt_text = compiled_prompts.get(strategy)
                 if prompt_text is None:
-                    db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
+                    db_synth = await get_selected_synthesized_rules_for_job(
+                        session, job_id, strategy
+                    )
                     schemas = [_db_synth_to_schema(r) for r in db_synth]
                     prompt_text, _ = compile_prompt(task, schemas, strategy)
                     compiled_prompts[strategy] = prompt_text
@@ -1021,7 +1032,9 @@ async def _run(
             if selected_strategy in {"dbscan", "hdbscan"}:
                 selected_prompt_text = compiled_prompts.get(selected_strategy)
                 if selected_prompt_text:
-                    written_artifacts.append(write_selected_prompt(artifact_root, selected_prompt_text))
+                    written_artifacts.append(
+                        write_selected_prompt(artifact_root, selected_prompt_text)
+                    )
 
             records = collector.records
             if records:
@@ -1103,10 +1116,7 @@ async def _load_eval_result_from_db(
 
     confusion_matrix_raw = run.confusion_matrix or {}
     confusion_matrix: dict[str, dict[str, int]] = {
-        str(expected): {
-            str(actual): int(count)
-            for actual, count in actuals.items()
-        }
+        str(expected): {str(actual): int(count) for actual, count in actuals.items()}
         for expected, actuals in confusion_matrix_raw.items()
     }
 
@@ -1161,7 +1171,7 @@ def _extracting_case_marker(payload_case_id: str) -> str:
 
 def _synthesis_cluster_marker(strategy: str, rule_ids: list[str]) -> str:
     cluster_key = ",".join(sorted(rule_ids))
-    digest = sha1(cluster_key.encode("utf-8")).hexdigest()[:16]
+    digest = sha256(cluster_key.encode("utf-8")).hexdigest()[:16]
     return f"synth_cluster:{strategy}:{digest}"
 
 
@@ -1276,13 +1286,9 @@ def _build_eval_case_upsert_payload(
     case: RuleKilnCase,
     result: CaseEvalResult,
 ) -> EvalCaseResultUpsert:
-    expected_json: dict[str, object] | str | None
-    if isinstance(case.expected, dict):
-        expected_json = case.expected
-    elif isinstance(case.expected, str):
-        expected_json = case.expected
-    else:
-        expected_json = None
+    expected_json: dict[str, object] | str | None = (
+        case.expected if isinstance(case.expected, (dict, str)) else None
+    )
 
     actual_json = result.actual_output
     raw_output = _actual_output_to_raw_text(result.actual_output)
@@ -1371,9 +1377,7 @@ def _delta_vs_baseline(
     )
 
 
-def _build_manifest_entries(root: "Path", paths: list[object]) -> list[str]:
-    from pathlib import Path
-
+def _build_manifest_entries(root: Path, paths: list[object]) -> list[str]:
     entries: set[str] = set()
     for entry in paths:
         if not isinstance(entry, Path):
@@ -1387,7 +1391,5 @@ def _build_manifest_entries(root: "Path", paths: list[object]) -> list[str]:
     return sorted(entries)
 
 
-def _artifact_root(artifact_root_setting: str, job_id: str) -> "Path":
-    from pathlib import Path
-
+def _artifact_root(artifact_root_setting: str, job_id: str) -> Path:
     return Path(artifact_root_setting) / job_id

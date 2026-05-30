@@ -1,5 +1,7 @@
 # RuleKiln Backend Design Adjustment Spec
 
+> **Status:** Historical/archival design document. It references legacy `BackgroundTasks` and `postgres_queue` paths that are no longer runtime-supported.
+
 ## 1. Purpose
 
 This spec defines a targeted backend adjustment for RuleKiln after the initial MVP backend has already been implemented.

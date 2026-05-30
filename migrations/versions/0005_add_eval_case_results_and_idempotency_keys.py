@@ -3,8 +3,8 @@
 Revision ID intentionally kept <= 32 chars for alembic_version.version_num compatibility.
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 revision = "0005_eval_case_results"
 down_revision = "0004_add_model_call_events"

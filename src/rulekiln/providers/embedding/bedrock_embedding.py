@@ -44,9 +44,7 @@ class BedrockEmbeddingClient(EmbeddingClient):
                 )
                 payload = json.loads(response["body"].read())
                 results.append(payload["embedding"])
-            usage = build_usage_from_provider(
-                input_tokens=None, output_tokens=0, total_tokens=None
-            )
+            usage = build_usage_from_provider(input_tokens=None, output_tokens=0, total_tokens=None)
             return EmbeddingResult(embeddings=results, usage=usage, raw_model=config.model)
 
         return await tracked_embedding_call(

@@ -33,7 +33,7 @@ def test_settings() -> AppSettings:
     return AppSettings(
         DATABASE_URL=_IN_MEMORY_URL,
         MLFLOW_TRACKING_URI="file:///tmp/mlflow-test",
-        EXECUTION_BACKEND="background_tasks",
+        EXECUTION_BACKEND="dbos",
         provider_profiles={
             "teacher": ProviderProfile(
                 provider="fake", supports_chat=True, supports_embeddings=False
@@ -57,13 +57,9 @@ async def client(db_session_factory, test_settings, monkeypatch):
         async with db_session_factory() as session:
             yield session
 
-    # Stub out the background pipeline task — these tests only verify the HTTP layer.
-    async def _noop_pipeline(job_id: str, payload) -> None:  # type: ignore[no-untyped-def]
-        pass
-
     monkeypatch.setattr(
-        "rulekiln.api.routes.distillation_jobs.run_distillation_pipeline",
-        _noop_pipeline,
+        "rulekiln.api.routes.distillation_jobs.require_dbos_available",
+        lambda: None,
     )
 
     app.dependency_overrides[get_db_session] = _override_session
@@ -95,7 +91,7 @@ async def test_create_job_returns_202(client) -> None:
     assert resp.status_code == 202
     body = resp.json()
     assert "job_id" in body
-    assert body["status"] == "created"
+    assert body["status"] == "pending"
 
 
 async def test_get_job_returns_status(client) -> None:
@@ -122,9 +118,7 @@ async def test_get_job_includes_mlflow_traceability_fields(
         from rulekiln.db.models import DistillationJob
 
         await session.execute(
-            update(DistillationJob)
-            .where(DistillationJob.id == job_id)
-            .values(mlflow_run_id=run_id)
+            update(DistillationJob).where(DistillationJob.id == job_id).values(mlflow_run_id=run_id)
         )
         await session.commit()
 
@@ -146,9 +140,11 @@ async def test_create_job_with_legacy_field_returns_422(client) -> None:
     assert resp.status_code == 422
 
 
-async def test_create_job_with_dbos_backend_returns_pending(client, test_settings, monkeypatch) -> None:
-    test_settings.execution_backend = "dbos"
-    monkeypatch.setattr("rulekiln.api.routes.distillation_jobs.require_dbos_available", lambda: None)
+async def test_create_job_with_dbos_backend_returns_pending(client, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "rulekiln.api.routes.distillation_jobs.require_dbos_available",
+        lambda: None,
+    )
 
     resp = await client.post("/v1/jobs/", json=_valid_payload())
     assert resp.status_code == 202
@@ -158,11 +154,8 @@ async def test_create_job_with_dbos_backend_returns_pending(client, test_setting
 
 async def test_create_job_with_dbos_backend_missing_runtime_returns_503(
     client,
-    test_settings,
     monkeypatch,
 ) -> None:
-    test_settings.execution_backend = "dbos"
-
     def _raise_runtime() -> None:
         raise RuntimeError("dbos unavailable")
 

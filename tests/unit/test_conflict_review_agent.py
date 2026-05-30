@@ -74,9 +74,7 @@ def _rule() -> SynthesizedRuleSchema:
         id="rule-123",
         topic="topic",
         applies_when=["input present"],
-        outcome_conditions={
-            "approve": OutcomeCondition(outcome="approve", when=["input present"])
-        },
+        outcome_conditions={"approve": OutcomeCondition(outcome="approve", when=["input present"])},
         tie_breakers=[],
         priority=10,
         source_case_ids=["case-1"],

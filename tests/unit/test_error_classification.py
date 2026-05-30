@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from rulekiln.api.validators.request_shape import RequestValidationError
 from rulekiln.providers.contracts import ProviderNotConfiguredError
@@ -29,9 +28,7 @@ def test_request_validation_error_is_terminal() -> None:
 
 
 def test_provider_not_configured_error_is_terminal() -> None:
-    classification = classify_worker_error(
-        ProviderNotConfiguredError("openai", "missing api key")
-    )
+    classification = classify_worker_error(ProviderNotConfiguredError("openai", "missing api key"))
     assert classification.retryable is False
 
 

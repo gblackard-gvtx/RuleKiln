@@ -51,7 +51,6 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 rulekiln-worker = "rulekiln.workers.dbos_worker:main"
-rulekiln-postgres-worker = "rulekiln.workers.queue_worker:main"
 rulekiln-dbos-worker = "rulekiln.workers.dbos_worker:main"
 
 [tool.hatch.build.targets.wheel]

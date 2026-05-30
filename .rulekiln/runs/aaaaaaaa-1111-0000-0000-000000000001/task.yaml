@@ -1,0 +1,25 @@
+schema_version: rulekiln.task.v1
+task_id: e2e-task
+task_name: E2E Task
+task_mode: classification
+description: Test classification task
+input_template: '{{input}}'
+output_schema: {}
+prompt_scaffold: {}
+baseline_prompt_policy:
+  compiler: default_baseline_v1
+  include_role: true
+  include_task_description: true
+  include_input_template: true
+  include_output_schema: true
+  include_allowed_values: true
+  include_prompt_scaffold: true
+  include_input_boundary: true
+  include_distilled_rules: false
+allowed_evaluation_methods: []
+provider_model_defaults: {}
+quality_gates: {}
+max_rules: 40
+max_prompt_tokens: 8000
+min_rule_support_count: 2
+preserve_golden_rules: true

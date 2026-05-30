@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
 import uuid
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated
 
 import yaml
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.templating import Jinja2Templates
 from pydantic import ValidationError
 from sqlalchemy import func, select
@@ -34,10 +34,10 @@ from rulekiln.db.repositories.jobs import (
     create_job,
     get_eval_runs_for_job,
     get_job,
-    retry_job,
     get_selected_prompt_version,
     get_synthesized_rules_for_job,
     list_recent_jobs,
+    retry_job,
     update_job_status,
 )
 from rulekiln.db.repositories.model_calls import summarize_model_call_events
@@ -58,7 +58,6 @@ from rulekiln.ui.view_models import (
     ResultsSummaryView,
 )
 from rulekiln.workers.dbos_runtime import ensure_dbos_runtime_launched, require_dbos_available
-from rulekiln.workers.distillation_worker import run_distillation_pipeline
 
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
@@ -623,7 +622,6 @@ async def preview_job(
 @router.post("/jobs")
 async def create_job_from_ui(
     request: Request,
-    background_tasks: BackgroundTasks,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[AppSettings, Depends(get_settings)],
     draft_job_id: Annotated[str, Form()],
@@ -656,24 +654,19 @@ async def create_job_from_ui(
             detail=f"Validation failed: {exc}",
         ) from exc
 
-    if settings.execution_backend == "dbos":
-        try:
-            require_dbos_available()
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(exc),
-            ) from exc
+    try:
+        require_dbos_available()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
     # Ensure draft jobs (including older rows) use the current retry cap.
     job.max_attempts = settings.worker_max_attempts
     await session.commit()
 
-    if settings.execution_backend == "background_tasks":
-        await update_job_status(session, job.id, status="created")
-        background_tasks.add_task(run_distillation_pipeline, job.id, payload)
-    else:
-        await update_job_status(session, job.id, status="pending")
+    await update_job_status(session, job.id, status="pending")
 
     logger.info("ui_job_submitted", job_id=job.id, task_id=job.task_id)
 
@@ -829,22 +822,21 @@ async def cancel_job_from_ui(
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    if settings.execution_backend == "dbos":
-        try:
-            ensure_dbos_runtime_launched(settings)
-            from dbos import DBOS  # imported lazily to keep optional dependency behavior
+    try:
+        ensure_dbos_runtime_launched(settings)
+        from dbos import DBOS  # imported lazily to keep optional dependency behavior
 
-            workflow_id = f"rulekiln-job-{job.id}"
-            workflow_status = DBOS.get_workflow_status(workflow_id)
-            if workflow_status is not None:
-                DBOS.cancel_workflow(workflow_id)
-                logger.info("ui_dbos_workflow_cancelled", job_id=job.id, workflow_id=workflow_id)
-        except Exception as exc:
-            logger.warning(
-                "ui_dbos_workflow_cancel_failed",
-                job_id=job.id,
-                error=str(exc),
-            )
+        workflow_id = f"rulekiln-job-{job.id}"
+        workflow_status = DBOS.get_workflow_status(workflow_id)
+        if workflow_status is not None:
+            DBOS.cancel_workflow(workflow_id)
+            logger.info("ui_dbos_workflow_cancelled", job_id=job.id, workflow_id=workflow_id)
+    except Exception as exc:
+        logger.warning(
+            "ui_dbos_workflow_cancel_failed",
+            job_id=job.id,
+            error=str(exc),
+        )
 
     await cancel_job(session, job.id, error_message="Cancelled by operator.")
     logger.info("ui_job_cancelled", job_id=job.id, status="failed_terminal")
@@ -857,7 +849,6 @@ async def cancel_job_from_ui(
 @router.post("/jobs/{job_id}/retry")
 async def retry_job_from_ui(
     job_id: str,
-    background_tasks: BackgroundTasks,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[AppSettings, Depends(get_settings)],
 ) -> RedirectResponse:
@@ -873,46 +864,21 @@ async def retry_job_from_ui(
             status_code=status.HTTP_303_SEE_OTHER,
         )
 
-    if settings.execution_backend == "dbos":
-        try:
-            require_dbos_available()
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(exc),
-            ) from exc
-
-    queue_backends = {"postgres_queue", "dbos"}
-    if settings.execution_backend in queue_backends:
-        resulting_status = await retry_job(session, job.id, queue_backed=True)
-        logger.info(
-            "ui_job_retried",
-            job_id=job.id,
-            resulting_status=resulting_status,
-            execution_backend=settings.execution_backend,
-            queued=True,
-        )
-        return RedirectResponse(
-            url=f"/ui/jobs/{job.id}",
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-
     try:
-        payload = DistillationRequest.model_validate(job.request_json)
-    except ValidationError as exc:
+        require_dbos_available()
+    except RuntimeError as exc:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Validation failed: {exc}",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
         ) from exc
 
-    resulting_status = await retry_job(session, job.id, queue_backed=False)
-    background_tasks.add_task(run_distillation_pipeline, job.id, payload)
+    resulting_status = await retry_job(session, job.id, queue_backed=True)
     logger.info(
         "ui_job_retried",
         job_id=job.id,
         resulting_status=resulting_status,
         execution_backend=settings.execution_backend,
-        queued=False,
+        queued=True,
     )
     return RedirectResponse(
         url=f"/ui/jobs/{job.id}",
@@ -1056,7 +1022,9 @@ async def job_results(
         has_estimated_usage = bool(usage_summary.get("has_estimated_usage", False))
     else:
         estimated_total_cost_usd = (
-            float(job.estimated_total_cost_usd) if job.estimated_total_cost_usd is not None else None
+            float(job.estimated_total_cost_usd)
+            if job.estimated_total_cost_usd is not None
+            else None
         )
         teacher_cost_usd = float(job.teacher_cost_usd) if job.teacher_cost_usd is not None else None
         student_cost_usd = float(job.student_cost_usd) if job.student_cost_usd is not None else None

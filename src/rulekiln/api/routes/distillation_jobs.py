@@ -3,7 +3,7 @@
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rulekiln.api.validators.request_shape import (
@@ -22,7 +22,6 @@ from rulekiln.schemas.job import (
     JobUsageSummary,
 )
 from rulekiln.workers.dbos_runtime import require_dbos_available
-from rulekiln.workers.distillation_worker import run_distillation_pipeline
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
@@ -32,7 +31,6 @@ logger = get_logger(__name__)
 @router.post("/", response_model=CreateJobResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_distillation_job(
     payload: DistillationRequest,
-    background_tasks: BackgroundTasks,
     session: Annotated[AsyncSession, Depends(get_db_session)],
     settings: Annotated[AppSettings, Depends(get_settings)],
 ) -> CreateJobResponse:
@@ -43,18 +41,15 @@ async def create_distillation_job(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
-    if settings.execution_backend == "dbos":
-        try:
-            require_dbos_available()
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail=str(exc),
-            ) from exc
+    try:
+        require_dbos_available()
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
 
     job_id = str(uuid.uuid4())
-    queue_backends = {"postgres_queue", "dbos"}
-    queue_status = "pending" if settings.execution_backend in queue_backends else "created"
     job = DistillationJob(
         id=job_id,
         task_id=payload.task.task_id,
@@ -62,7 +57,7 @@ async def create_distillation_job(
         task_mode=payload.task.task_mode,
         status="created",
         stage=None,
-        queue_status=queue_status,
+        queue_status="pending",
         max_attempts=settings.worker_max_attempts,
         request_json=payload.model_dump(mode="json"),
     )
@@ -74,11 +69,6 @@ async def create_distillation_job(
         execution_backend=settings.execution_backend,
     )
 
-    if settings.execution_backend == "background_tasks":
-        background_tasks.add_task(run_distillation_pipeline, job_id, payload)
-        return CreateJobResponse(job_id=job_id, status="created")
-
-    # Worker-backed queues (postgres_queue, dbos): persisted as queue_status='pending'.
     return CreateJobResponse(job_id=job_id, status="pending")
 
 
@@ -101,9 +91,15 @@ async def get_distillation_job(
             estimated_total_cost_usd=float(job.estimated_total_cost_usd)
             if job.estimated_total_cost_usd is not None
             else None,
-            teacher_cost_usd=float(job.teacher_cost_usd) if job.teacher_cost_usd is not None else None,
-            student_cost_usd=float(job.student_cost_usd) if job.student_cost_usd is not None else None,
-            embedding_cost_usd=float(job.embedding_cost_usd) if job.embedding_cost_usd is not None else None,
+            teacher_cost_usd=float(job.teacher_cost_usd)
+            if job.teacher_cost_usd is not None
+            else None,
+            student_cost_usd=float(job.student_cost_usd)
+            if job.student_cost_usd is not None
+            else None,
+            embedding_cost_usd=float(job.embedding_cost_usd)
+            if job.embedding_cost_usd is not None
+            else None,
             judge_cost_usd=float(job.judge_cost_usd) if job.judge_cost_usd is not None else None,
         )
 

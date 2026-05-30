@@ -64,9 +64,7 @@ def resolve_split_policy(cases: Sequence[RuleKilnCase]) -> SplitPolicyDecision:
             evaluation_split="train",
             evaluation_cases=train_cases,
             split_counts=split_counts,
-            fallback_warning=(
-                "No validation cases detected. Evaluation fell back to split=train."
-            ),
+            fallback_warning=("No validation cases detected. Evaluation fell back to split=train."),
         )
 
     if test_cases:

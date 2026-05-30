@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import time
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
-from typing import Awaitable, Callable
 
 from rulekiln.observability.logging import get_logger
 from rulekiln.schemas.usage import (
@@ -24,9 +24,7 @@ logger = get_logger(__name__)
 _tracking_context_var: ContextVar[ModelCallContext | None] = ContextVar(
     "_tracking_context_var", default=None
 )
-_collector_var: ContextVar[ModelCallCollector | None] = ContextVar(
-    "_collector_var", default=None
-)
+_collector_var: ContextVar[ModelCallCollector | None] = ContextVar("_collector_var", default=None)
 
 _pricing_service: PricingService | None = None
 
@@ -152,10 +150,7 @@ def _build_idempotency_key(ctx: ModelCallContext, request_fingerprint: str) -> s
     student_id = ctx.student_id or "-"
     case_id = ctx.case_id or "-"
     request_hash = _hash_request_fingerprint(request_fingerprint)
-    return (
-        f"{ctx.job_id}:{ctx.stage}:{ctx.role}:"
-        f"{strategy}:{student_id}:{case_id}:{request_hash}"
-    )
+    return f"{ctx.job_id}:{ctx.stage}:{ctx.role}:{strategy}:{student_id}:{case_id}:{request_hash}"
 
 
 def _hash_request_fingerprint(request_fingerprint: str) -> str:
@@ -208,6 +203,7 @@ async def tracked_chat_call(
         latency_ms = int((time.monotonic() - started) * 1000)
         if ctx is not None and collector is not None:
             from rulekiln.providers.estimation import estimate_usage_from_text
+
             usage = estimate_usage_from_text(input_text=fallback_input_text)
             _record_call(
                 ctx=ctx,

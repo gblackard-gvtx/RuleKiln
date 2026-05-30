@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,11 +31,9 @@ except Exception:  # pragma: no cover - DBOS is optional in some local test envs
     DBOS = None  # type: ignore[assignment]
     SetWorkflowID = None  # type: ignore[assignment]
 
-T = TypeVar("T")
-
-
 def _workflow_decorator(name: str) -> Callable[[Callable[..., object]], Callable[..., object]]:
     if DBOS is None:
+
         def _noop(func: Callable[..., object]) -> Callable[..., object]:
             return func
 
@@ -46,6 +43,7 @@ def _workflow_decorator(name: str) -> Callable[[Callable[..., object]], Callable
 
 def _step_decorator(name: str) -> Callable[[Callable[..., object]], Callable[..., object]]:
     if DBOS is None:
+
         def _noop(func: Callable[..., object]) -> Callable[..., object]:
             return func
 
@@ -53,9 +51,9 @@ def _step_decorator(name: str) -> Callable[[Callable[..., object]], Callable[...
     return DBOS.step(name=name, retries_allowed=False)
 
 
-async def _await_if_needed(value: T | Awaitable[T]) -> T:
+async def _await_if_needed[T](value: T | Awaitable[T]) -> T:
     if inspect.isawaitable(value):
-        return await value  # type: ignore[return-value]
+        return await value
     return value
 
 
@@ -212,4 +210,6 @@ async def run_dbos_spike_workflow(
     await _run_compile_prompts_phase(job_id, payload_json)
     await _run_evaluate_baseline_phase(job_id, payload_json)
     async with get_session_factory()() as new_session:
-        await update_job_status(new_session, job_id, status="completed", stage=PipelineStage.COMPLETED)
+        await update_job_status(
+            new_session, job_id, status="completed", stage=PipelineStage.COMPLETED
+        )

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Awaitable, Callable, Mapping
 from collections import defaultdict
+from collections.abc import Awaitable, Callable, Mapping
 
 from pydantic import BaseModel
 
@@ -243,11 +243,7 @@ async def evaluate_prompt(
         if on_case_result is not None:
             await on_case_result(result)
 
-    case_results = [
-        case_result_by_id[case.id]
-        for case in cases
-        if case.id in case_result_by_id
-    ]
+    case_results = [case_result_by_id[case.id] for case in cases if case.id in case_result_by_id]
 
     return _compute_metrics(
         case_results=case_results,

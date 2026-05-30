@@ -20,11 +20,11 @@ from rulekiln.db.repositories.jobs import (
 )
 from rulekiln.db.session import get_session_factory
 from rulekiln.schemas.job import DistillationRequest
+from rulekiln.workers.dbos_runtime import ensure_dbos_runtime_launched
 from rulekiln.workers.error_classification import (
     classify_worker_error,
     format_worker_error_message,
 )
-from rulekiln.workers.dbos_runtime import ensure_dbos_runtime_launched
 
 logger = structlog.get_logger(__name__)
 
@@ -61,12 +61,6 @@ async def _lease_renewer(
 async def worker_loop(worker_id: str) -> None:
     settings = get_settings()
     ensure_dbos_runtime_launched(settings)
-
-    if settings.execution_backend != "dbos":
-        logger.warning(
-            "dbos_worker_running_with_non_dbos_backend",
-            configured_backend=settings.execution_backend,
-        )
 
     session_factory = get_session_factory()
     logger.info("dbos_worker_started", worker_id=worker_id)

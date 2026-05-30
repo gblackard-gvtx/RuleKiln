@@ -40,11 +40,17 @@ class OpenAICompatibleEmbeddingClient(EmbeddingClient):
                 embeddings = [item["embedding"] for item in data["data"]]
                 usage_data = data.get("usage", {})
                 prompt_tokens = usage_data.get("prompt_tokens") if usage_data else None
-                usage = build_usage_from_provider(
-                    input_tokens=prompt_tokens,
-                    output_tokens=0,
-                    total_tokens=usage_data.get("total_tokens", prompt_tokens) if usage_data else None,
-                ) if prompt_tokens is not None else None
+                usage = (
+                    build_usage_from_provider(
+                        input_tokens=prompt_tokens,
+                        output_tokens=0,
+                        total_tokens=usage_data.get("total_tokens", prompt_tokens)
+                        if usage_data
+                        else None,
+                    )
+                    if prompt_tokens is not None
+                    else None
+                )
                 return EmbeddingResult(
                     embeddings=embeddings,
                     usage=usage,

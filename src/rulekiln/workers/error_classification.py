@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from rulekiln.api.validators.request_shape import RequestValidationError
 from rulekiln.providers.contracts import ProviderNotConfiguredError, ProviderNotImplementedError

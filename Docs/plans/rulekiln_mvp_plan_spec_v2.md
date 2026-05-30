@@ -1,5 +1,7 @@
 # RuleKiln — MVP Plan Spec
 
+> **Status:** Historical/archival planning document. It includes references to legacy execution alternatives (for example `BackgroundTasks` / queue variants) that are not current runtime behavior.
+
 ## 1. Working Title
 
 **RuleKiln**

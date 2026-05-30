@@ -4,7 +4,7 @@
 
 # RuleKiln
 
-> **⚠️ Work in Progress** — This project is under active development. The `main` branch is not yet stable or fully functional. APIs, configuration, and behaviour may change without notice. Not recommended for production use.
+> **Stable Alpha** — RuleKiln has reached a stable alpha milestone. Core pipeline and Operator UI workflows are stable for internal pilots and evaluation. APIs, configuration, and behaviour may still evolve before beta. Not recommended for production use.
 
 A prompt compiler that turns labelled cases into tested, versioned, auditable system prompts.
 
@@ -137,7 +137,7 @@ uv run alembic upgrade head
 # 4. Start the API
 uv run uvicorn src.rulekiln.api.app:app --host 0.0.0.0 --port 8000 --reload
 
-# 5. Start the worker (separate terminal — required for dbos/postgres_queue modes)
+# 5. Start the worker (separate terminal — required)
 uv run python -m rulekiln.workers.dbos_worker
 # or, if installed as a script:
 uv run rulekiln-worker
@@ -185,7 +185,7 @@ Copy `.env.example` to `.env` and adjust values. The key variables are:
 | `MLFLOW_ALLOWED_HOSTS` | Optional MLflow server host allowlist. Include browser Host header forms (for example, `localhost:5000`, `127.0.0.1:5000`) to avoid MLflow "Invalid Host header" rejections. |
 | `ARTIFACT_ROOT` | Local path for job artifact output (default: `.rulekiln/runs`) |
 | `ENABLE_PGVECTOR` | Enable pgvector for embedding storage (default: `false`) |
-| `EXECUTION_BACKEND` | `dbos` (default), `postgres_queue`, or `background_tasks` — see [Execution backends](#execution-backends) |
+| `EXECUTION_BACKEND` | `dbos` (only supported value) — see [Execution backend](#execution-backend) |
 | `WORKER_POLL_INTERVAL_SECONDS` | How often the queue worker polls for new jobs (default: `2`) |
 | `WORKER_LEASE_SECONDS` | Job lease duration in seconds before a crashed worker's job is reclaimed (default: `1800`) |
 | `WORKER_RETRY_BACKOFF_SECONDS` | Backoff delay before retrying a retryable failed job (default: `30`) |
@@ -197,15 +197,13 @@ Copy `.env.example` to `.env` and adjust values. The key variables are:
 | `DEFAULT_MIN_RULE_SUPPORT_COUNT` | Minimum case-support threshold for a rule to survive pruning (default: `2`) |
 | `DEFAULT_MAX_PROMPT_TOKENS` | Approximate token budget for the compiled rule policy section (default: `8000`) |
 
-### Execution backends
+### Execution backend
 
-RuleKiln supports three job execution modes, controlled by `EXECUTION_BACKEND`:
+RuleKiln supports a single execution mode, controlled by `EXECUTION_BACKEND`:
 
 | Backend | Default | Separate worker | `POST /v1/jobs/` status | Retry semantics | Stage coverage (current) | Worker command |
 |---------|---------|-----------------|--------------------------|-----------------|--------------------------|----------------|
 | `dbos` | Yes | Yes | `pending` | Classified retry policy with `waiting_for_retry`, then `failed_retryable` or `failed_terminal` when attempts are exhausted or error is terminal | Full pipeline stage chain | `uv run rulekiln-worker` (or `uv run rulekiln-dbos-worker`) |
-| `postgres_queue` | No | Yes | `pending` | Same classified retry policy as DBOS worker-backed queue processing | Full pipeline stage chain (legacy queue worker path) | `uv run rulekiln-postgres-worker` |
-| `background_tasks` | No | No | `created` | No queue lease recovery or worker retry loop | Full legacy stage chain | Not required |
 
 Manual retry from the Operator UI (`Retry Pipeline`) requeues the same job record for failed statuses (`failed`, `failed_terminal`, `failed_retryable`) and resumes from persisted progress.
 
@@ -343,19 +341,9 @@ Content-Type: application/json
 }
 ```
 
-Response `202 Accepted` (`postgres_queue` mode):
-```json
-{"job_id": "...", "status": "pending"}
-```
-
 Response `202 Accepted` (`dbos` mode):
 ```json
 {"job_id": "...", "status": "pending"}
-```
-
-Response `202 Accepted` (`background_tasks` mode):
-```json
-{"job_id": "...", "status": "created"}
 ```
 
 ### Poll job status
@@ -370,7 +358,7 @@ GET /v1/jobs/{job_id}
 
 Common status values: `pending`, `running`, `waiting_for_retry`, `failed_retryable`, `failed_terminal`, `completed`.
 
-Full pipeline stage order (`dbos` / `postgres_queue` / `background_tasks`): `validating_project` → `extracting_rules` → `embedding_rules` → `clustering_rules` → `synthesizing_rules` → `reviewing_rule_conflicts` → `pruning_rules` → `compiling_prompts` → `evaluating_baseline` → `evaluating_distilled` → `selecting_strategy` → `analyzing_failures` → `checking_quality_gates` → `logging_artifacts` → `exporting_artifacts` → `completed`.
+Full pipeline stage order (`dbos`): `validating_project` → `extracting_rules` → `embedding_rules` → `clustering_rules` → `synthesizing_rules` → `reviewing_rule_conflicts` → `pruning_rules` → `compiling_prompts` → `evaluating_baseline` → `evaluating_distilled` → `selecting_strategy` → `analyzing_failures` → `checking_quality_gates` → `logging_artifacts` → `exporting_artifacts` → `completed`.
 
 ### Retrieve outputs (once `status == "completed"`)
 
@@ -396,7 +384,7 @@ http://localhost:8000/ui/jobs/new
 2. **Preview** — validate files, review split counts, estimated API calls, and provider routes before committing.
   - Split policy is centralized: extraction uses `train`; evaluation prefers `validation`, then falls back to `train`, `test`, or `golden`.
   - When fallback is used, preview surfaces a warning before submission.
-3. **Run Pipeline** — submit the validated job; execution is delegated by `EXECUTION_BACKEND` (`dbos`/`postgres_queue` queue + worker, or `background_tasks` in-process).
+3. **Run Pipeline** — submit the validated job; execution is delegated by `EXECUTION_BACKEND` (`dbos` queue + worker).
 4. **Monitor** — the job detail page polls live status every 2 seconds via HTMX until the job finishes.
   - Job detail includes split totals, execution progress (`teacher extraction`, `student eval` per strategy), and pipeline diagnostics (model-call counts and rule counts).
 5. **Review results** — navigate to Results, Prompt, Rules, Eval Report, Failures, or Artifacts from the detail page.

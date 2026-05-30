@@ -38,9 +38,7 @@ async def list_recent_jobs(
     query = select(DistillationJob)
     if not include_drafts:
         query = query.where(DistillationJob.status != "draft")
-    result = await session.execute(
-        query.order_by(DistillationJob.created_at.desc()).limit(limit)
-    )
+    result = await session.execute(query.order_by(DistillationJob.created_at.desc()).limit(limit))
     return list(result.scalars().all())
 
 
