@@ -101,7 +101,7 @@ def _patch_worker_dependencies(monkeypatch: MonkeyPatch, fake_settings: AppSetti
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(

@@ -22,6 +22,18 @@ def _get_threshold(
     return val if val is not None else hardcoded
 
 
+def _coerce_float(value: object, default: float) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return default
+
+
+def _coerce_int(value: object, default: int) -> int:
+    if isinstance(value, (int, float)):
+        return int(value)
+    return default
+
+
 def check_quality_gates(
     strategy: str,
     distilled_eval: EvalResult,
@@ -35,17 +47,26 @@ def check_quality_gates(
     violations: list[str] = []
 
     # Resolve thresholds
-    min_metric_delta = float(_get_threshold(task_gates, settings_defaults, "min_metric_delta", 0.0))
-    max_regression_rate = float(
-        _get_threshold(task_gates, settings_defaults, "max_regression_rate", 0.10)
+    min_metric_delta = _coerce_float(
+        _get_threshold(task_gates, settings_defaults, "min_metric_delta", 0.0),
+        0.0,
     )
-    max_golden_failures = int(
-        _get_threshold(task_gates, settings_defaults, "max_golden_failures", 0)
+    max_regression_rate = _coerce_float(
+        _get_threshold(task_gates, settings_defaults, "max_regression_rate", 0.10),
+        0.10,
     )
-    max_malformed = float(
-        _get_threshold(task_gates, settings_defaults, "max_malformed_output_rate", 0.01)
+    max_golden_failures = _coerce_int(
+        _get_threshold(task_gates, settings_defaults, "max_golden_failures", 0),
+        0,
     )
-    max_tokens = int(_get_threshold(task_gates, settings_defaults, "max_prompt_tokens", 8000))
+    max_malformed = _coerce_float(
+        _get_threshold(task_gates, settings_defaults, "max_malformed_output_rate", 0.01),
+        0.01,
+    )
+    max_tokens = _coerce_int(
+        _get_threshold(task_gates, settings_defaults, "max_prompt_tokens", 8000),
+        8000,
+    )
 
     primary_metric = get_primary_metric(task_mode)
     distilled_score = (

@@ -83,9 +83,9 @@ def _score_assertion(
         case "must_equal":
             return 1.0 if target == value else 0.0
         case "must_include":
-            return 1.0 if (value in str(target)) else 0.0
+            return 1.0 if (str(value) in str(target)) else 0.0
         case "must_not_include":
-            return 1.0 if (value not in str(target)) else 0.0
+            return 1.0 if (str(value) not in str(target)) else 0.0
         case "must_match_regex":
             return 1.0 if re.search(str(value), str(target)) is not None else 0.0
         case _:
@@ -169,16 +169,24 @@ def _compute_metrics(
             case = case_map.get(res.case_id)
             if case is None or case.expected is None:
                 continue
+            expected_raw: str | int | float | bool | None
+            if isinstance(case.expected, dict):
+                expected_raw = case.expected.get("label", "")
+            else:
+                expected_raw = case.expected
             expected_label = (
-                case.expected.get("label", "")
-                if isinstance(case.expected, dict)
-                else str(case.expected)
+                expected_raw if isinstance(expected_raw, str) else str(expected_raw or "")
             )
-            actual_label = (
-                res.actual_output.get("label", "")
-                if isinstance(res.actual_output, dict)
-                else str(res.actual_output or "")
-            )
+
+            actual_raw: str | int | float | bool | None
+            if isinstance(res.actual_output, dict):
+                actual_raw = res.actual_output.get("label", "")
+            elif isinstance(res.actual_output, str):
+                actual_raw = res.actual_output
+            else:
+                actual_raw = None
+            actual_label = actual_raw if isinstance(actual_raw, str) else str(actual_raw or "")
+
             labels.add(expected_label)
             labels.add(actual_label)
             confusion[expected_label][actual_label] += 1

@@ -117,14 +117,16 @@ That makes RuleKiln a practical prompt-hardening layer for local and edge AI sys
 
 ## Quick start
 
+Canonical setup path for both local workflows: [docs/dev/docker.md](docs/dev/docker.md).
+
 ### Option A — Native Python
 
 **Requirements**: Python 3.13+, [uv](https://docs.astral.sh/uv/), PostgreSQL 14+, MLflow server
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/your-org/rulekiln.git
-cd rulekiln
+git clone https://github.com/gblackard-gvtx/RuleKiln.git
+cd RuleKiln
 uv sync --extra dev
 
 # 2. Configure environment
@@ -151,8 +153,8 @@ API docs available at <http://localhost:8000/docs>.
 
 ```bash
 # 1. Clone
-git clone https://github.com/your-org/rulekiln.git
-cd rulekiln
+git clone https://github.com/gblackard-gvtx/RuleKiln.git
+cd RuleKiln
 
 # 2. Start the stack (copies .env.example → .env automatically on first run)
 ./scripts/dev-up.sh
@@ -170,6 +172,14 @@ This starts:
 ```bash
 # Stop the stack
 ./scripts/dev-down.sh
+```
+
+### Post-setup smoke test (both options)
+
+```bash
+DATABASE_URL="sqlite+aiosqlite://" \
+MLFLOW_TRACKING_URI="file:///tmp/mlflow-ci" \
+uv run pytest -m "not external" --tb=short -q
 ```
 
 ---
@@ -462,6 +472,21 @@ Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
 ---
 
 ## Development
+
+Use Make command aliases for a single command surface, or run the raw commands directly.
+
+```bash
+# Make aliases
+make lint
+make format
+make typecheck
+make test
+make test-ui
+make ci-local
+make docker-up
+make docker-down
+make benchmark-smoke
+```
 
 ```bash
 # Lint

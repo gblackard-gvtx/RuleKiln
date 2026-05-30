@@ -19,7 +19,6 @@ def _config(
         model=model,
         api_key=None,
         base_url=None,
-        extra={},
         rate_limit_rpm=rpm,
         max_concurrency=concurrency,
     )

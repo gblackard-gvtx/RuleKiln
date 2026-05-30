@@ -521,4 +521,6 @@ async def recover_expired_leases(
     )
 
     await session.commit()
-    return (retried.rowcount, failed.rowcount)
+    retried_count = int(getattr(retried, "rowcount", 0) or 0)
+    failed_count = int(getattr(failed, "rowcount", 0) or 0)
+    return (retried_count, failed_count)

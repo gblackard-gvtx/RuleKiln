@@ -36,8 +36,6 @@ def _case_result(case_id: str, passed: bool, score: float = 0.8) -> CaseEvalResu
         passed=passed,
         score=score,
         malformed=False,
-        predicted_outcome="x",
-        expected_outcome="x",
         assertion_scores={"path.a": 1.0 if passed else 0.0},
     )
 

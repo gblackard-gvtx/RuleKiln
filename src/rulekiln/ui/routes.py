@@ -6,7 +6,7 @@ import json
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, cast
 
 import yaml
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -46,7 +46,7 @@ from rulekiln.observability.logging import get_logger
 from rulekiln.pipeline.evaluator import get_primary_metric
 from rulekiln.pipeline.split_policy import resolve_split_policy
 from rulekiln.schemas.job import DistillationRequest
-from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask
+from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask, TaskMode
 from rulekiln.ui.forms import NewJobForm
 from rulekiln.ui.view_models import (
     ArtifactFileView,
@@ -145,7 +145,19 @@ def _resolve_primary_metric(job: DistillationJob) -> str:
         if isinstance(metric_override, str) and metric_override.strip():
             return metric_override.strip()
 
-    return get_primary_metric(job.task_mode)
+    valid_task_modes = {
+        "classification",
+        "summarization",
+        "extraction",
+        "rubric_review",
+        "routing",
+        "tool_use",
+        "freeform_generation",
+        "agent_behavior",
+    }
+    if job.task_mode in valid_task_modes:
+        return get_primary_metric(cast(TaskMode, job.task_mode))
+    return "weighted_case_score"
 
 
 def _score_for_metric(run: object, primary_metric: str) -> float | None:

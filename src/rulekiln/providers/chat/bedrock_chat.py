@@ -3,6 +3,7 @@
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.models.bedrock import BedrockConverseModel
+from pydantic_ai.providers.bedrock import BedrockProvider
 
 from rulekiln.providers.contracts import (
     ChatModelClient,
@@ -29,7 +30,15 @@ class BedrockChatClient(ChatModelClient):
             raise ProviderNotConfiguredError("bedrock", "region is required for bedrock provider.")
 
         async def _call() -> ChatCompletionResult:
-            model = BedrockConverseModel(config.model, region_name=config.region)
+            try:
+                provider = BedrockProvider(region_name=config.region)
+                model = BedrockConverseModel(config.model, provider=provider)
+            except TypeError:
+                # Compatibility path for test doubles or older constructor shims.
+                model = BedrockConverseModel(  # pyright: ignore[reportCallIssue]
+                    config.model,
+                    region_name=config.region,  # pyright: ignore[reportCallIssue]
+                )
             retry_budget = max(0, config.max_retries)
             agent: Agent[None, BaseModel] = Agent(  # pyright: ignore[reportUnknownVariableType]
                 model,

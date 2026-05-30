@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -10,7 +12,10 @@ from rulekiln.config.settings import AppSettings, ProviderProfile
 from rulekiln.db.models import Base, DistillationJob, StageMarker
 from rulekiln.db.repositories.jobs import create_job, get_eval_runs_for_job, get_job
 from rulekiln.db.session import override_session_factory
+from rulekiln.pipeline.evaluator import CaseResultPersistFn
+from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.job import DistillationRequest, ModelRoute
+from rulekiln.schemas.pipeline import CaseEvalResult, EvalResult
 from rulekiln.schemas.task_case import EvaluationSpec, RuleKilnCase, RuleKilnTask
 from rulekiln.workers import distillation_worker as distillation_worker_module
 from rulekiln.workers.dbos_workflow import run_dbos_stage_workflow
@@ -158,12 +163,31 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
     original_evaluate_prompt = distillation_worker_module.evaluate_prompt
     failed_once = {"dbscan": False}
 
-    async def _evaluate_prompt_fail_once(*args: object, **kwargs: object):
-        strategy = str(kwargs.get("strategy", ""))
+    async def _evaluate_prompt_fail_once(
+        system_prompt: str,
+        cases: list[RuleKilnCase],
+        task: RuleKilnTask,
+        chat_client: ChatModelClient,
+        config: ProviderConfig,
+        strategy: str,
+        split: str = "train",
+        completed_case_results: Mapping[str, CaseEvalResult] | None = None,
+        on_case_result: CaseResultPersistFn | None = None,
+    ) -> EvalResult:
         if strategy == "dbscan" and not failed_once["dbscan"]:
             failed_once["dbscan"] = True
             raise RuntimeError("forced dbscan eval failure")
-        return await original_evaluate_prompt(*args, **kwargs)
+        return await original_evaluate_prompt(
+            system_prompt=system_prompt,
+            cases=cases,
+            task=task,
+            chat_client=chat_client,
+            config=config,
+            strategy=strategy,
+            split=split,
+            completed_case_results=completed_case_results,
+            on_case_result=on_case_result,
+        )
 
     monkeypatch.setattr(
         "rulekiln.workers.distillation_worker.evaluate_prompt",

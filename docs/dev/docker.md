@@ -1,5 +1,7 @@
 # Local Development Guide
 
+This is the canonical local setup guide referenced by the README Quick start for both Native and Docker workflows.
+
 RuleKiln supports two local workflows. Both are fully offline using the `fake` provider — no API keys or cloud credentials are required.
 
 Default execution mode is `dbos`. That means local development normally runs with a separate worker process.

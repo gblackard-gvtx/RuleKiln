@@ -3,10 +3,10 @@
 import pytest
 
 from rulekiln.schemas.pipeline import CaseEvalResult, EvalResult
-from rulekiln.schemas.task_case import EvaluationSpec, RuleKilnCase, RuleKilnTask
+from rulekiln.schemas.task_case import EvaluationSpec, RuleKilnCase, RuleKilnTask, TaskMode
 
 
-def _task(mode: str = "classification") -> RuleKilnTask:
+def _task(mode: TaskMode = "classification") -> RuleKilnTask:
     return RuleKilnTask(
         task_id="t1",
         task_name="T",
@@ -22,11 +22,10 @@ def _case(
     return RuleKilnCase(
         id=case_id,
         task_mode="classification",
-        split="train",
+        split="golden" if golden else "train",
         input={"q": "?"},
         expected=expected,
         evaluation=EvaluationSpec(assertions=[]),
-        is_golden=golden,
         weight=weight,
     )
 
@@ -56,6 +55,7 @@ def test_malformed_output_rate_in_eval_result() -> None:
 
 def test_accuracy_range() -> None:
     ev = _eval_result(accuracy=1.0)
+    assert ev.accuracy is not None
     assert 0.0 <= ev.accuracy <= 1.0
 
 

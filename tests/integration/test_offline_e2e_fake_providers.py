@@ -5,6 +5,7 @@ Exercises the full pipeline orchestration in-process with SQLite + fake chat/emb
 
 import json
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -103,7 +104,7 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(
@@ -144,9 +145,9 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
     assert db_job.stage == PipelineStage.COMPLETED
     assert db_job.mlflow_run_id is not None
 
-    import mlflow  # type: ignore[import-untyped]
+    from mlflow.tracking.client import MlflowClient  # type: ignore[import-untyped]
 
-    client = mlflow.tracking.MlflowClient(tracking_uri=fake_settings.mlflow_tracking_uri)
+    client = MlflowClient(tracking_uri=fake_settings.mlflow_tracking_uri)
     run = client.get_run(db_job.mlflow_run_id)
 
     required_params = {
@@ -225,7 +226,7 @@ async def test_pipeline_with_baseline_runs(db_factory, fake_settings, monkeypatc
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(
@@ -277,7 +278,7 @@ async def test_compile_phase_resumes_extraction_by_case(
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(
@@ -366,7 +367,7 @@ async def test_compile_phase_resumes_synthesis_by_cluster(
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(
@@ -554,7 +555,7 @@ async def test_compile_phase_resumes_conflict_review_by_rule(
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(

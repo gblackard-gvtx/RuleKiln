@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import uuid
+from collections.abc import Sequence
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -109,7 +110,7 @@ from rulekiln.schemas.pipeline import (
     RuleClusterSchema,
     SynthesizedRuleSchema,
 )
-from rulekiln.schemas.task_case import RuleKilnCase
+from rulekiln.schemas.task_case import RuleKilnCase, TaskMode
 from rulekiln.workers.error_classification import format_worker_error_message
 
 logger = get_logger(__name__)
@@ -963,25 +964,27 @@ async def _run(
                 if selected_strategy in {"dbscan", "hdbscan"}
                 else None
             )
+            dbscan_eval = eval_map.get("dbscan")
+            hdbscan_eval = eval_map.get("hdbscan")
             eval_metrics = build_demo_eval_metrics(
                 baseline_macro_f1=baseline_eval.macro_f1 if baseline_eval else None,
                 baseline_accuracy=baseline_eval.accuracy if baseline_eval else None,
                 baseline_malformed_output_rate=(
                     baseline_eval.malformed_output_rate if baseline_eval else None
                 ),
-                dbscan_macro_f1=eval_map.get("dbscan").macro_f1 if eval_map.get("dbscan") else None,
-                dbscan_accuracy=eval_map.get("dbscan").accuracy if eval_map.get("dbscan") else None,
+                dbscan_macro_f1=dbscan_eval.macro_f1 if dbscan_eval else None,
+                dbscan_accuracy=dbscan_eval.accuracy if dbscan_eval else None,
                 dbscan_delta_vs_baseline=_delta_vs_baseline(
-                    eval_map.get("dbscan"), baseline_eval, primary_metric
+                    dbscan_eval,
+                    baseline_eval,
+                    primary_metric,
                 ),
-                hdbscan_macro_f1=(
-                    eval_map.get("hdbscan").macro_f1 if eval_map.get("hdbscan") else None
-                ),
-                hdbscan_accuracy=(
-                    eval_map.get("hdbscan").accuracy if eval_map.get("hdbscan") else None
-                ),
+                hdbscan_macro_f1=hdbscan_eval.macro_f1 if hdbscan_eval else None,
+                hdbscan_accuracy=hdbscan_eval.accuracy if hdbscan_eval else None,
                 hdbscan_delta_vs_baseline=_delta_vs_baseline(
-                    eval_map.get("hdbscan"), baseline_eval, primary_metric
+                    hdbscan_eval,
+                    baseline_eval,
+                    primary_metric,
                 ),
                 selected_primary_score=_primary_score_for_metric(
                     selected_eval_for_metrics,
@@ -1343,7 +1346,19 @@ def _is_invalid_label(
 def _resolve_primary_metric(payload: DistillationRequest, task_mode: str) -> str:
     if payload.metric and payload.metric.strip():
         return payload.metric.strip()
-    return get_primary_metric(task_mode)
+    valid_task_modes = {
+        "classification",
+        "summarization",
+        "extraction",
+        "rubric_review",
+        "routing",
+        "tool_use",
+        "freeform_generation",
+        "agent_behavior",
+    }
+    if task_mode in valid_task_modes:
+        return get_primary_metric(cast(TaskMode, task_mode))
+    return "weighted_case_score"
 
 
 def _build_dataset_identifier(cases: list[RuleKilnCase]) -> str:
@@ -1377,11 +1392,9 @@ def _delta_vs_baseline(
     )
 
 
-def _build_manifest_entries(root: Path, paths: list[object]) -> list[str]:
+def _build_manifest_entries(root: Path, paths: Sequence[Path]) -> list[str]:
     entries: set[str] = set()
     for entry in paths:
-        if not isinstance(entry, Path):
-            continue
         if not entry.exists():
             continue
         try:
