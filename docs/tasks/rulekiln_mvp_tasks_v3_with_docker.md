@@ -6,6 +6,8 @@ description: "MVP implementation task list for RuleKiln"
 
 # Tasks: RuleKiln MVP
 
+> Status: Canonical MVP task list.
+
 **Input**: Design documents from docs/specs/rulekiln_mvp_plan_spec_v2.md and docs/tasks/task_template.md
 
 **Prerequisites**: RuleKiln MVP plan spec (required), task template (required)
