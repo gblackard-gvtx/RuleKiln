@@ -456,7 +456,7 @@ Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
 
 ## Benchmark examples
 
-- [BANKING77 benchmark README](src/examples/datasets/banking77/README.md) — benchmark setup, initial results, reporting template, and root README snapshot format.
+- [BANKING77 benchmark README](examples/datasets/banking77/README.md) — benchmark setup, initial results, reporting template, and root README snapshot format.
 
 ---
 
@@ -476,8 +476,8 @@ uv run pyright
 uv run alembic upgrade head
 ```
 
-See [Docs/dev/docker.md](Docs/dev/docker.md) for the full Docker Compose development guide.
-See [Docs/reference/python_module_reference.md](Docs/reference/python_module_reference.md) for a full module-by-module model/function reference.
+See [docs/dev/docker.md](docs/dev/docker.md) for the full Docker Compose development guide.
+See [docs/reference/python_module_reference.md](docs/reference/python_module_reference.md) for a full module-by-module model/function reference.
 
 ---
 

@@ -12,10 +12,7 @@ Please do not open a public GitHub issue for security vulnerabilities.
 
 Instead, report security issues privately using one of the following:
 
-- GitHub private vulnerability reporting, if enabled
-- Email: security@example.com
-
-Replace `security@example.com` with the project’s preferred security contact before publishing.
+- GitHub private vulnerability reporting
 
 ## What to Include
 
