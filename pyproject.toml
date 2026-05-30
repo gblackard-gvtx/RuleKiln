@@ -53,6 +53,7 @@ build-backend = "hatchling.build"
 [project.scripts]
 rulekiln-worker = "rulekiln.workers.dbos_worker:main"
 rulekiln-dbos-worker = "rulekiln.workers.dbos_worker:main"
+rulekiln-benchmark = "rulekiln.benchmarks.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rulekiln"]
