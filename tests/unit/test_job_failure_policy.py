@@ -77,7 +77,9 @@ async def test_retryable_failure_with_budget_moves_to_waiting_for_retry(db_sessi
 
 
 @pytest.mark.asyncio
-async def test_retryable_failure_without_budget_moves_to_failed_retryable(db_session_factory) -> None:
+async def test_retryable_failure_without_budget_moves_to_failed_retryable(
+    db_session_factory,
+) -> None:
     job_id = await _insert_running_job(db_session_factory, attempt_count=3, max_attempts=3)
 
     async with db_session_factory() as session:

@@ -16,7 +16,6 @@ from rulekiln.db.repositories.model_calls import (
 )
 from rulekiln.schemas.usage import ModelCallCost, ModelCallRecord, ModelUsage
 
-
 _IN_MEMORY_URL = "sqlite+aiosqlite://"
 
 
@@ -98,7 +97,9 @@ async def test_bulk_insert_model_call_events_skips_duplicate_idempotency_keys(
         await session.commit()
 
     async with db_session_factory() as session:
-        result = await session.execute(select(ModelCallEvent).where(ModelCallEvent.job_id == job_id))
+        result = await session.execute(
+            select(ModelCallEvent).where(ModelCallEvent.job_id == job_id)
+        )
         events = list(result.scalars().all())
 
     assert len(events) == 1

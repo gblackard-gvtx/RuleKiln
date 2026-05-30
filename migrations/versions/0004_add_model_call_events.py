@@ -6,8 +6,8 @@ Create Date: 2025-01-01 00:00:00.000000
 
 """
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision = "0004_add_model_call_events"
@@ -32,9 +32,7 @@ def upgrade() -> None:
     )
     op.add_column(
         "distillation_jobs",
-        sa.Column(
-            "estimated_total_cost_usd", sa.Numeric(precision=12, scale=6), nullable=True
-        ),
+        sa.Column("estimated_total_cost_usd", sa.Numeric(precision=12, scale=6), nullable=True),
     )
     op.add_column(
         "distillation_jobs",
@@ -102,12 +100,8 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["job_id"], ["distillation_jobs.id"]),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(
-        "ix_model_call_events_job_id", "model_call_events", ["job_id"], unique=False
-    )
-    op.create_index(
-        "ix_model_call_events_stage", "model_call_events", ["stage"], unique=False
-    )
+    op.create_index("ix_model_call_events_job_id", "model_call_events", ["job_id"], unique=False)
+    op.create_index("ix_model_call_events_stage", "model_call_events", ["stage"], unique=False)
 
 
 def downgrade() -> None:

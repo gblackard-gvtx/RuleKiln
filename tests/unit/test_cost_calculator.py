@@ -45,9 +45,7 @@ def test_cost_calculator_uses_decimal_math(pricing: PricingService) -> None:
 def test_local_model_cost_defaults_to_zero(pricing: PricingService) -> None:
     """openai_compatible default entry has $0 pricing."""
     usage = _usage(10_000, 5_000)
-    cost = pricing.calculate(
-        provider="openai_compatible", model="mistral-7b-instruct", usage=usage
-    )
+    cost = pricing.calculate(provider="openai_compatible", model="mistral-7b-instruct", usage=usage)
     assert cost.total_cost_usd == Decimal("0")
 
 

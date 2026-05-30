@@ -37,6 +37,7 @@ T = TypeVar("T")
 
 def _workflow_decorator(name: str) -> Callable[[Callable[..., object]], Callable[..., object]]:
     if DBOS is None:
+
         def _noop(func: Callable[..., object]) -> Callable[..., object]:
             return func
 
@@ -46,6 +47,7 @@ def _workflow_decorator(name: str) -> Callable[[Callable[..., object]], Callable
 
 def _step_decorator(name: str) -> Callable[[Callable[..., object]], Callable[..., object]]:
     if DBOS is None:
+
         def _noop(func: Callable[..., object]) -> Callable[..., object]:
             return func
 
@@ -212,4 +214,6 @@ async def run_dbos_spike_workflow(
     await _run_compile_prompts_phase(job_id, payload_json)
     await _run_evaluate_baseline_phase(job_id, payload_json)
     async with get_session_factory()() as new_session:
-        await update_job_status(new_session, job_id, status="completed", stage=PipelineStage.COMPLETED)
+        await update_job_status(
+            new_session, job_id, status="completed", stage=PipelineStage.COMPLETED
+        )

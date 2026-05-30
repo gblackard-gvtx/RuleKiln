@@ -118,9 +118,7 @@ async def test_get_job_includes_mlflow_traceability_fields(
         from rulekiln.db.models import DistillationJob
 
         await session.execute(
-            update(DistillationJob)
-            .where(DistillationJob.id == job_id)
-            .values(mlflow_run_id=run_id)
+            update(DistillationJob).where(DistillationJob.id == job_id).values(mlflow_run_id=run_id)
         )
         await session.commit()
 

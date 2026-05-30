@@ -183,9 +183,7 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
     for key in required_metrics:
         assert key in run_metrics
 
-    top_level_artifacts = {
-        item.path for item in client.list_artifacts(db_job.mlflow_run_id)
-    }
+    top_level_artifacts = {item.path for item in client.list_artifacts(db_job.mlflow_run_id)}
     assert "task.yaml" in top_level_artifacts
     assert "cases.normalized.jsonl" in top_level_artifacts
     assert "outputs" in top_level_artifacts
@@ -268,7 +266,9 @@ async def test_pipeline_with_baseline_runs(db_factory, fake_settings, monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_compile_phase_resumes_extraction_by_case(db_factory, fake_settings, monkeypatch) -> None:
+async def test_compile_phase_resumes_extraction_by_case(
+    db_factory, fake_settings, monkeypatch
+) -> None:
     monkeypatch.setattr("rulekiln.workers.distillation_worker.get_settings", lambda: fake_settings)
 
     from rulekiln.providers import resolver as _resolver
@@ -335,7 +335,9 @@ async def test_compile_phase_resumes_extraction_by_case(db_factory, fake_setting
             ]
         )
 
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.extract_rules_for_case", _flaky_extract)
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.extract_rules_for_case", _flaky_extract
+    )
 
     async with db_factory() as session:
         with pytest.raises(TimeoutError):
@@ -506,10 +508,18 @@ async def test_compile_phase_resumes_synthesis_by_cluster(
             resolution="keep",
         )
 
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.extract_rules_for_case", _simple_extract)
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.cluster_dbscan", _split_dbscan_clusters)
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.cluster_hdbscan", _empty_hdbscan_clusters)
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.synthesize_cluster", _flaky_synthesize)
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.extract_rules_for_case", _simple_extract
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.cluster_dbscan", _split_dbscan_clusters
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.cluster_hdbscan", _empty_hdbscan_clusters
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.synthesize_cluster", _flaky_synthesize
+    )
     monkeypatch.setattr(
         "rulekiln.workers.distillation_worker.review_rule_for_conflicts",
         _no_conflict_review,
@@ -685,9 +695,15 @@ async def test_compile_phase_resumes_conflict_review_by_rule(
             resolution="keep",
         )
 
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.extract_rules_for_case", _simple_extract)
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.cluster_dbscan", _single_dbscan_cluster)
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.cluster_hdbscan", _empty_hdbscan_clusters)
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.extract_rules_for_case", _simple_extract
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.cluster_dbscan", _single_dbscan_cluster
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.cluster_hdbscan", _empty_hdbscan_clusters
+    )
     monkeypatch.setattr(
         "rulekiln.workers.distillation_worker.synthesize_cluster",
         _synthesize_two_rules,

@@ -4,7 +4,6 @@ from httpx import AsyncClient
 
 from tests.ui.conftest import VALID_CASE_LINE, VALID_TASK_YAML
 
-
 _TRAIN_FALLBACK_WARNING = "No validation cases detected. Evaluation fell back to split=train."
 
 
@@ -97,10 +96,8 @@ class TestPreview:
     async def test_preview_train_validation_upload_has_no_train_fallback_warning(
         self, client: AsyncClient
     ) -> None:
-        validation_case = (
-            VALID_CASE_LINE.replace(b'"id":"c1"', b'"id":"c2"').replace(
-                b'"split":"train"', b'"split":"validation"'
-            )
+        validation_case = VALID_CASE_LINE.replace(b'"id":"c1"', b'"id":"c2"').replace(
+            b'"split":"train"', b'"split":"validation"'
         )
         combined_cases = VALID_CASE_LINE + validation_case
 

@@ -97,9 +97,7 @@ def compile_baseline_prompt(task: RuleKilnTask) -> str:
         if enum_vals:
             label_list = "\n".join(f"- {v}" for v in enum_vals)
             sections.append(
-                "# Allowed Values\n\n"
-                "The output field must be exactly one of:\n\n"
-                f"{label_list}"
+                f"# Allowed Values\n\nThe output field must be exactly one of:\n\n{label_list}"
             )
 
     # Rules: task_scope + non_scope combined

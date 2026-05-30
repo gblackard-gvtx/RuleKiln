@@ -289,7 +289,9 @@ class EvalCaseResultRecord(Base):
         nullable=False,
     )
 
-    job: Mapped[DistillationJob] = relationship("DistillationJob", back_populates="eval_case_results")
+    job: Mapped[DistillationJob] = relationship(
+        "DistillationJob", back_populates="eval_case_results"
+    )
 
 
 class StageMarker(Base):

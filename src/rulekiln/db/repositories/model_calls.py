@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from sqlalchemy import select
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rulekiln.db.models import DistillationJob, ModelCallEvent
@@ -123,9 +122,7 @@ async def summarize_model_call_events(
     job_id: str,
 ) -> dict[str, object]:
     """Aggregate persisted model_call_events for one job into token/cost totals."""
-    result = await session.execute(
-        select(ModelCallEvent).where(ModelCallEvent.job_id == job_id)
-    )
+    result = await session.execute(select(ModelCallEvent).where(ModelCallEvent.job_id == job_id))
     events = list(result.scalars().all())
 
     total_input_tokens = 0

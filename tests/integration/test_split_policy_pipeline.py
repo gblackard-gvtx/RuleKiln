@@ -279,7 +279,9 @@ async def test_split_policy_uses_train_for_extraction_and_validation_for_eval(
             case_results=case_results,
         )
 
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.extract_rules_for_case", _extract_stub)
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.extract_rules_for_case", _extract_stub
+    )
     monkeypatch.setattr("rulekiln.workers.distillation_worker.synthesize_cluster", _synthesize_stub)
     monkeypatch.setattr(
         "rulekiln.workers.distillation_worker.review_rule_for_conflicts",
@@ -448,7 +450,9 @@ async def test_split_policy_falls_back_to_train_with_warning(
             case_results=case_results,
         )
 
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.extract_rules_for_case", _extract_stub)
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.extract_rules_for_case", _extract_stub
+    )
     monkeypatch.setattr("rulekiln.workers.distillation_worker.synthesize_cluster", _synthesize_stub)
     monkeypatch.setattr(
         "rulekiln.workers.distillation_worker.review_rule_for_conflicts",

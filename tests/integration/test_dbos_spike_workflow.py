@@ -13,8 +13,8 @@ from rulekiln.db.session import override_session_factory
 from rulekiln.schemas.job import DistillationRequest, ModelRoute
 from rulekiln.schemas.task_case import EvaluationSpec, RuleKilnCase, RuleKilnTask
 from rulekiln.workers import distillation_worker as distillation_worker_module
-from rulekiln.workers.distillation_worker import PipelineStage
 from rulekiln.workers.dbos_workflow import run_dbos_stage_workflow
+from rulekiln.workers.distillation_worker import PipelineStage
 
 _IN_MEMORY_URL = "sqlite+aiosqlite://"
 
@@ -203,25 +203,13 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
     assert db_job.stage == PipelineStage.COMPLETED
 
     compile_dbscan_count = len(
-        [
-            pair
-            for pair in marker_pairs
-            if pair == (PipelineStage.COMPILING_PROMPTS, "dbscan")
-        ]
+        [pair for pair in marker_pairs if pair == (PipelineStage.COMPILING_PROMPTS, "dbscan")]
     )
     compile_hdbscan_count = len(
-        [
-            pair
-            for pair in marker_pairs
-            if pair == (PipelineStage.COMPILING_PROMPTS, "hdbscan")
-        ]
+        [pair for pair in marker_pairs if pair == (PipelineStage.COMPILING_PROMPTS, "hdbscan")]
     )
     baseline_stage_count = len(
-        [
-            pair
-            for pair in marker_pairs
-            if pair == (PipelineStage.EVALUATING_BASELINE, None)
-        ]
+        [pair for pair in marker_pairs if pair == (PipelineStage.EVALUATING_BASELINE, None)]
     )
 
     assert compile_dbscan_count == 1

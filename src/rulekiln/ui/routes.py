@@ -1022,7 +1022,9 @@ async def job_results(
         has_estimated_usage = bool(usage_summary.get("has_estimated_usage", False))
     else:
         estimated_total_cost_usd = (
-            float(job.estimated_total_cost_usd) if job.estimated_total_cost_usd is not None else None
+            float(job.estimated_total_cost_usd)
+            if job.estimated_total_cost_usd is not None
+            else None
         )
         teacher_cost_usd = float(job.teacher_cost_usd) if job.teacher_cost_usd is not None else None
         student_cost_usd = float(job.student_cost_usd) if job.student_cost_usd is not None else None

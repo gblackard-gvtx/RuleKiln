@@ -50,11 +50,15 @@ class OpenAICompatibleChatClient(ChatModelClient):
             input_tokens = pai_usage.input_tokens
             output_tokens = pai_usage.output_tokens
             has_usage = input_tokens > 0 or output_tokens > 0
-            usage = build_usage_from_provider(
-                input_tokens=input_tokens if has_usage else None,
-                output_tokens=output_tokens if has_usage else None,
-                total_tokens=pai_usage.total_tokens if has_usage else None,
-            ) if has_usage else None
+            usage = (
+                build_usage_from_provider(
+                    input_tokens=input_tokens if has_usage else None,
+                    output_tokens=output_tokens if has_usage else None,
+                    total_tokens=pai_usage.total_tokens if has_usage else None,
+                )
+                if has_usage
+                else None
+            )
 
             parsed: BaseModel = result.output  # pyright: ignore[reportAttributeAccessIssue]
             return ChatCompletionResult(

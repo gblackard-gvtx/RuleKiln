@@ -91,9 +91,15 @@ async def get_distillation_job(
             estimated_total_cost_usd=float(job.estimated_total_cost_usd)
             if job.estimated_total_cost_usd is not None
             else None,
-            teacher_cost_usd=float(job.teacher_cost_usd) if job.teacher_cost_usd is not None else None,
-            student_cost_usd=float(job.student_cost_usd) if job.student_cost_usd is not None else None,
-            embedding_cost_usd=float(job.embedding_cost_usd) if job.embedding_cost_usd is not None else None,
+            teacher_cost_usd=float(job.teacher_cost_usd)
+            if job.teacher_cost_usd is not None
+            else None,
+            student_cost_usd=float(job.student_cost_usd)
+            if job.student_cost_usd is not None
+            else None,
+            embedding_cost_usd=float(job.embedding_cost_usd)
+            if job.embedding_cost_usd is not None
+            else None,
             judge_cost_usd=float(job.judge_cost_usd) if job.judge_cost_usd is not None else None,
         )
 

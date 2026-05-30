@@ -118,9 +118,7 @@ async def review_rule_for_conflicts(
 def _is_output_validation_retry_exhausted(exc: Exception) -> bool:
     for message in _collect_exception_messages(exc):
         has_retry_exhaustion = "exceeded maximum retries" in message
-        has_validation_failure = (
-            "output validation" in message or "result validation" in message
-        )
+        has_validation_failure = "output validation" in message or "result validation" in message
         if has_retry_exhaustion and has_validation_failure:
             return True
     return False
