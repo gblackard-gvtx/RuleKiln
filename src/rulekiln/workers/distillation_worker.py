@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 import uuid
 from enum import StrEnum
-from hashlib import sha1, sha256
+from hashlib import sha256
+from pathlib import Path
 from typing import Literal
 
 from sqlalchemy import update
@@ -218,8 +219,6 @@ async def _run(
     run_validate = phase in {"full", "validate_project", "compile_prompts"}
     run_compile_phase = phase in {"full", "compile_prompts"}
     run_baseline_eval = phase in {"full", "evaluate_baseline"}
-    run_dbscan_eval = phase in {"full", "evaluate_dbscan"}
-    run_hdbscan_eval = phase in {"full", "evaluate_hdbscan"}
     run_aggregate = phase in {"full", "aggregate_evaluation_report"}
 
     teacher_profile = payload.teacher.provider_profile
@@ -757,14 +756,18 @@ async def _run(
             row.case_id: _eval_case_record_to_schema(row) for row in existing_rows
         }
 
-        async def _persist_strategy_case(case_result: CaseEvalResult) -> None:
+        async def _persist_strategy_case(
+            case_result: CaseEvalResult,
+            *,
+            strategy_name: str = strategy,
+        ) -> None:
             case = case_by_id.get(case_result.case_id)
             if case is None:
                 return
             payload_row = _build_eval_case_upsert_payload(
                 job_id=job_id,
                 student_id=eval_student_id,
-                strategy=strategy,
+                strategy=strategy_name,
                 split=eval_split,
                 case=case,
                 result=case_result,
@@ -1168,7 +1171,7 @@ def _extracting_case_marker(payload_case_id: str) -> str:
 
 def _synthesis_cluster_marker(strategy: str, rule_ids: list[str]) -> str:
     cluster_key = ",".join(sorted(rule_ids))
-    digest = sha1(cluster_key.encode("utf-8")).hexdigest()[:16]
+    digest = sha256(cluster_key.encode("utf-8")).hexdigest()[:16]
     return f"synth_cluster:{strategy}:{digest}"
 
 
@@ -1283,11 +1286,9 @@ def _build_eval_case_upsert_payload(
     case: RuleKilnCase,
     result: CaseEvalResult,
 ) -> EvalCaseResultUpsert:
-    expected_json: dict[str, object] | str | None
-    if isinstance(case.expected, dict) or isinstance(case.expected, str):
-        expected_json = case.expected
-    else:
-        expected_json = None
+    expected_json: dict[str, object] | str | None = (
+        case.expected if isinstance(case.expected, (dict, str)) else None
+    )
 
     actual_json = result.actual_output
     raw_output = _actual_output_to_raw_text(result.actual_output)
@@ -1377,8 +1378,6 @@ def _delta_vs_baseline(
 
 
 def _build_manifest_entries(root: Path, paths: list[object]) -> list[str]:
-    from pathlib import Path
-
     entries: set[str] = set()
     for entry in paths:
         if not isinstance(entry, Path):
@@ -1393,6 +1392,4 @@ def _build_manifest_entries(root: Path, paths: list[object]) -> list[str]:
 
 
 def _artifact_root(artifact_root_setting: str, job_id: str) -> Path:
-    from pathlib import Path
-
     return Path(artifact_root_setting) / job_id

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,9 +30,6 @@ try:
 except Exception:  # pragma: no cover - DBOS is optional in some local test envs
     DBOS = None  # type: ignore[assignment]
     SetWorkflowID = None  # type: ignore[assignment]
-
-T = TypeVar("T")
-
 
 def _workflow_decorator(name: str) -> Callable[[Callable[..., object]], Callable[..., object]]:
     if DBOS is None:
@@ -55,9 +51,9 @@ def _step_decorator(name: str) -> Callable[[Callable[..., object]], Callable[...
     return DBOS.step(name=name, retries_allowed=False)
 
 
-async def _await_if_needed(value: T | Awaitable[T]) -> T:
+async def _await_if_needed[T](value: T | Awaitable[T]) -> T:
     if inspect.isawaitable(value):
-        return await value  # type: ignore[return-value]
+        return await value
     return value
 
 

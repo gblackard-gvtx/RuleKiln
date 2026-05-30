@@ -122,4 +122,4 @@ async def get_completed_eval_case_ids(
             EvalCaseResultRecord.split == split,
         )
     )
-    return {case_id for case_id in result.scalars().all()}
+    return set(result.scalars().all())
