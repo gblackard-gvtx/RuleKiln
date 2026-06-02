@@ -329,6 +329,56 @@ class CaseEvaluationFailure(BaseModel):
     explanation: str | None = None
 
 
+# ── Refinement iteration artifact ────────────────────────────────────────────
+
+
+class RefinementIterationArtifact(BaseModel):
+    """Per-iteration artifact emitted by the closed-loop conflict resolution controller."""
+
+    schema_version: Literal["rulekiln.refinement_iteration.v1"] = (
+        "rulekiln.refinement_iteration.v1"
+    )
+    job_id: str
+    iteration: int
+    strategy_id: str
+    prior_metric: float
+    new_metric: float
+    improvement: float
+    revised_rule_ids: list[str] = Field(default_factory=list)
+    stop_reason: str | None = None
+
+
+# ── Refinement ablation artifact (loop ON vs OFF) ─────────────────────────────
+
+
+class RefinementAblationRow(BaseModel):
+    """One arm of the refinement loop ablation (loop_on or loop_off)."""
+
+    arm: Literal["loop_on", "loop_off"]
+    strategy_id: str | None = None
+    macro_f1: float | None = None
+    macro_f1_ci_low: float | None = None
+    macro_f1_ci_high: float | None = None
+    regression_rate: float | None = None
+    prompt_token_count: int | None = None
+    teacher_cost_usd: float | None = None
+    iterations_run: int = 0
+
+
+class RefinementAblationArtifact(BaseModel):
+    """Comparison artifact: loop ON vs loop OFF over the same seed and split."""
+
+    schema_version: Literal["rulekiln.refinement_ablation.v1"] = (
+        "rulekiln.refinement_ablation.v1"
+    )
+    benchmark_name: str
+    dataset: str
+    seed: int
+    rows: list[RefinementAblationRow] = Field(default_factory=list)
+    loop_helped: bool | None = None
+    delta_macro_f1: float | None = None
+
+
 # ── Quality gates ─────────────────────────────────────────────────────────────
 
 

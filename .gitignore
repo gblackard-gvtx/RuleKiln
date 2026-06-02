@@ -13,3 +13,4 @@ wheels/
 .rulekiln/runs/5db50138-e4e9-4278-8522-fc2f4ae924f5/metadata/token_cost_summary.json
 .rulekiln/runs/a6e50561-29d9-49d5-893a-b2d7a22a7ab0/outputs/baseline_prompt.md
 .rulekiln/runs/5db50138-e4e9-4278-8522-fc2f4ae924f5/outputs/baseline_prompt.md
+.serena/*

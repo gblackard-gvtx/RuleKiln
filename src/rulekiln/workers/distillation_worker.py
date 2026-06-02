@@ -113,7 +113,7 @@ from rulekiln.pipeline.evaluator import (
     evaluate_prompt,
     get_primary_metric,
 )
-from rulekiln.pipeline.failure_analysis import analyze_failures
+from rulekiln.pipeline.failure_analysis import FailureAnalysisResult, analyze_failures
 from rulekiln.pipeline.prompt_compiler import (
     compile_baseline_prompt,
     compile_prompt,
@@ -125,6 +125,7 @@ from rulekiln.pipeline.rule_provenance import (
     build_provenance_records,
 )
 from rulekiln.pipeline.rule_pruning import PruningMode, prune_rules
+from rulekiln.pipeline.rule_refinement import apply_refinements, refine_rules_with_teacher
 from rulekiln.pipeline.split_policy import resolve_split_policy
 from rulekiln.pipeline.statistics import (
     PairedComparisonArtifacts,
@@ -152,6 +153,7 @@ from rulekiln.schemas.pipeline import (
     PruningModeComparison,
     PruningModeRow,
     QualityGateResult,
+    RefinementIterationArtifact,
     RegressedLabelRow,
     RuleAblationArtifact,
     RuleAblationRecord,
@@ -194,6 +196,7 @@ class PipelineStage(StrEnum):
     EVALUATING_DISTILLED = "evaluating_distilled"
     SELECTING_STRATEGY = "selecting_strategy"
     ANALYZING_FAILURES = "analyzing_failures"
+    REFINING_RULES = "refining_rules"
     ABLATING_RULES = "ablating_rules"
     OPTIMIZING_PRUNING = "optimizing_pruning"
     CHECKING_QUALITY_GATES = "checking_quality_gates"
@@ -542,7 +545,7 @@ async def _run(
                 inserted_rules=inserted_rule_count,
             )
 
-        # ── Stage: reviewing_rule_conflicts ──────────────────────────────
+        # ── Stage: reviewing_rule_conflicts (static rule review, pre-eval hygiene) ──
         total_train_cases = len(extraction_cases)
         for strategy in DISTILLED_STRATEGIES:
             if await is_stage_complete(
@@ -1571,6 +1574,7 @@ async def _run(
             await mark_stage_complete(session, job_id, PipelineStage.SELECTING_STRATEGY)
 
         # ── Stage: analyzing_failures ─────────────────────────────────────
+        failure_analysis_result: FailureAnalysisResult | None = None
         if not await is_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES):
             await _set_stage(session, job_id, PipelineStage.ANALYZING_FAILURES)
             selected_eval = eval_map.get(selected_strategy)
@@ -1579,12 +1583,48 @@ async def _run(
                     session, job_id, selected_strategy
                 )
                 selected_schemas = [_db_synth_to_schema(r) for r in db_synth]
-                analyze_failures(
+                failure_analysis_result = analyze_failures(
                     baseline_scaffold_eval or baseline_eval,
                     selected_eval,
                     selected_schemas,
+                    list(case_by_id.values()),
                 )
             await mark_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES)
+
+        # ── Stage: refining_rules (closed-loop conflict resolution) ──────────
+        refined_rules: list[SynthesizedRuleSchema] | None = None
+        if not await is_stage_complete(session, job_id, PipelineStage.REFINING_RULES):
+            await _set_stage(session, job_id, PipelineStage.REFINING_RULES)
+            if (
+                task.enable_refinement_loop
+                and failure_analysis_result is not None
+                and selected_strategy in DISTILLED_STRATEGIES
+            ):
+                selected_eval_for_loop = eval_map.get(selected_strategy)
+                if selected_eval_for_loop is not None:
+                    refined_rules, refined_eval = await _run_refinement_loop(
+                        session=session,
+                        job_id=job_id,
+                        task=task,
+                        artifact_root_path=_artifact_root(settings.artifact_root, job_id),
+                        failure_analysis_result=failure_analysis_result,
+                        selected_strategy=selected_strategy,
+                        current_eval=selected_eval_for_loop,
+                        eval_cases=eval_cases,
+                        eval_split=eval_split,
+                        case_by_id=case_by_id,
+                        teacher_chat=teacher_chat,
+                        teacher_config=teacher_config,
+                        student_chat=student_chat,
+                        student_config=student_config,
+                        primary_metric=primary_metric,
+                        bootstrap_enabled=evaluation_bootstrap_enabled,
+                        bootstrap_iterations=evaluation_bootstrap_iterations,
+                        bootstrap_seed=evaluation_bootstrap_seed_offset,
+                    )
+                    if refined_eval is not None:
+                        eval_map[selected_strategy] = refined_eval
+            await mark_stage_complete(session, job_id, PipelineStage.REFINING_RULES)
 
         # ── Stage: ablating_rules ─────────────────────────────────────────
         if not await is_stage_complete(session, job_id, PipelineStage.ABLATING_RULES):
@@ -2387,6 +2427,212 @@ def _delta_vs_baseline(
     return _primary_score_for_metric(result, primary_metric) - _primary_score_for_metric(
         baseline, primary_metric
     )
+
+
+async def _run_refinement_loop(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    task: RuleKilnTask,
+    artifact_root_path: Path,
+    failure_analysis_result: FailureAnalysisResult,
+    selected_strategy: str,
+    current_eval: EvalResult,
+    eval_cases: list[RuleKilnCase],
+    eval_split: str,
+    case_by_id: dict[str, RuleKilnCase],
+    teacher_chat: ChatModelClient,
+    teacher_config: ProviderConfig,
+    student_chat: ChatModelClient,
+    student_config: ProviderConfig,
+    primary_metric: str,
+    bootstrap_enabled: bool,
+    bootstrap_iterations: int,
+    bootstrap_seed: int,
+) -> tuple[list[SynthesizedRuleSchema] | None, EvalResult | None]:
+    """Run the closed-loop conflict resolution loop (paper Phase 3, §3.3).
+
+    Iterates: analyze → refine → re-prune → compile → evaluate until convergence.
+    Emits outputs/refinement_iter_{n}.json per iteration.
+    Returns (best_rules, best_eval) or (None, None) if no iteration improved the metric.
+    The caller is responsible for checking the return and rolling back if needed.
+    """
+    outputs_dir = artifact_root_path / "outputs"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    db_synth = await get_selected_synthesized_rules_for_job(session, job_id, selected_strategy)
+    initial_rules = [_db_synth_to_schema(r) for r in db_synth]
+    if not initial_rules:
+        return None, None
+
+    baseline_metric = _primary_score_for_metric(current_eval, primary_metric)
+    current_metric = baseline_metric
+    current_rules = initial_rules
+    current_analysis = failure_analysis_result
+    best_rules = initial_rules
+    best_eval = current_eval
+    any_improvement = False
+
+    for iteration in range(task.refinement_max_iterations):
+        iter_path = outputs_dir / f"refinement_iter_{iteration}.json"
+        if iter_path.exists():
+            try:
+                prev = RefinementIterationArtifact.model_validate_json(iter_path.read_text())
+                current_metric = prev.new_metric
+            except Exception as exc:
+                logger.warning(
+                    "refinement_iter_artifact_load_failed",
+                    job_id=job_id, iteration=iteration, error=str(exc),
+                )
+            logger.info("refinement_iter_resumed", job_id=job_id, iteration=iteration)
+            continue
+
+        utility_signals = current_analysis.build_utility_signals()
+        if not utility_signals:
+            logger.info(
+                "refinement_no_utility_signals",
+                job_id=job_id,
+                iteration=iteration,
+            )
+            break
+
+        try:
+            refinement = await refine_rules_with_teacher(
+                current_rules=current_rules,
+                failure_analysis_result=current_analysis,
+                case_map=case_by_id,
+                chat_client=teacher_chat,
+                config=teacher_config,
+                seed=task.refinement_seed + iteration,
+                max_failure_cases=task.refinement_max_failure_cases,
+                max_success_cases=task.refinement_max_success_cases,
+            )
+        except Exception as exc:
+            logger.warning(
+                "refinement_teacher_failed",
+                job_id=job_id, iteration=iteration, error=str(exc),
+            )
+            break
+
+        new_rules = apply_refinements(current_rules, refinement)
+        revised_ids = [e.rule_id for e in refinement.revised_rules]
+
+        pruning_result = prune_rules(
+            new_rules,
+            max_rules=task.max_rules,
+            max_prompt_tokens=task.max_prompt_tokens,
+            min_rule_support_count=task.min_rule_support_count,
+            preserve_golden_rules=task.preserve_golden_rules,
+            ranking_mode=task.rule_pruning_mode,
+            regression_penalty=task.rule_regression_penalty,
+            utility_signals=utility_signals,
+        )
+        if not pruning_result.selected:
+            logger.warning("refinement_pruning_empty", job_id=job_id, iteration=iteration)
+            break
+
+        iter_strategy = f"{selected_strategy}_refine_{iteration}"
+        try:
+            new_prompt, _ = compile_prompt(task, pruning_result.selected, iter_strategy)
+        except Exception as exc:
+            logger.warning(
+                "refinement_compile_failed",
+                job_id=job_id, iteration=iteration, error=str(exc),
+            )
+            break
+
+        try:
+            new_eval = await evaluate_prompt(
+                system_prompt=new_prompt,
+                cases=eval_cases,
+                task=task,
+                chat_client=student_chat,
+                config=student_config,
+                strategy=iter_strategy,
+                split=eval_split,
+                bootstrap_enabled=bootstrap_enabled,
+                bootstrap_iterations=bootstrap_iterations,
+                bootstrap_seed=_evaluation_bootstrap_seed(
+                    job_id=job_id,
+                    strategy=iter_strategy,
+                    split=eval_split,
+                    seed_offset=bootstrap_seed,
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "refinement_eval_failed",
+                job_id=job_id, iteration=iteration, error=str(exc),
+            )
+            break
+
+        new_metric = _primary_score_for_metric(new_eval, primary_metric)
+        improvement = new_metric - current_metric
+
+        if new_metric < current_metric:
+            stop_reason = "regression"
+        elif improvement < task.refinement_epsilon:
+            stop_reason = "converged"
+        else:
+            stop_reason = "continue"
+
+        iter_artifact = RefinementIterationArtifact(
+            job_id=job_id,
+            iteration=iteration,
+            strategy_id=selected_strategy,
+            prior_metric=current_metric,
+            new_metric=new_metric,
+            improvement=improvement,
+            revised_rule_ids=revised_ids,
+            stop_reason=stop_reason if stop_reason != "continue" else None,
+        )
+        iter_path.write_text(iter_artifact.model_dump_json())
+        logger.info(
+            "refinement_iter_complete",
+            job_id=job_id,
+            iteration=iteration,
+            prior_metric=current_metric,
+            new_metric=new_metric,
+            improvement=improvement,
+            stop_reason=stop_reason,
+        )
+
+        if stop_reason == "regression":
+            break
+
+        best_rules = pruning_result.selected
+        best_eval = new_eval
+        current_metric = new_metric
+        current_rules = pruning_result.selected
+        any_improvement = True
+
+        if stop_reason != "continue":
+            break
+
+        current_analysis = analyze_failures(
+            None,
+            new_eval,
+            pruning_result.selected,
+            list(case_by_id.values()),
+        )
+
+    if not any_improvement:
+        return None, None
+
+    final_path = outputs_dir / "refinement_best_rules.json"
+    final_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "rulekiln.refinement_best_rules.v1",
+                "job_id": job_id,
+                "strategy_id": selected_strategy,
+                "rule_count": len(best_rules),
+                "rules": [r.model_dump(mode="json") for r in best_rules],
+            },
+            ensure_ascii=False,
+        )
+    )
+    return best_rules, best_eval
 
 
 async def _run_rule_ablation(

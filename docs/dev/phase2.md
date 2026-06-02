@@ -88,6 +88,7 @@ Examples:
 | `make docker-up` | `./scripts/dev-up.sh` | Start Docker stack |
 | `make docker-down` | `./scripts/dev-down.sh` | Stop Docker stack |
 | `make benchmark-smoke` | fixture presence checks | Verify benchmark fixture files |
+| `rulekiln-benchmark refinement-ablation` | `--loop-off-dir <path> --loop-on-dir <path>` | Compare two pipeline runs and emit `refinement_ablation.json` |
 
 ## Recommended local validation flow
 

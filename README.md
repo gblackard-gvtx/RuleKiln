@@ -8,7 +8,7 @@
 
 A prompt compiler that turns labelled cases into tested, versioned, auditable system prompts.
 
-RuleKiln runs a full distillation pipeline: it extracts micro-rules from your cases, clusters them into coherent groups, synthesises rule sets, reviews each rule for logical conflicts, prunes the rule set to fit token and quality budgets, compiles deterministic prompts, evaluates both DBSCAN and HDBSCAN strategies against your cases, applies quality gates, selects the best strategy, and surfaces the winner as a ready-to-use system prompt with a full MLflow audit trail.
+RuleKiln runs a full distillation pipeline: it extracts micro-rules from your cases, clusters them into coherent groups, synthesises rule sets, runs a static linguistic review of each rule, prunes the rule set to fit token and quality budgets, compiles deterministic prompts, evaluates both DBSCAN and HDBSCAN strategies against your cases, applies an empirical closed-loop refinement pass (paper Phase 3), selects the best strategy, and surfaces the winner as a ready-to-use system prompt with a full MLflow audit trail.
 
 ---
 
@@ -221,8 +221,9 @@ Granular resume coverage for costly stages:
 
 - `extracting_rules`: per case
 - `synthesizing_rules`: per cluster
-- `reviewing_rule_conflicts`: per synthesized rule
+- `reviewing_rule_conflicts`: per synthesized rule (static review)
 - `evaluating_baseline` / `evaluating_distilled`: per case
+- `refining_rules`: per-iteration artifact files checkpoint loop progress
 
 ### Provider profiles
 
@@ -368,7 +369,7 @@ GET /v1/jobs/{job_id}
 
 Common status values: `pending`, `running`, `waiting_for_retry`, `failed_retryable`, `failed_terminal`, `completed`.
 
-Full pipeline stage order (`dbos`): `validating_project` → `extracting_rules` → `embedding_rules` → `clustering_rules` → `synthesizing_rules` → `reviewing_rule_conflicts` → `pruning_rules` → `compiling_prompts` → `evaluating_baseline` → `evaluating_distilled` → `selecting_strategy` → `analyzing_failures` → `checking_quality_gates` → `logging_artifacts` → `exporting_artifacts` → `completed`.
+Full pipeline stage order (`dbos`): `validating_project` → `extracting_rules` → `embedding_rules` → `clustering_rules` → `synthesizing_rules` → `reviewing_rule_conflicts` (static rule review) → `pruning_rules` → `compiling_prompts` → `evaluating_baseline` → `evaluating_distilled` → `selecting_strategy` → `analyzing_failures` → `refining_rules` (closed-loop conflict resolution, flag-toggled) → `checking_quality_gates` → `logging_artifacts` → `exporting_artifacts` → `completed`.
 
 ### Retrieve outputs (once `status == "completed"`)
 

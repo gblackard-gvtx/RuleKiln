@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
-from rulekiln.pipeline.failure_analysis import FailureAnalysisResult, analyze_failures
+from rulekiln.pipeline.failure_analysis import (
+    UNATTRIBUTED_RULE_ID,
+    FailureAnalysisResult,
+    analyze_failures,
+)
 from rulekiln.schemas.pipeline import (
     CaseEvalResult,
     EvalResult,
     OutcomeCondition,
     SynthesizedRuleSchema,
 )
+from rulekiln.schemas.task_case import EvaluationAssertion, EvaluationSpec, RuleKilnCase
+
+# ── Fixtures ────────────────────────────────────────────────────────────────
 
 
 def _eval_result(
@@ -40,6 +47,17 @@ def _case_result(case_id: str, passed: bool, score: float = 0.8) -> CaseEvalResu
     )
 
 
+def _case_result_evaluator_style(case_id: str, passed: bool) -> CaseEvalResult:
+    """CaseEvalResult using the real evaluator key format assertion_{i}."""
+    return CaseEvalResult(
+        case_id=case_id,
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        malformed=False,
+        assertion_scores={"assertion_0": 1.0 if passed else 0.0},
+    )
+
+
 def _rule(rule_id: str, topic: str) -> SynthesizedRuleSchema:
     return SynthesizedRuleSchema(
         id=rule_id,
@@ -51,6 +69,50 @@ def _rule(rule_id: str, topic: str) -> SynthesizedRuleSchema:
         source_case_ids=["c1"],
         source_micro_rule_ids=["m1"],
     )
+
+
+def _rule_with_outcome(rule_id: str, outcome_label: str) -> SynthesizedRuleSchema:
+    return SynthesizedRuleSchema(
+        id=rule_id,
+        topic=f"rule_topic_{outcome_label}",
+        applies_when=["some condition"],
+        outcome_conditions={
+            outcome_label: OutcomeCondition(
+                outcome=outcome_label,
+                when=["some condition"],
+                confidence="high",
+            )
+        },
+        priority=1,
+        source_case_ids=["c1"],
+        source_micro_rule_ids=["m1"],
+    )
+
+
+def _case_with_assertion(
+    case_id: str,
+    assertion_type: str = "must_equal",
+    assertion_value: str = "entailment",
+) -> RuleKilnCase:
+    return RuleKilnCase(
+        id=case_id,
+        task_mode="classification",
+        input={"text": "sample"},
+        expected={"label": assertion_value},
+        evaluation=EvaluationSpec(
+            assertions=[
+                EvaluationAssertion(
+                    type=assertion_type,  # type: ignore[arg-type]
+                    path="label",
+                    value=assertion_value,
+                    weight=1.0,
+                )
+            ]
+        ),
+    )
+
+
+# ── Existing tests (backward compatibility) ──────────────────────────────────
 
 
 def test_no_baseline_all_distilled_classified() -> None:
@@ -107,3 +169,124 @@ def test_missing_case_in_distilled_goes_unchanged_failing() -> None:
     distilled = _eval_result(case_results=[])
     result = analyze_failures(baseline, distilled)
     assert len(result.unchanged_failing) == 1
+
+
+# ── New tests: real rule attribution (Task 1) ─────────────────────────────────
+
+
+def test_violated_rule_ids_populated_for_broken_with_cases() -> None:
+    """violated_rule_ids contains the expected rule ID when assertion key is assertion_{i}."""
+    case = _case_with_assertion("c1", assertion_value="entailment")
+    rule = _rule_with_outcome("rule_A", "entailment")
+    baseline = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=True)])
+    distilled = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=False)])
+    result = analyze_failures(baseline, distilled, selected_rules=[rule], cases=[case])
+    broken = [f for f in result.structured_failures if f.failure_class == "broken"]
+    assert len(broken) == 1
+    assert "rule_A" in broken[0].violated_rule_ids
+    assert UNATTRIBUTED_RULE_ID not in broken[0].violated_rule_ids
+
+
+def test_failed_assertion_types_populated() -> None:
+    """failed_assertion_types contains the actual assertion type when cases are provided."""
+    case = _case_with_assertion("c1", assertion_type="must_equal", assertion_value="entailment")
+    rule = _rule_with_outcome("rule_A", "entailment")
+    baseline = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=True)])
+    distilled = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=False)])
+    result = analyze_failures(baseline, distilled, selected_rules=[rule], cases=[case])
+    broken = [f for f in result.structured_failures if f.failure_class == "broken"]
+    assert "must_equal" in broken[0].failed_assertion_types
+
+
+def test_unattributed_sentinel_when_no_rule_match() -> None:
+    """UNATTRIBUTED_RULE_ID is used when no rule covers the expected outcome."""
+    case = _case_with_assertion("c1", assertion_value="entailment")
+    rule = _rule_with_outcome("rule_B", "contradiction")  # covers different outcome
+    baseline = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=True)])
+    distilled = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=False)])
+    result = analyze_failures(baseline, distilled, selected_rules=[rule], cases=[case])
+    broken = [f for f in result.structured_failures if f.failure_class == "broken"]
+    assert broken[0].violated_rule_ids == [UNATTRIBUTED_RULE_ID]
+
+
+def test_violated_rule_summary_non_empty_on_fixture() -> None:
+    """violated_rule_summary() returns non-zero counts when attribution succeeds."""
+    case = _case_with_assertion("c1", assertion_value="entailment")
+    rule = _rule_with_outcome("rule_A", "entailment")
+    baseline = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=True)])
+    distilled = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=False)])
+    result = analyze_failures(baseline, distilled, selected_rules=[rule], cases=[case])
+    summary = result.violated_rule_summary()
+    assert "rule_A" in summary
+    assert summary["rule_A"]["broken_count"] >= 1
+    assert summary["rule_A"]["violated_count"] >= 1
+
+
+def test_unattributed_fraction_zero_when_all_attributed() -> None:
+    """unattributed_fraction() is 0.0 when every failure maps to a real rule."""
+    case = _case_with_assertion("c1", assertion_value="entailment")
+    rule = _rule_with_outcome("rule_A", "entailment")
+    baseline = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=True)])
+    distilled = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=False)])
+    result = analyze_failures(baseline, distilled, selected_rules=[rule], cases=[case])
+    assert result.unattributed_fraction() == 0.0
+
+
+def test_unattributed_fraction_below_threshold_on_fixture() -> None:
+    """The unattributed fraction is reportable; with 1 match + 0 unattributed, it is 0.0 <= 0.5."""
+    case_a = _case_with_assertion("c1", assertion_value="entailment")
+    rule = _rule_with_outcome("rule_A", "entailment")
+    baseline = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=True)])
+    distilled = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=False)])
+    result = analyze_failures(baseline, distilled, selected_rules=[rule], cases=[case_a])
+    threshold = 0.5
+    assert result.unattributed_fraction() <= threshold
+
+
+def test_matched_rule_ids_populated_for_fixed() -> None:
+    """matched_rule_ids is populated for fixed cases when cases are provided."""
+    case = _case_with_assertion("c1", assertion_value="entailment")
+    rule = _rule_with_outcome("rule_A", "entailment")
+    baseline = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=False)])
+    distilled = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=True)])
+    result = analyze_failures(baseline, distilled, selected_rules=[rule], cases=[case])
+    fixed = [f for f in result.structured_failures if f.failure_class == "fixed"]
+    assert len(fixed) == 1
+    assert "rule_A" in fixed[0].matched_rule_ids
+
+
+def test_build_utility_signals_non_empty_with_broken() -> None:
+    """build_utility_signals() returns non-empty dict when failures are attributed."""
+    case = _case_with_assertion("c1", assertion_value="entailment")
+    rule = _rule_with_outcome("rule_A", "entailment")
+    baseline = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=True)])
+    distilled = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=False)])
+    result = analyze_failures(baseline, distilled, selected_rules=[rule], cases=[case])
+    signals = result.build_utility_signals()
+    assert "rule_A" in signals
+    _fixed, broken = signals["rule_A"]
+    assert broken >= 1
+    assert UNATTRIBUTED_RULE_ID not in signals
+
+
+def test_build_utility_signals_excludes_unattributed() -> None:
+    """UNATTRIBUTED_RULE_ID is never included in build_utility_signals output."""
+    case = _case_with_assertion("c1", assertion_value="entailment")
+    rule = _rule_with_outcome("rule_B", "contradiction")  # no match → sentinel
+    baseline = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=True)])
+    distilled = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=False)])
+    result = analyze_failures(baseline, distilled, selected_rules=[rule], cases=[case])
+    signals = result.build_utility_signals()
+    assert UNATTRIBUTED_RULE_ID not in signals
+
+
+def test_violated_rule_summary_includes_fixed_count() -> None:
+    """violated_rule_summary() tracks fixed_count from matched_rule_ids."""
+    case = _case_with_assertion("c1", assertion_value="entailment")
+    rule = _rule_with_outcome("rule_A", "entailment")
+    baseline = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=False)])
+    distilled = _eval_result(case_results=[_case_result_evaluator_style("c1", passed=True)])
+    result = analyze_failures(baseline, distilled, selected_rules=[rule], cases=[case])
+    summary = result.violated_rule_summary()
+    assert "rule_A" in summary
+    assert summary["rule_A"]["fixed_count"] >= 1

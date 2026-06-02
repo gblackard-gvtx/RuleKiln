@@ -1,4 +1,9 @@
-"""Rule conflict review agent: detects and resolves contradictions in synthesized rules."""
+"""Static rule review agent: detects and resolves linguistic contradictions in synthesized rules.
+
+This is a pre-evaluation hygiene pass that checks each rule for internal inconsistencies
+before student evaluation runs. It is NOT the paper's Phase 3 closed-loop conflict
+resolution — that iterative, case-outcome-based process is implemented in rule_refinement.py.
+"""
 
 from rulekiln.observability.logging import get_logger
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
@@ -76,7 +81,12 @@ async def review_rule_for_conflicts(
     chat_client: ChatModelClient,
     config: ProviderConfig,
 ) -> RuleConflictReview:
-    """Call the teacher model to review a synthesized rule for conflicts."""
+    """Static rule review: call the teacher to check a synthesized rule for linguistic conflicts.
+
+    Performs no student inference and does not inspect case outcomes. This is purely
+    a pre-evaluation hygiene check. For the empirical, case-outcome-based refinement
+    (closed-loop conflict resolution), see rule_refinement.refine_rules_with_teacher.
+    """
     user_prompt = _build_conflict_review_prompt(task, rule, micro_rules)
     try:
         result = await chat_client.complete_structured(
