@@ -77,6 +77,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Embedding model name recorded in benchmark manifest.",
     )
     banking77_parser.add_argument(
+        "--bootstrap-iterations",
+        type=int,
+        default=1000,
+        help="Bootstrap iterations used for deterministic confidence intervals.",
+    )
+    banking77_parser.add_argument(
+        "--bootstrap-seed",
+        type=int,
+        default=None,
+        help="Bootstrap seed for deterministic confidence intervals.",
+    )
+    banking77_parser.add_argument(
+        "--no-bootstrap",
+        action="store_true",
+        help="Disable bootstrap confidence interval computation.",
+    )
+    banking77_parser.add_argument(
         "--update-readme",
         action="store_true",
         help="Update examples/datasets/banking77/README.md snapshot block with this run.",
@@ -104,6 +121,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         teacher_model=args.teacher_model,
         student_model=args.student_model,
         embedding_model=args.embedding_model,
+        bootstrap_enabled=not args.no_bootstrap,
+        bootstrap_iterations=args.bootstrap_iterations,
+        bootstrap_seed=args.bootstrap_seed,
     )
 
     print(f"Completed benchmark run: {result.run_id}")

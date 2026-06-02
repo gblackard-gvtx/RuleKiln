@@ -195,10 +195,19 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
         "task.yaml",
         "cases.normalized.jsonl",
         "outputs/baseline_prompt.md",
+        "outputs/baseline_scaffold_prompt.md",
+        "outputs/baseline_scaffold_eval.json",
         "outputs/distilled_prompt_dbscan.md",
         "outputs/distilled_prompt_hdbscan.md",
         "outputs/eval_report.json",
         "outputs/strategy_comparison.json",
+        "outputs/confusion_matrix.csv",
+        "outputs/per_label_metrics.csv",
+        "outputs/top_confusions.md",
+        "outputs/paired_comparison/fixed.jsonl",
+        "outputs/paired_comparison/broken.jsonl",
+        "outputs/paired_comparison/unchanged.jsonl",
+        "outputs/paired_comparison/summary.json",
         "metadata/settings_snapshot.json",
         "metadata/manifest.json",
     ]
@@ -210,6 +219,17 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
     manifest_entries = set(manifest.get("artifacts", []))
     for relative_path in required_artifacts:
         assert relative_path in manifest_entries
+
+    strategy_comparison = json.loads(
+        (artifact_root / "outputs" / "strategy_comparison.json").read_text(encoding="utf-8")
+    )
+    strategy_evals = strategy_comparison.get("strategy_evals", {})
+    assert isinstance(strategy_evals, dict)
+    assert "baseline_scaffold" in strategy_evals
+    assert strategy_comparison.get("selected_strategy_id")
+    assert strategy_comparison.get("selected_strategy_family")
+    assert isinstance(strategy_comparison.get("best_by_family"), dict)
+    assert isinstance(strategy_comparison.get("paired_comparison"), dict)
 
     selected_prompt_path = artifact_root / "outputs" / "selected_distilled_prompt.md"
     if selected_prompt_path.exists():

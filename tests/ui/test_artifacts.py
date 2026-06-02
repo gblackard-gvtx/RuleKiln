@@ -46,16 +46,27 @@ class TestArtifacts:
         self, client: AsyncClient, db_session_factory, test_settings, tmp_path
     ) -> None:
         job_id = await _insert_job(db_session_factory)
-        # Create an artifact file under tmp_path/{job_id}/task.yaml
+        # Create representative artifacts under tmp_path/{job_id}/...
         artifact_dir = tmp_path / job_id
-        artifact_dir.mkdir(parents=True)
+        outputs_dir = artifact_dir / "outputs"
+        paired_dir = outputs_dir / "paired_comparison"
+        paired_dir.mkdir(parents=True)
         (artifact_dir / "task.yaml").write_text("task_id: t1\n")
+        (outputs_dir / "confusion_matrix.csv").write_text(
+            "actual_label,predicted_label,count\n", encoding="utf-8"
+        )
+        (outputs_dir / "top_confusions.md").write_text("# Top Confusions\n", encoding="utf-8")
+        (paired_dir / "summary.json").write_text("{}", encoding="utf-8")
 
         # Override the artifact root
         test_settings.artifact_root = str(tmp_path)
 
         response = await client.get(f"/ui/jobs/{job_id}/artifacts")
         assert response.status_code == 200
+        assert "task.yaml" in response.text
+        assert "confusion_matrix.csv" in response.text
+        assert "top_confusions.md" in response.text
+        assert "summary.json" in response.text
 
     async def test_download_path_traversal_rejected(
         self, client: AsyncClient, db_session_factory

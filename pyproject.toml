@@ -3,7 +3,7 @@ name = "rulekiln"
 version = "0.1.0"
 description = "A prompt compiler that turns cases into tested, versioned, auditable prompts."
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12,<3.14"
 dependencies = [
     # API
     "fastapi>=0.115,<1",

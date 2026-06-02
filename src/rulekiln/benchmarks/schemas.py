@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from rulekiln.schemas.pipeline import EvalResult
+from rulekiln.schemas.pipeline import EvalResult, PairedComparisonSummary
 
 BenchmarkProfileName = Literal["smoke", "standard", "full"]
 DatasetSource = Literal["auto", "fixture", "download"]
@@ -84,6 +84,12 @@ class BenchmarkStrategyComparison(BaseModel):
     baseline_score: float
     rulekiln_score: float
     delta_vs_baseline: float
+    selected_strategy_id: str | None = None
+    selected_strategy_family: str | None = None
+    best_distilled_strategy_id: str | None = None
+    best_baseline_strategy_id: str | None = None
+    best_by_family: dict[str, str] = Field(default_factory=dict)
+    paired_comparison: PairedComparisonSummary | None = None
     selected_strategy: str
     selection_reason: str
 
@@ -102,16 +108,6 @@ class Banking77SplitResult(BaseModel):
     train_examples: list[Banking77Example] = Field(default_factory=list)
     validation_examples: list[Banking77Example] = Field(default_factory=list)
     test_examples: list[Banking77Example] = Field(default_factory=list)
-
-
-class PerLabelMetricRow(BaseModel):
-    """Row schema for per-label metrics CSV export."""
-
-    label: str
-    precision: float
-    recall: float
-    support: int
-    strategy: str
 
 
 class BenchmarkRunResult(BaseModel):

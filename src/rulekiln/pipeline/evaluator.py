@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import json
 import re
-from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping
 
 from pydantic import BaseModel
 
+from rulekiln.pipeline.statistics import compute_classification_statistics
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
-from rulekiln.schemas.pipeline import CaseEvalResult, EvalResult
+from rulekiln.schemas.pipeline import (
+    CaseEvalResult,
+    EvalResult,
+    MetricConfidenceInterval,
+    PerLabelMetricsRow,
+    TopConfusionRow,
+)
 from rulekiln.schemas.task_case import AssertionType, RuleKilnCase, RuleKilnTask, TaskMode
 
 type CaseResultPersistFn = Callable[[CaseEvalResult], Awaitable[None]]
@@ -136,6 +142,10 @@ def _compute_metrics(
     strategy: str,
     model: str,
     split: str,
+    *,
+    bootstrap_enabled: bool,
+    bootstrap_iterations: int,
+    bootstrap_seed: int,
 ) -> EvalResult:
     n = len(case_results)
     if n == 0:
@@ -153,19 +163,23 @@ def _compute_metrics(
     # For classification/routing: compute accuracy + macro F1 from expected labels
     accuracy: float | None = None
     macro_f1: float | None = None
+    accuracy_ci_95: MetricConfidenceInterval | None = None
+    macro_f1_ci_95: MetricConfidenceInterval | None = None
     per_outcome_precision: dict[str, float] = {}
     per_outcome_recall: dict[str, float] = {}
-    confusion: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    per_label_metrics: list[PerLabelMetricsRow] = []
+    confusion_matrix: dict[str, dict[str, int]] = {}
+    top_confusions: list[TopConfusionRow] = []
 
     if task_mode in ("classification", "routing"):
         case_map = {c.id: c for c in cases}
-        correct = 0
-        tp: dict[str, int] = defaultdict(int)
-        fp: dict[str, int] = defaultdict(int)
-        fn: dict[str, int] = defaultdict(int)
-        labels: set[str] = set()
+        expected_labels: list[str] = []
+        predicted_labels: list[str] = []
+        case_ids: list[str] = []
 
         for res in case_results:
+            if res.malformed:
+                continue
             case = case_map.get(res.case_id)
             if case is None or case.expected is None:
                 continue
@@ -184,42 +198,47 @@ def _compute_metrics(
             elif isinstance(res.actual_output, str):
                 actual_raw = res.actual_output
             else:
-                actual_raw = None
-            actual_label = actual_raw if isinstance(actual_raw, str) else str(actual_raw or "")
+                actual_raw = ""
 
-            labels.add(expected_label)
-            labels.add(actual_label)
-            confusion[expected_label][actual_label] += 1
-            if expected_label == actual_label:
-                correct += 1
-                tp[expected_label] += 1
-            else:
-                fp[actual_label] += 1
-                fn[expected_label] += 1
+            actual_label = actual_raw if isinstance(actual_raw, str) else str(actual_raw)
 
-        valid = len([r for r in case_results if not r.malformed])
-        accuracy = correct / valid if valid > 0 else 0.0
-        f1_scores: list[float] = []
-        for label in labels:
-            prec = tp[label] / (tp[label] + fp[label]) if (tp[label] + fp[label]) > 0 else 0.0
-            rec = tp[label] / (tp[label] + fn[label]) if (tp[label] + fn[label]) > 0 else 0.0
-            f1 = 2 * prec * rec / (prec + rec) if (prec + rec) > 0 else 0.0
-            f1_scores.append(f1)
-            per_outcome_precision[label] = prec
-            per_outcome_recall[label] = rec
-        macro_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
+            expected_labels.append(expected_label)
+            predicted_labels.append(actual_label)
+            case_ids.append(res.case_id)
+
+        classification_stats = compute_classification_statistics(
+            actual_labels=expected_labels,
+            predicted_labels=predicted_labels,
+            case_ids=case_ids,
+            bootstrap_enabled=bootstrap_enabled,
+            bootstrap_iterations=bootstrap_iterations,
+            bootstrap_seed=bootstrap_seed,
+        )
+        accuracy = classification_stats.accuracy
+        macro_f1 = classification_stats.macro_f1
+        accuracy_ci_95 = classification_stats.accuracy_ci_95
+        macro_f1_ci_95 = classification_stats.macro_f1_ci_95
+        per_outcome_precision = classification_stats.per_outcome_precision
+        per_outcome_recall = classification_stats.per_outcome_recall
+        per_label_metrics = classification_stats.per_label_metrics
+        confusion_matrix = classification_stats.confusion_matrix
+        top_confusions = classification_stats.top_confusions
 
     return EvalResult(
         strategy=strategy,
         model=model,
         split=split,
         accuracy=accuracy,
+        accuracy_ci_95=accuracy_ci_95,
         macro_f1=macro_f1,
+        macro_f1_ci_95=macro_f1_ci_95,
         weighted_case_score=weighted_case_score,
         malformed_output_rate=malformed_output_rate,
         per_outcome_precision=per_outcome_precision,
         per_outcome_recall=per_outcome_recall,
-        confusion_matrix={k: dict(v) for k, v in confusion.items()},
+        per_label_metrics=per_label_metrics,
+        confusion_matrix=confusion_matrix,
+        top_confusions=top_confusions,
         case_results=case_results,
     )
 
@@ -234,6 +253,10 @@ async def evaluate_prompt(
     split: str = "train",
     completed_case_results: Mapping[str, CaseEvalResult] | None = None,
     on_case_result: CaseResultPersistFn | None = None,
+    *,
+    bootstrap_enabled: bool = True,
+    bootstrap_iterations: int = 1000,
+    bootstrap_seed: int = 1729,
 ) -> EvalResult:
     """Run the student model against every case and return aggregate metrics."""
     case_result_by_id: dict[str, CaseEvalResult] = {}
@@ -260,4 +283,53 @@ async def evaluate_prompt(
         strategy=strategy,
         model=config.model,
         split=split,
+        bootstrap_enabled=bootstrap_enabled,
+        bootstrap_iterations=bootstrap_iterations,
+        bootstrap_seed=bootstrap_seed,
     )
+
+
+def build_case_result_from_label_prediction(
+    case: RuleKilnCase,
+    predicted_label: str,
+    *,
+    error: str | None = None,
+) -> CaseEvalResult:
+    """Build a CaseEvalResult from a predicted classification/routing label."""
+    actual_output: dict[str, str | int | float | bool | None] = {"label": predicted_label}
+    result = _score_case(case, actual_output, malformed=False)
+    result.error = error
+    return result
+
+
+def build_eval_result_from_case_results(
+    *,
+    strategy: str,
+    model: str,
+    split: str,
+    task: RuleKilnTask,
+    cases: list[RuleKilnCase],
+    case_results: list[CaseEvalResult],
+    prompt_token_count: int | None = None,
+    retrieval_failure_count: int = 0,
+    model_failure_count: int = 0,
+    bootstrap_enabled: bool = True,
+    bootstrap_iterations: int = 1000,
+    bootstrap_seed: int = 1729,
+) -> EvalResult:
+    """Aggregate precomputed case results into the standard EvalResult shape."""
+    result = _compute_metrics(
+        case_results=case_results,
+        cases=cases,
+        task_mode=task.task_mode,
+        strategy=strategy,
+        model=model,
+        split=split,
+        bootstrap_enabled=bootstrap_enabled,
+        bootstrap_iterations=bootstrap_iterations,
+        bootstrap_seed=bootstrap_seed,
+    )
+    result.prompt_token_count = prompt_token_count
+    result.retrieval_failure_count = retrieval_failure_count
+    result.model_failure_count = model_failure_count
+    return result

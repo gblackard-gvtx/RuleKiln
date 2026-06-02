@@ -95,6 +95,92 @@ class RuleClusterSchema(BaseModel):
     cluster_metadata: dict[str, str | int | float] = Field(default_factory=dict)
 
 
+class MetricConfidenceInterval(BaseModel):
+    """Deterministic confidence interval descriptor for one metric."""
+
+    low: float
+    high: float
+    method: Literal["bootstrap"] = "bootstrap"
+    iterations: int
+    seed: int
+
+
+class PerLabelMetricsRow(BaseModel):
+    """Per-label classification metrics row for CSV/JSON artifacts."""
+
+    label: str
+    support: int
+    true_positive: int
+    false_positive: int
+    false_negative: int
+    precision: float
+    recall: float
+    f1: float
+
+
+class TopConfusionRow(BaseModel):
+    """Top non-diagonal confusion entry with deterministic example IDs."""
+
+    actual_label: str
+    predicted_label: str
+    count: int
+    example_case_ids: list[str] = Field(default_factory=list)
+
+
+class RegressedLabelRow(BaseModel):
+    """Label-level regression diagnostics between baseline and candidate strategies."""
+
+    label: str
+    support: int
+    baseline_recall: float
+    candidate_recall: float
+    recall_delta: float
+    baseline_f1: float
+    candidate_f1: float
+    f1_delta: float
+    new_false_negatives: int
+    top_predicted_wrong_labels: list[str] = Field(default_factory=list)
+    example_case_ids: list[str] = Field(default_factory=list)
+
+
+class PairedComparisonExample(BaseModel):
+    """One baseline-vs-candidate paired comparison example row."""
+
+    schema_version: Literal["rulekiln.paired_comparison_example.v1"] = (
+        "rulekiln.paired_comparison_example.v1"
+    )
+    case_id: str
+    change_class: Literal["fixed", "broken", "unchanged"]
+    unchanged_status: Literal["both_correct", "both_wrong"] | None = None
+    baseline_strategy_id: str
+    candidate_strategy_id: str
+    expected_label: str
+    baseline_prediction: str
+    candidate_prediction: str
+    baseline_correct: bool
+    candidate_correct: bool
+    input_text: str
+    notes: list[str] = Field(default_factory=list)
+
+
+class PairedComparisonSummary(BaseModel):
+    """Aggregate baseline-vs-candidate paired comparison summary."""
+
+    schema_version: Literal["rulekiln.paired_comparison_summary.v1"] = (
+        "rulekiln.paired_comparison_summary.v1"
+    )
+    baseline_strategy_id: str
+    candidate_strategy_id: str
+    fixed_count: int
+    broken_count: int
+    unchanged_correct_count: int
+    unchanged_wrong_count: int
+    total_cases: int
+    net_fix_rate: float | None = None
+    net_fix_rate_status: Literal["ok", "no_changed_outcomes"]
+    overall_net_fix_rate: float
+
+
 # ── Evaluation ───────────────────────────────────────────────────────────────
 
 
@@ -117,16 +203,24 @@ class EvalResult(BaseModel):
     model: str
     split: str
     accuracy: float | None = None
+    accuracy_ci_95: MetricConfidenceInterval | None = None
     macro_f1: float | None = None
+    macro_f1_ci_95: MetricConfidenceInterval | None = None
     weighted_case_score: float | None = None
     malformed_output_rate: float = 0.0
     per_outcome_precision: dict[str, float] = Field(default_factory=dict)
     per_outcome_recall: dict[str, float] = Field(default_factory=dict)
+    per_label_metrics: list[PerLabelMetricsRow] = Field(default_factory=list)
     confusion_matrix: dict[str, dict[str, int]] = Field(default_factory=dict)
+    top_confusions: list[TopConfusionRow] = Field(default_factory=list)
+    regressed_labels: list[RegressedLabelRow] = Field(default_factory=list)
     case_results: list[CaseEvalResult] = Field(default_factory=list)
     violated_rule_counts: dict[str, int] = Field(default_factory=dict)
     failed_assertion_path_counts: dict[str, int] = Field(default_factory=dict)
     failures: list["CaseEvaluationFailure"] = Field(default_factory=list)
+    prompt_token_count: int | None = None
+    retrieval_failure_count: int = 0
+    model_failure_count: int = 0
 
 
 # ── Eval-to-rule failure mapping ───────────────────────────────────────────
@@ -172,6 +266,18 @@ class StrategyComparison(BaseModel):
     hdbscan_eval: EvalResult | None = None
     dbscan_gate: QualityGateResult | None = None
     hdbscan_gate: QualityGateResult | None = None
+    strategy_evals: dict[str, EvalResult] = Field(default_factory=dict)
+    strategy_gates: dict[str, QualityGateResult] = Field(default_factory=dict)
+    strategy_prompt_tokens: dict[str, int] = Field(default_factory=dict)
+    strategy_metadata: dict[str, dict[str, str | int | float | bool]] = Field(
+        default_factory=dict
+    )
+    selected_strategy_id: str | None = None
+    selected_strategy_family: str | None = None
+    best_distilled_strategy_id: str | None = None
+    best_baseline_strategy_id: str | None = None
+    best_by_family: dict[str, str] = Field(default_factory=dict)
+    paired_comparison: PairedComparisonSummary | None = None
     selected_strategy: str | None = None
     selection_reason: str | None = None
     evaluation_split_warning: str | None = None

@@ -5,6 +5,7 @@ Use this index to find the right document quickly.
 ## Start Here
 
 - Local setup and run commands: [dev/docker.md](dev/docker.md)
+- Phase 2 strategy behavior and Make targets: [dev/phase2.md](dev/phase2.md)
 - Current documentation validation snapshot: [mvp_validation.md](mvp_validation.md)
 
 ## Design Specs

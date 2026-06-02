@@ -2,18 +2,35 @@
 
 from __future__ import annotations
 
-import csv
 import json
 import re
 from pathlib import Path
 
+from rulekiln.artifacts.writer import (
+    write_confusion_matrix_csv as write_confusion_matrix_csv_shared,
+)
+from rulekiln.artifacts.writer import (
+    write_paired_comparison_artifacts,
+)
+from rulekiln.artifacts.writer import (
+    write_per_label_metrics_csv as write_per_label_metrics_csv_shared,
+)
+from rulekiln.artifacts.writer import (
+    write_top_confusions_markdown as write_top_confusions_markdown_shared,
+)
 from rulekiln.benchmarks.schemas import (
     BenchmarkManifest,
     BenchmarkStrategyComparison,
     DatasetManifest,
-    PerLabelMetricRow,
 )
-from rulekiln.schemas.pipeline import EvalResult
+from rulekiln.pipeline.statistics import PairedComparisonArtifacts
+from rulekiln.schemas.pipeline import (
+    EvalResult,
+    MetricConfidenceInterval,
+    PerLabelMetricsRow,
+    RegressedLabelRow,
+    TopConfusionRow,
+)
 
 _SNAPSHOT_START = "<!-- RULEKILN_BENCHMARK_SNAPSHOT_START -->"
 _SNAPSHOT_END = "<!-- RULEKILN_BENCHMARK_SNAPSHOT_END -->"
@@ -46,74 +63,148 @@ def write_dataset_manifest(path: Path, manifest: DatasetManifest) -> Path:
 
 
 def write_confusion_matrix_csv(path: Path, eval_result: EvalResult) -> Path:
-    """Write confusion matrix rows using strict schema.
-
-    Header: expected_label,predicted_label,count
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["expected_label", "predicted_label", "count"])
-
-        expected_labels = sorted(eval_result.confusion_matrix.keys())
-        for expected_label in expected_labels:
-            predicted_map = eval_result.confusion_matrix.get(expected_label, {})
-            for predicted_label in sorted(predicted_map.keys()):
-                count = predicted_map[predicted_label]
-                writer.writerow([expected_label, predicted_label, count])
-
-    return path
+    """Write strict confusion matrix CSV (actual_label,predicted_label,count)."""
+    return write_confusion_matrix_csv_shared(path, eval_result.confusion_matrix)
 
 
-def write_per_label_metrics_csv(path: Path, rows: list[PerLabelMetricRow]) -> Path:
-    """Write per-label metrics rows using strict schema.
+def write_per_label_metrics_csv(path: Path, rows: list[PerLabelMetricsRow]) -> Path:
+    """Write strict per-label metrics CSV."""
+    return write_per_label_metrics_csv_shared(path, rows)
 
-    Header: label,precision,recall,support,strategy
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    sorted_rows = sorted(rows, key=lambda row: (row.strategy, row.label))
 
-    with path.open("w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["label", "precision", "recall", "support", "strategy"])
-        for row in sorted_rows:
-            writer.writerow(
-                [
-                    row.label,
-                    f"{row.precision:.10f}",
-                    f"{row.recall:.10f}",
-                    row.support,
-                    row.strategy,
-                ]
-            )
+def write_top_confusions_markdown(path: Path, rows: list[TopConfusionRow]) -> Path:
+    """Write top confusions markdown."""
+    return write_top_confusions_markdown_shared(path, rows)
 
-    return path
+
+def write_paired_comparison(path: Path, paired_comparison: PairedComparisonArtifacts) -> list[Path]:
+    """Write paired comparison JSONL and summary files."""
+    return write_paired_comparison_artifacts(path, paired_comparison)
+
+
+def _format_ci(metric_ci: MetricConfidenceInterval | None) -> str:
+    if metric_ci is None:
+        return "null"
+    return json.dumps(metric_ci.model_dump(mode="json"), ensure_ascii=False)
+
+
+def _render_regressed_labels_section(rows: list[RegressedLabelRow]) -> list[str]:
+    lines: list[str] = ["## Regressed Labels (recall_delta < 0)", ""]
+    if not rows:
+        lines.append("No regressed labels detected.")
+        lines.append("")
+        return lines
+
+    lines.extend(
+        [
+            "| label | support | baseline_recall | candidate_recall | recall_delta | baseline_f1 | "
+            "candidate_f1 | f1_delta | new_false_negatives | top_predicted_wrong_labels | "
+            "example_case_ids |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|",
+        ]
+    )
+    for row in rows:
+        lines.append(
+            "| "
+            f"{row.label} | {row.support} | {row.baseline_recall:.6f} | "
+            f"{row.candidate_recall:.6f} | "
+            f"{row.recall_delta:.6f} | {row.baseline_f1:.6f} | {row.candidate_f1:.6f} | "
+            f"{row.f1_delta:.6f} | {row.new_false_negatives} | "
+            f"{', '.join(row.top_predicted_wrong_labels)} | {', '.join(row.example_case_ids)} |"
+        )
+    lines.append("")
+    return lines
+
+
+def _render_top_confusions_section(rows: list[TopConfusionRow]) -> list[str]:
+    lines: list[str] = ["## Top Confusions", ""]
+    if not rows:
+        lines.append("No non-diagonal confusions found.")
+        lines.append("")
+        return lines
+
+    lines.extend(
+        [
+            "| rank | actual_label | predicted_label | count | example_case_ids |",
+            "|---:|---|---|---:|---|",
+        ]
+    )
+    for index, row in enumerate(rows[:20], start=1):
+        lines.append(
+            "| "
+            f"{index} | {row.actual_label} | {row.predicted_label} | {row.count} | "
+            f"{', '.join(row.example_case_ids)} |"
+        )
+    lines.append("")
+    return lines
 
 
 def render_summary_markdown(
     manifest: BenchmarkManifest,
     dataset_manifest: DatasetManifest,
     comparison: BenchmarkStrategyComparison,
+    *,
+    reproduction_command: str,
 ) -> str:
-    """Render a benchmark summary markdown snapshot."""
-    return "\n".join(
+    """Render benchmark summary markdown with CI, paired outcomes, and regressions."""
+    paired_summary = comparison.paired_comparison
+    candidate_eval = comparison.rulekiln_eval
+
+    result_lines: list[str] = [
+        "# BANKING77 Benchmark Summary",
+        "",
+        f"- run_id: {manifest.run_id}",
+        f"- benchmark: {manifest.benchmark_name}",
+        f"- profile: {dataset_manifest.profile}",
+        f"- seed: {manifest.seed}",
+        f"- dataset: {manifest.dataset_name}",
+        f"- dataset_revision: {manifest.dataset_revision or 'unknown'}",
+        "",
+        "## Results",
+        "",
+        f"- primary_metric: {comparison.primary_metric}",
+        f"- baseline_score: {comparison.baseline_score:.6f}",
+        f"- candidate_score: {comparison.rulekiln_score:.6f}",
+        f"- delta_vs_baseline: {comparison.delta_vs_baseline:.6f}",
+        f"- selected_strategy: {comparison.selected_strategy}",
+        f"- macro_f1: {candidate_eval.macro_f1 if candidate_eval.macro_f1 is not None else 'null'}",
+        f"- macro_f1_ci_95: {_format_ci(candidate_eval.macro_f1_ci_95)}",
+        f"- accuracy: {candidate_eval.accuracy if candidate_eval.accuracy is not None else 'null'}",
+        f"- accuracy_ci_95: {_format_ci(candidate_eval.accuracy_ci_95)}",
+    ]
+
+    if paired_summary is not None:
+        net_fix_rate_value: float | str = (
+            paired_summary.net_fix_rate
+            if paired_summary.net_fix_rate is not None
+            else "null"
+        )
+        result_lines.extend(
+            [
+                f"- fixed_count: {paired_summary.fixed_count}",
+                f"- broken_count: {paired_summary.broken_count}",
+                f"- unchanged_correct_count: {paired_summary.unchanged_correct_count}",
+                f"- unchanged_wrong_count: {paired_summary.unchanged_wrong_count}",
+                f"- net_fix_rate: {net_fix_rate_value}",
+                f"- overall_net_fix_rate: {paired_summary.overall_net_fix_rate}",
+            ]
+        )
+
+    result_lines.extend(["", *(_render_regressed_labels_section(candidate_eval.regressed_labels))])
+    result_lines.extend(_render_top_confusions_section(candidate_eval.top_confusions))
+    result_lines.extend(
         [
-            "# BANKING77 Benchmark Summary",
+            "## Caveats",
             "",
-            f"- Run ID: {manifest.run_id}",
-            f"- Benchmark: {manifest.benchmark_name}",
-            f"- Profile: {dataset_manifest.profile}",
-            f"- Seed: {manifest.seed}",
-            f"- Dataset: {manifest.dataset_name}",
-            f"- Dataset revision: {manifest.dataset_revision or 'unknown'}",
+            "- Confidence intervals use deterministic bootstrap sampling and are sensitive "
+            "to split size.",
+            "- Macro F1 treats all labels equally and may over-emphasize rare-label variance.",
             "",
-            "## Results",
+            "## Reproduction",
             "",
-            f"- Primary metric: {comparison.primary_metric}",
-            f"- Baseline score: {comparison.baseline_score:.6f}",
-            f"- RuleKiln score: {comparison.rulekiln_score:.6f}",
-            f"- Delta vs baseline: {comparison.delta_vs_baseline:.6f}",
-            f"- Selected strategy: {comparison.selected_strategy}",
+            "```bash",
+            reproduction_command,
+            "```",
             "",
             "## Benchmark Manifest Snapshot",
             "",
@@ -130,6 +221,7 @@ def render_summary_markdown(
             "",
         ]
     )
+    return "\n".join(result_lines)
 
 
 def write_summary_markdown(
@@ -137,10 +229,17 @@ def write_summary_markdown(
     manifest: BenchmarkManifest,
     dataset_manifest: DatasetManifest,
     comparison: BenchmarkStrategyComparison,
+    *,
+    reproduction_command: str,
 ) -> Path:
     """Write summary markdown report."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    content = render_summary_markdown(manifest, dataset_manifest, comparison)
+    content = render_summary_markdown(
+        manifest,
+        dataset_manifest,
+        comparison,
+        reproduction_command=reproduction_command,
+    )
     path.write_text(content, encoding="utf-8")
     return path
 

@@ -1,0 +1,138 @@
+{
+  "strategy": "baseline_few_shot_k5",
+  "model": "fake-model",
+  "split": "train",
+  "accuracy": 0.0,
+  "accuracy_ci_95": {
+    "low": 0.0,
+    "high": 0.0,
+    "method": "bootstrap",
+    "iterations": 1000,
+    "seed": 2981414426
+  },
+  "macro_f1": 0.0,
+  "macro_f1_ci_95": {
+    "low": 0.0,
+    "high": 0.0,
+    "method": "bootstrap",
+    "iterations": 1000,
+    "seed": 2981414426
+  },
+  "weighted_case_score": 0.0,
+  "malformed_output_rate": 1.0,
+  "per_outcome_precision": {
+    "": 0.0,
+    "negative": 0.0,
+    "positive": 0.0
+  },
+  "per_outcome_recall": {
+    "": 0.0,
+    "negative": 0.0,
+    "positive": 0.0
+  },
+  "per_label_metrics": [
+    {
+      "label": "",
+      "support": 0,
+      "true_positive": 0,
+      "false_positive": 4,
+      "false_negative": 0,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    {
+      "label": "negative",
+      "support": 2,
+      "true_positive": 0,
+      "false_positive": 0,
+      "false_negative": 2,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    },
+    {
+      "label": "positive",
+      "support": 2,
+      "true_positive": 0,
+      "false_positive": 0,
+      "false_negative": 2,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0
+    }
+  ],
+  "confusion_matrix": {
+    "negative": {
+      "": 2
+    },
+    "positive": {
+      "": 2
+    }
+  },
+  "top_confusions": [
+    {
+      "actual_label": "negative",
+      "predicted_label": "",
+      "count": 2,
+      "example_case_ids": [
+        "case-1",
+        "case-3"
+      ]
+    },
+    {
+      "actual_label": "positive",
+      "predicted_label": "",
+      "count": 2,
+      "example_case_ids": [
+        "case-0",
+        "case-2"
+      ]
+    }
+  ],
+  "regressed_labels": [],
+  "case_results": [
+    {
+      "case_id": "case-0",
+      "score": 0.0,
+      "passed": false,
+      "malformed": true,
+      "assertion_scores": {},
+      "actual_output": null,
+      "error": null
+    },
+    {
+      "case_id": "case-1",
+      "score": 0.0,
+      "passed": false,
+      "malformed": true,
+      "assertion_scores": {},
+      "actual_output": null,
+      "error": null
+    },
+    {
+      "case_id": "case-2",
+      "score": 0.0,
+      "passed": false,
+      "malformed": true,
+      "assertion_scores": {},
+      "actual_output": null,
+      "error": null
+    },
+    {
+      "case_id": "case-3",
+      "score": 0.0,
+      "passed": false,
+      "malformed": true,
+      "assertion_scores": {},
+      "actual_output": null,
+      "error": null
+    }
+  ],
+  "violated_rule_counts": {},
+  "failed_assertion_path_counts": {},
+  "failures": [],
+  "prompt_token_count": 126,
+  "retrieval_failure_count": 0,
+  "model_failure_count": 0
+}

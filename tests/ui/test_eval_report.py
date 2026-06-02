@@ -111,7 +111,24 @@ class TestEvalReport:
         outputs_dir.mkdir(parents=True, exist_ok=True)
         warning_message = "No validation cases detected. Evaluation fell back to split=train."
         (outputs_dir / "strategy_comparison.json").write_text(
-            json.dumps({"evaluation_split_warning": warning_message}),
+            json.dumps(
+                {
+                    "evaluation_split_warning": warning_message,
+                    "selected_strategy_id": "dbscan",
+                    "selected_strategy_family": "distilled",
+                    "best_baseline_strategy_id": "baseline_scaffold",
+                    "best_distilled_strategy_id": "dbscan",
+                    "paired_comparison": {
+                        "fixed_count": 3,
+                        "broken_count": 1,
+                        "unchanged_correct_count": 2,
+                        "unchanged_wrong_count": 4,
+                        "net_fix_rate": 0.5,
+                        "net_fix_rate_status": "ok",
+                        "overall_net_fix_rate": 0.2,
+                    },
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -119,3 +136,8 @@ class TestEvalReport:
 
         assert response.status_code == 200
         assert warning_message in response.text
+        assert "Strategy Comparison" in response.text
+        assert "dbscan" in response.text
+        assert "baseline_scaffold" in response.text
+        assert "Paired fixed" in response.text
+        assert "+50.00%" in response.text

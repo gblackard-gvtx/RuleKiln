@@ -300,10 +300,18 @@ async def test_split_policy_uses_train_for_extraction_and_validation_for_eval(
     await run_distillation_pipeline(job_id, payload)
 
     assert extraction_case_ids == ["case-0", "case-1"]
-    assert {strategy for strategy, _, _ in eval_invocations} == {"baseline", "dbscan", "hdbscan"}
-    for _strategy, split, case_ids in eval_invocations:
+    invoked_strategies = {strategy for strategy, _, _ in eval_invocations}
+    assert {"baseline", "dbscan", "hdbscan"}.issubset(invoked_strategies)
+    assert {"baseline_few_shot_k3", "baseline_few_shot_k5"}.issubset(invoked_strategies)
+    assert "retrieval_few_shot_k5" in invoked_strategies
+    expected_eval_case_ids = ["case-2", "case-3"]
+    for strategy, split, case_ids in eval_invocations:
         assert split == "validation"
-        assert case_ids == ["case-2", "case-3"]
+        if strategy == "retrieval_few_shot_k5":
+            assert len(case_ids) == 1
+            assert case_ids[0] in expected_eval_case_ids
+        else:
+            assert case_ids == expected_eval_case_ids
 
     artifact_root = Path(fake_settings.artifact_root) / job_id
     normalized_path = artifact_root / "cases.normalized.jsonl"
@@ -471,10 +479,18 @@ async def test_split_policy_falls_back_to_train_with_warning(
     await run_distillation_pipeline(job_id, payload)
 
     assert extraction_case_ids == ["case-0", "case-1", "case-2"]
-    assert {strategy for strategy, _, _ in eval_invocations} == {"baseline", "dbscan", "hdbscan"}
-    for _strategy, split, case_ids in eval_invocations:
+    invoked_strategies = {strategy for strategy, _, _ in eval_invocations}
+    assert {"baseline", "dbscan", "hdbscan"}.issubset(invoked_strategies)
+    assert {"baseline_few_shot_k3", "baseline_few_shot_k5"}.issubset(invoked_strategies)
+    assert "retrieval_few_shot_k5" in invoked_strategies
+    expected_eval_case_ids = ["case-0", "case-1", "case-2"]
+    for strategy, split, case_ids in eval_invocations:
         assert split == "train"
-        assert case_ids == ["case-0", "case-1", "case-2"]
+        if strategy == "retrieval_few_shot_k5":
+            assert len(case_ids) == 1
+            assert case_ids[0] in expected_eval_case_ids
+        else:
+            assert case_ids == expected_eval_case_ids
 
     artifact_root = Path(fake_settings.artifact_root) / job_id
     eval_report_path = artifact_root / "outputs" / "eval_report.json"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 from pathlib import Path
 
@@ -86,7 +87,12 @@ def test_benchmark_cli_smoke_writes_required_artifacts(tmp_path: Path) -> None:
         run_root / "strategy_comparison.json",
         run_root / "confusion_matrix.csv",
         run_root / "per_label_metrics.csv",
+        run_root / "top_confusions.md",
         run_root / "summary.md",
+        run_root / "paired_comparison/fixed.jsonl",
+        run_root / "paired_comparison/broken.jsonl",
+        run_root / "paired_comparison/unchanged.jsonl",
+        run_root / "paired_comparison/summary.json",
         run_root / "splits/train_ids.txt",
         run_root / "splits/validation_ids.txt",
         run_root / "splits/test_ids.txt",
@@ -116,5 +122,81 @@ def test_benchmark_cli_smoke_writes_required_artifacts(tmp_path: Path) -> None:
     }
     assert required_fields.issubset(set(manifest.keys()))
 
+    rulekiln_eval = json.loads((run_root / "rulekiln_eval.json").read_text(encoding="utf-8"))
+    accuracy_ci = rulekiln_eval.get("accuracy_ci_95")
+    macro_f1_ci = rulekiln_eval.get("macro_f1_ci_95")
+    assert isinstance(accuracy_ci, dict)
+    assert isinstance(macro_f1_ci, dict)
+    assert {"low", "high", "method", "iterations", "seed"}.issubset(accuracy_ci.keys())
+    assert {"low", "high", "method", "iterations", "seed"}.issubset(macro_f1_ci.keys())
+
     summary_content = (run_root / "summary.md").read_text(encoding="utf-8")
+    assert "- macro_f1_ci_95:" in summary_content
+    assert "- accuracy_ci_95:" in summary_content
+    assert "## Regressed Labels" in summary_content
+    assert "## Top Confusions" in summary_content
+    assert "## Reproduction" in summary_content
     assert "## Benchmark Manifest Snapshot" in summary_content
+
+    with (run_root / "confusion_matrix.csv").open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert rows[0] == ["actual_label", "predicted_label", "count"]
+    assert all(len(row) == 3 for row in rows[1:])
+    sorted_pairs = sorted((row[0], row[1]) for row in rows[1:])
+    assert [(row[0], row[1]) for row in rows[1:]] == sorted_pairs
+
+    with (run_root / "per_label_metrics.csv").open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.reader(handle))
+    assert rows[0] == [
+        "label",
+        "support",
+        "true_positive",
+        "false_positive",
+        "false_negative",
+        "precision",
+        "recall",
+        "f1",
+    ]
+    labels = [row[0] for row in rows[1:]]
+    assert labels == sorted(labels)
+
+    paired_summary = json.loads(
+        (run_root / "paired_comparison/summary.json").read_text(encoding="utf-8")
+    )
+    fixed_count = len(
+        [
+            line
+            for line in (run_root / "paired_comparison/fixed.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+    )
+    broken_count = len(
+        [
+            line
+            for line in (run_root / "paired_comparison/broken.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+            if line.strip()
+        ]
+    )
+    unchanged_rows = [
+        line
+        for line in (run_root / "paired_comparison/unchanged.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ]
+    unchanged_count = len(unchanged_rows)
+    unchanged_payloads = [json.loads(line) for line in unchanged_rows]
+    assert all(
+        payload["unchanged_status"] in {"both_correct", "both_wrong"}
+        for payload in unchanged_payloads
+    )
+
+    assert paired_summary["fixed_count"] == fixed_count
+    assert paired_summary["broken_count"] == broken_count
+    assert (
+        paired_summary["unchanged_correct_count"] + paired_summary["unchanged_wrong_count"]
+    ) == unchanged_count

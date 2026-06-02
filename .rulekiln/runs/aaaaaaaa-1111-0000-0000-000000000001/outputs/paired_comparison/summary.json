@@ -1,0 +1,13 @@
+{
+  "schema_version": "rulekiln.paired_comparison_summary.v1",
+  "baseline_strategy_id": "baseline_scaffold",
+  "candidate_strategy_id": "embedding_centroid",
+  "fixed_count": 4,
+  "broken_count": 0,
+  "unchanged_correct_count": 0,
+  "unchanged_wrong_count": 0,
+  "total_cases": 4,
+  "net_fix_rate": 1.0,
+  "net_fix_rate_status": "ok",
+  "overall_net_fix_rate": 1.0
+}

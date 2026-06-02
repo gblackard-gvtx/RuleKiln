@@ -435,6 +435,22 @@ uv run pytest -m external
 
 ---
 
+## Phase 2 strategy expansion
+
+RuleKiln now evaluates a wider strategy set beyond the legacy baseline plus DBSCAN and HDBSCAN.
+
+- Baseline scaffold: `baseline_scaffold`
+- Deterministic few-shot baselines: `baseline_few_shot_k3`, `baseline_few_shot_k5`
+- Embedding-only baselines: `embedding_centroid`, `embedding_knn_k1`, `embedding_knn_k3`, `embedding_knn_k5`
+- Retrieval few-shot baseline: `retrieval_few_shot_k5`
+- Distilled strategies: `dbscan`, `hdbscan`
+
+Few-shot prompts are assembled deterministically by pipeline code from training examples. They are not authored by teacher or student models at runtime.
+
+For implementation and operator details, see [docs/dev/phase2.md](docs/dev/phase2.md).
+
+---
+
 ## Artifact layout
 
 Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
@@ -444,9 +460,23 @@ Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
   task.yaml
   cases.normalized.jsonl
   outputs/
+    baseline_prompt.md
+    baseline_scaffold_prompt.md
+    baseline_few_shot_k3_prompt.md
+    baseline_few_shot_k5_prompt.md
     distilled_prompt_dbscan.md
     distilled_prompt_hdbscan.md
     selected_distilled_prompt.md
+    baseline_scaffold_eval.json
+    baseline_few_shot_k3_eval.json
+    baseline_few_shot_k5_eval.json
+    embedding_centroid_eval.json
+    embedding_knn_k1_eval.json
+    embedding_knn_k3_eval.json
+    embedding_knn_k5_eval.json
+    retrieval_few_shot_k5_eval.json
+    dbscan_eval.json
+    hdbscan_eval.json
     rules_dbscan.jsonl
     rules_hdbscan.jsonl
     eval_report.json
@@ -462,6 +492,8 @@ Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
     manifest.json
 ```
 
+`strategy_comparison.json` is the source of truth for the evaluated strategy set (`strategy_evals`, `strategy_gates`, `strategy_prompt_tokens`, `strategy_metadata`) and selected winner.
+
 ---
 
 ## Benchmark examples
@@ -475,18 +507,17 @@ Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
 
 Use Make command aliases for a single command surface, or run the raw commands directly.
 
-```bash
-# Make aliases
-make lint
-make format
-make typecheck
-make test
-make test-ui
-make ci-local
-make docker-up
-make docker-down
-make benchmark-smoke
-```
+| Target | Runs | Typical use |
+|--------|------|-------------|
+| `make lint` | `uv run ruff check src/ tests/` | Verify lint before commit/CI |
+| `make format` | `uv run ruff format src/ tests/` | Apply repo formatting |
+| `make typecheck` | `uv run pyright` | Verify static typing |
+| `make test` | Offline non-external test suite | Main local validation path |
+| `make test-ui` | Offline UI test subset | Validate UI routes/templates |
+| `make ci-local` | `lint + typecheck + test` | One-command pre-push check |
+| `make docker-up` | `./scripts/dev-up.sh` | Start local Docker stack |
+| `make docker-down` | `./scripts/dev-down.sh` | Stop local Docker stack |
+| `make benchmark-smoke` | Dataset presence checks | Quick benchmark fixture sanity |
 
 ```bash
 # Lint
@@ -503,6 +534,7 @@ uv run alembic upgrade head
 ```
 
 See [docs/dev/docker.md](docs/dev/docker.md) for the full Docker Compose development guide.
+See [docs/dev/phase2.md](docs/dev/phase2.md) for detailed Phase 2 strategy and artifact documentation.
 See [docs/reference/python_module_reference.md](docs/reference/python_module_reference.md) for a full module-by-module model/function reference.
 See [docs/README.md](docs/README.md) for the full documentation map and canonical task/spec pointers.
 

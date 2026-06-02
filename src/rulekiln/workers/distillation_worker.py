@@ -19,15 +19,22 @@ from rulekiln.agents.rule_synthesis import synthesize_cluster
 from rulekiln.artifacts.settings_snapshot import write_settings_snapshot
 from rulekiln.artifacts.writer import (
     write_baseline_prompt,
+    write_baseline_scaffold_prompt,
     write_cases_normalized,
+    write_confusion_matrix_csv,
     write_eval_report,
     write_manifest,
     write_mlflow_run_id,
+    write_paired_comparison_artifacts,
+    write_per_label_metrics_csv,
     write_prompt,
     write_selected_prompt,
     write_strategy_comparison,
+    write_strategy_eval,
+    write_strategy_prompt,
     write_task,
     write_token_cost_summary,
+    write_top_confusions_markdown,
 )
 from rulekiln.config.settings import get_settings
 from rulekiln.db.models import (
@@ -79,8 +86,29 @@ from rulekiln.integrations.mlflow_tracker import (
     log_token_cost_metrics,
 )
 from rulekiln.observability.logging import get_logger
+from rulekiln.pipeline.baseline_strategies import (
+    BASELINE_FEW_SHOT_STRATEGY_TO_K,
+    BASELINE_SCAFFOLD_STRATEGY,
+    EMBEDDING_CENTROID_STRATEGY,
+    EMBEDDING_KNN_STRATEGY_TO_K,
+    RETRIEVAL_FEW_SHOT_K,
+    RETRIEVAL_FEW_SHOT_STRATEGY,
+    build_few_shot_prompt_with_budget,
+    case_text_for_embedding,
+    expected_label,
+    predict_with_centroids,
+    predict_with_knn,
+    resolve_distance_metric,
+    select_deterministic_few_shot_examples,
+    select_retrieval_examples,
+)
 from rulekiln.pipeline.clustering import cluster_dbscan, cluster_hdbscan
-from rulekiln.pipeline.evaluator import evaluate_prompt, get_primary_metric
+from rulekiln.pipeline.evaluator import (
+    build_case_result_from_label_prediction,
+    build_eval_result_from_case_results,
+    evaluate_prompt,
+    get_primary_metric,
+)
 from rulekiln.pipeline.failure_analysis import analyze_failures
 from rulekiln.pipeline.prompt_compiler import (
     compile_baseline_prompt,
@@ -90,8 +118,15 @@ from rulekiln.pipeline.prompt_compiler import (
 from rulekiln.pipeline.quality_gates import check_quality_gates
 from rulekiln.pipeline.rule_pruning import prune_rules
 from rulekiln.pipeline.split_policy import resolve_split_policy
+from rulekiln.pipeline.statistics import (
+    PairedComparisonArtifacts,
+    compute_classification_statistics,
+    compute_paired_comparison,
+    compute_regressed_labels,
+)
 from rulekiln.pipeline.strategy_selection import build_strategy_comparison
 from rulekiln.providers.chat import get_chat_client
+from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.providers.embedding import get_embedding_client
 from rulekiln.providers.resolver import resolve_provider_config
 from rulekiln.providers.tracking import (
@@ -107,15 +142,30 @@ from rulekiln.schemas.pipeline import (
     MicroRuleSchema,
     OutcomeCondition,
     QualityGateResult,
+    RegressedLabelRow,
     RuleClusterSchema,
     SynthesizedRuleSchema,
 )
-from rulekiln.schemas.task_case import RuleKilnCase, TaskMode
+from rulekiln.schemas.task_case import RuleKilnCase, RuleKilnTask, TaskMode
 from rulekiln.workers.error_classification import format_worker_error_message
 
 logger = get_logger(__name__)
 
 _CASE_ID_DELIMITER = "::"
+BASELINE_STRATEGY = "baseline"
+DISTILLED_STRATEGIES: tuple[str, str] = ("dbscan", "hdbscan")
+BASELINE_FEW_SHOT_STRATEGIES: tuple[str, ...] = tuple(BASELINE_FEW_SHOT_STRATEGY_TO_K.keys())
+EMBEDDING_KNN_STRATEGIES: tuple[str, ...] = tuple(EMBEDDING_KNN_STRATEGY_TO_K.keys())
+EMBEDDING_BASELINE_STRATEGIES: tuple[str, ...] = (
+    EMBEDDING_CENTROID_STRATEGY,
+    *EMBEDDING_KNN_STRATEGIES,
+)
+BASELINE_VARIANT_STRATEGIES: tuple[str, ...] = (
+    BASELINE_SCAFFOLD_STRATEGY,
+    *BASELINE_FEW_SHOT_STRATEGIES,
+    *EMBEDDING_BASELINE_STRATEGIES,
+    RETRIEVAL_FEW_SHOT_STRATEGY,
+)
 
 
 class PipelineStage(StrEnum):
@@ -199,6 +249,9 @@ async def _run(
     eval_cases = split_policy.evaluation_cases
     eval_split = split_policy.evaluation_split
     collector = ModelCallCollector()
+    evaluation_bootstrap_enabled = settings.evaluation.bootstrap_enabled
+    evaluation_bootstrap_iterations = settings.evaluation.bootstrap_iterations
+    evaluation_bootstrap_seed_offset = settings.evaluation.bootstrap_seed_offset
 
     logger.info(
         "split_policy_resolved",
@@ -381,7 +434,10 @@ async def _run(
 
         # ── Stage: synthesizing_rules ─────────────────────────────────────
         rule_map: dict[str, MicroRule] = {r.id: r for r in db_micro_rules}
-        for strategy, clusters in [("dbscan", dbscan_clusters), ("hdbscan", hdbscan_clusters)]:
+        for strategy, clusters in [
+            (DISTILLED_STRATEGIES[0], dbscan_clusters),
+            (DISTILLED_STRATEGIES[1], hdbscan_clusters),
+        ]:
             if await is_stage_complete(
                 session, job_id, PipelineStage.SYNTHESIZING_RULES, strategy=strategy
             ):
@@ -474,7 +530,7 @@ async def _run(
 
         # ── Stage: reviewing_rule_conflicts ──────────────────────────────
         total_train_cases = len(extraction_cases)
-        for strategy in ("dbscan", "hdbscan"):
+        for strategy in DISTILLED_STRATEGIES:
             if await is_stage_complete(
                 session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy
             ):
@@ -576,7 +632,7 @@ async def _run(
             )
 
         # ── Stage: pruning_rules ──────────────────────────────────────────
-        for strategy in ("dbscan", "hdbscan"):
+        for strategy in DISTILLED_STRATEGIES:
             if await is_stage_complete(
                 session, job_id, PipelineStage.PRUNING_RULES, strategy=strategy
             ):
@@ -615,7 +671,7 @@ async def _run(
             )
 
         # ── Stage: compiling_prompts ──────────────────────────────────────
-        for strategy in ("dbscan", "hdbscan"):
+        for strategy in DISTILLED_STRATEGIES:
             if await is_stage_complete(
                 session, job_id, PipelineStage.COMPILING_PROMPTS, strategy=strategy
             ):
@@ -651,11 +707,48 @@ async def _run(
         baseline_prompt_text = compile_baseline_prompt(task)
         baseline_prompt_source = "compiled"
 
+    train_cases = _resolve_training_cases(extraction_cases, eval_cases)
+    distance_metric = _resolve_distance_metric_from_task(task)
+    baseline_prompt_tokens = count_tokens_approx(baseline_prompt_text)
+
     baseline_eval: EvalResult | None = None
+    baseline_scaffold_eval: EvalResult | None = None
+    baseline_variant_evals: dict[str, EvalResult] = {}
+    baseline_variant_prompts: dict[str, str] = {
+        BASELINE_SCAFFOLD_STRATEGY: baseline_prompt_text,
+    }
+    strategy_prompt_tokens: dict[str, int] = {
+        BASELINE_SCAFFOLD_STRATEGY: baseline_prompt_tokens,
+    }
+    strategy_metadata: dict[str, dict[str, str | int | float | bool]] = {
+        BASELINE_SCAFFOLD_STRATEGY: {
+            "prompt_source": baseline_prompt_source,
+        },
+        RETRIEVAL_FEW_SHOT_STRATEGY: {
+            "configured_k": RETRIEVAL_FEW_SHOT_K,
+            "distance_metric": distance_metric,
+        },
+    }
+    for strategy_name, k_value in BASELINE_FEW_SHOT_STRATEGY_TO_K.items():
+        selected_examples = select_deterministic_few_shot_examples(train_cases, k=k_value)
+        prompt_text, prompt_tokens, used_examples = build_few_shot_prompt_with_budget(
+            baseline_prompt=baseline_prompt_text,
+            examples=selected_examples,
+            max_prompt_tokens=task.max_prompt_tokens,
+        )
+        baseline_variant_prompts[strategy_name] = prompt_text
+        strategy_prompt_tokens[strategy_name] = prompt_tokens
+        strategy_metadata[strategy_name] = {
+            "configured_k": k_value,
+            "used_examples": len(used_examples),
+        }
+
     if run_baseline_eval and not await is_stage_complete(
         session, job_id, PipelineStage.EVALUATING_BASELINE
     ):
         await _set_stage(session, job_id, PipelineStage.EVALUATING_BASELINE)
+
+        # Legacy baseline evaluation is retained for compatibility.
         set_tracking_context(
             ModelCallContext(
                 job_id=job_id,
@@ -664,52 +757,457 @@ async def _run(
                 provider_profile=student_profile,
                 provider=student_config.provider,
                 model=student_config.model,
-                strategy="baseline",
+                strategy=BASELINE_STRATEGY,
             ),
             collector,
         )
-        existing_baseline_rows = await get_eval_case_results(
+        baseline_eval = await _evaluate_prompt_strategy(
             session,
             job_id=job_id,
-            student_id=eval_student_id,
-            strategy="baseline",
+            strategy=BASELINE_STRATEGY,
             split=eval_split,
+            student_id=eval_student_id,
+            system_prompt=baseline_prompt_text,
+            cases=eval_cases,
+            task=task,
+            case_by_id=case_by_id,
+            chat_client=student_chat,
+            config=student_config,
+            bootstrap_enabled=evaluation_bootstrap_enabled,
+            bootstrap_iterations=evaluation_bootstrap_iterations,
+            bootstrap_seed_offset=evaluation_bootstrap_seed_offset,
         )
-        completed_baseline_results = {
-            row.case_id: _eval_case_record_to_schema(row) for row in existing_baseline_rows
-        }
+        baseline_eval.prompt_token_count = baseline_prompt_tokens
 
-        async def _persist_baseline_case(case_result: CaseEvalResult) -> None:
-            case = case_by_id.get(case_result.case_id)
-            if case is None:
-                return
-            payload_row = _build_eval_case_upsert_payload(
+        baseline_scaffold_eval = baseline_eval.model_copy(
+            update={
+                "strategy": BASELINE_SCAFFOLD_STRATEGY,
+                "prompt_token_count": baseline_prompt_tokens,
+            }
+        )
+        baseline_variant_evals[BASELINE_SCAFFOLD_STRATEGY] = baseline_scaffold_eval
+        baseline_variant_prompts[BASELINE_SCAFFOLD_STRATEGY] = baseline_prompt_text
+        strategy_prompt_tokens[BASELINE_SCAFFOLD_STRATEGY] = baseline_prompt_tokens
+        await _insert_eval_run_if_missing(
+            session,
+            job_id=job_id,
+            split=eval_split,
+            strategy=BASELINE_SCAFFOLD_STRATEGY,
+            result=baseline_scaffold_eval,
+        )
+
+        training_cases = _resolve_training_cases(extraction_cases, eval_cases)
+        distance_metric = _resolve_distance_metric_from_task(task)
+
+        for strategy_name, k_value in BASELINE_FEW_SHOT_STRATEGY_TO_K.items():
+            selected_examples = select_deterministic_few_shot_examples(training_cases, k=k_value)
+            prompt_text, prompt_tokens, used_examples = build_few_shot_prompt_with_budget(
+                baseline_prompt=baseline_prompt_text,
+                examples=selected_examples,
+                max_prompt_tokens=task.max_prompt_tokens,
+            )
+            baseline_variant_prompts[strategy_name] = prompt_text
+            strategy_prompt_tokens[strategy_name] = prompt_tokens
+            strategy_metadata[strategy_name] = {
+                "configured_k": k_value,
+                "used_examples": len(used_examples),
+            }
+            set_tracking_context(
+                ModelCallContext(
+                    job_id=job_id,
+                    stage=PipelineStage.EVALUATING_BASELINE,
+                    role="student",
+                    provider_profile=student_profile,
+                    provider=student_config.provider,
+                    model=student_config.model,
+                    strategy=strategy_name,
+                ),
+                collector,
+            )
+            few_shot_eval = await _evaluate_prompt_strategy(
+                session,
+                job_id=job_id,
+                strategy=strategy_name,
+                split=eval_split,
+                student_id=eval_student_id,
+                system_prompt=prompt_text,
+                cases=eval_cases,
+                task=task,
+                case_by_id=case_by_id,
+                chat_client=student_chat,
+                config=student_config,
+                bootstrap_enabled=evaluation_bootstrap_enabled,
+                bootstrap_iterations=evaluation_bootstrap_iterations,
+                bootstrap_seed_offset=evaluation_bootstrap_seed_offset,
+            )
+            few_shot_eval.prompt_token_count = prompt_tokens
+            baseline_variant_evals[strategy_name] = few_shot_eval
+
+        labeled_train_cases = [case for case in training_cases if expected_label(case) is not None]
+        if labeled_train_cases:
+            train_texts = [case_text_for_embedding(case) for case in labeled_train_cases]
+            train_labels = [
+                expected_label(case) or ""  # expected_label is checked above
+                for case in labeled_train_cases
+            ]
+
+            set_tracking_context(
+                ModelCallContext(
+                    job_id=job_id,
+                    stage=PipelineStage.EVALUATING_BASELINE,
+                    role="embedding",
+                    provider_profile=embedding_profile,
+                    provider=embedding_config.provider,
+                    model=embedding_config.model,
+                    strategy=EMBEDDING_CENTROID_STRATEGY,
+                ),
+                collector,
+            )
+            train_embedding_result = await embedding_client.embed_texts(
+                texts=train_texts,
+                config=embedding_config,
+            )
+            train_embeddings = train_embedding_result.embeddings
+
+            set_tracking_context(
+                ModelCallContext(
+                    job_id=job_id,
+                    stage=PipelineStage.EVALUATING_BASELINE,
+                    role="embedding",
+                    provider_profile=embedding_profile,
+                    provider=embedding_config.provider,
+                    model=embedding_config.model,
+                    strategy=EMBEDDING_CENTROID_STRATEGY,
+                ),
+                collector,
+            )
+            eval_texts = [case_text_for_embedding(case) for case in eval_cases]
+            eval_embedding_result = await embedding_client.embed_texts(
+                texts=eval_texts,
+                config=embedding_config,
+            )
+            eval_embeddings = eval_embedding_result.embeddings
+
+            centroid_predictions = predict_with_centroids(
+                train_embeddings=train_embeddings,
+                train_labels=train_labels,
+                eval_embeddings=eval_embeddings,
+                metric=distance_metric,
+            )
+            centroid_case_results = [
+                build_case_result_from_label_prediction(case, prediction)
+                for case, prediction in zip(eval_cases, centroid_predictions, strict=True)
+            ]
+            await _persist_case_results(
+                session,
                 job_id=job_id,
                 student_id=eval_student_id,
-                strategy="baseline",
+                strategy=EMBEDDING_CENTROID_STRATEGY,
                 split=eval_split,
-                case=case,
-                result=case_result,
+                case_by_id=case_by_id,
+                case_results=centroid_case_results,
             )
-            await upsert_eval_case_result(session, payload_row)
+            embedding_centroid_eval = build_eval_result_from_case_results(
+                strategy=EMBEDDING_CENTROID_STRATEGY,
+                model=embedding_config.model,
+                split=eval_split,
+                task=task,
+                cases=eval_cases,
+                case_results=centroid_case_results,
+                prompt_token_count=baseline_prompt_tokens,
+                bootstrap_enabled=evaluation_bootstrap_enabled,
+                bootstrap_iterations=evaluation_bootstrap_iterations,
+                bootstrap_seed=_evaluation_bootstrap_seed(
+                    job_id=job_id,
+                    strategy=EMBEDDING_CENTROID_STRATEGY,
+                    split=eval_split,
+                    seed_offset=evaluation_bootstrap_seed_offset,
+                ),
+            )
+            await _insert_eval_run_if_missing(
+                session,
+                job_id=job_id,
+                split=eval_split,
+                strategy=EMBEDDING_CENTROID_STRATEGY,
+                result=embedding_centroid_eval,
+            )
+            baseline_variant_evals[EMBEDDING_CENTROID_STRATEGY] = embedding_centroid_eval
+            strategy_prompt_tokens[EMBEDDING_CENTROID_STRATEGY] = baseline_prompt_tokens
+            strategy_metadata[EMBEDDING_CENTROID_STRATEGY] = {
+                "distance_metric": distance_metric,
+                "train_cases": len(labeled_train_cases),
+            }
 
-        baseline_eval = await evaluate_prompt(
-            baseline_prompt_text,
-            eval_cases,
-            task,
-            student_chat,
-            student_config,
-            strategy="baseline",
-            split=eval_split,
-            completed_case_results=completed_baseline_results,
-            on_case_result=_persist_baseline_case,
-        )
-        existing_eval_runs = await get_eval_runs_for_job(session, job_id)
-        has_baseline_eval = any(
-            run.strategy == "baseline" and run.split == eval_split for run in existing_eval_runs
-        )
-        if not has_baseline_eval:
-            await insert_eval_run(session, _eval_to_db(job_id, None, baseline_eval))
+            for strategy_name, k_value in EMBEDDING_KNN_STRATEGY_TO_K.items():
+                knn_predictions = predict_with_knn(
+                    train_embeddings=train_embeddings,
+                    train_labels=train_labels,
+                    eval_embeddings=eval_embeddings,
+                    metric=distance_metric,
+                    k=k_value,
+                    train_ids=[case.id for case in labeled_train_cases],
+                )
+                knn_case_results = [
+                    build_case_result_from_label_prediction(case, prediction)
+                    for case, prediction in zip(eval_cases, knn_predictions, strict=True)
+                ]
+                await _persist_case_results(
+                    session,
+                    job_id=job_id,
+                    student_id=eval_student_id,
+                    strategy=strategy_name,
+                    split=eval_split,
+                    case_by_id=case_by_id,
+                    case_results=knn_case_results,
+                )
+                knn_eval = build_eval_result_from_case_results(
+                    strategy=strategy_name,
+                    model=embedding_config.model,
+                    split=eval_split,
+                    task=task,
+                    cases=eval_cases,
+                    case_results=knn_case_results,
+                    prompt_token_count=baseline_prompt_tokens,
+                    bootstrap_enabled=evaluation_bootstrap_enabled,
+                    bootstrap_iterations=evaluation_bootstrap_iterations,
+                    bootstrap_seed=_evaluation_bootstrap_seed(
+                        job_id=job_id,
+                        strategy=strategy_name,
+                        split=eval_split,
+                        seed_offset=evaluation_bootstrap_seed_offset,
+                    ),
+                )
+                await _insert_eval_run_if_missing(
+                    session,
+                    job_id=job_id,
+                    split=eval_split,
+                    strategy=strategy_name,
+                    result=knn_eval,
+                )
+                baseline_variant_evals[strategy_name] = knn_eval
+                strategy_prompt_tokens[strategy_name] = baseline_prompt_tokens
+                strategy_metadata[strategy_name] = {
+                    "distance_metric": distance_metric,
+                    "k": k_value,
+                    "train_cases": len(labeled_train_cases),
+                }
+
+            retrieval_case_rows = await get_eval_case_results(
+                session,
+                job_id=job_id,
+                student_id=eval_student_id,
+                strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                split=eval_split,
+            )
+            retrieval_case_results: dict[str, CaseEvalResult] = {
+                row.case_id: _eval_case_record_to_schema(row) for row in retrieval_case_rows
+            }
+            retrieval_failure_count = 0
+            model_failure_count = 0
+            for existing_result in retrieval_case_results.values():
+                if existing_result.error and existing_result.error.startswith("retrieval_failure:"):
+                    retrieval_failure_count += 1
+                elif existing_result.malformed or (
+                    existing_result.error
+                    and existing_result.error.startswith("model_failure:")
+                ):
+                    model_failure_count += 1
+
+            retrieval_prompt_token_peak = baseline_prompt_tokens
+            for case in eval_cases:
+                if case.id in retrieval_case_results:
+                    continue
+
+                try:
+                    set_tracking_context(
+                        ModelCallContext(
+                            job_id=job_id,
+                            stage=PipelineStage.EVALUATING_BASELINE,
+                            role="embedding",
+                            provider_profile=embedding_profile,
+                            provider=embedding_config.provider,
+                            model=embedding_config.model,
+                            strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                            case_id=case.id,
+                        ),
+                        collector,
+                    )
+                    query_embedding_result = await embedding_client.embed_texts(
+                        texts=[case_text_for_embedding(case)],
+                        config=embedding_config,
+                    )
+                    if not query_embedding_result.embeddings:
+                        raise RuntimeError("No query embedding returned.")
+                    query_embedding = query_embedding_result.embeddings[0]
+                except Exception as exc:
+                    retrieval_failure = CaseEvalResult(
+                        case_id=case.id,
+                        score=0.0,
+                        passed=False,
+                        malformed=False,
+                        assertion_scores={},
+                        actual_output=None,
+                        error=f"retrieval_failure:{type(exc).__name__}",
+                    )
+                    retrieval_case_results[case.id] = retrieval_failure
+                    retrieval_failure_count += 1
+                    await _persist_case_results(
+                        session,
+                        job_id=job_id,
+                        student_id=eval_student_id,
+                        strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                        split=eval_split,
+                        case_by_id=case_by_id,
+                        case_results=[retrieval_failure],
+                    )
+                    continue
+
+                retrieved_examples = select_retrieval_examples(
+                    query_embedding=query_embedding,
+                    train_embeddings=train_embeddings,
+                    train_cases=labeled_train_cases,
+                    metric=distance_metric,
+                    k=RETRIEVAL_FEW_SHOT_K,
+                    exclude_case_id=case.id,
+                )
+                if not retrieved_examples:
+                    retrieval_failure = CaseEvalResult(
+                        case_id=case.id,
+                        score=0.0,
+                        passed=False,
+                        malformed=False,
+                        assertion_scores={},
+                        actual_output=None,
+                        error="retrieval_failure:no_neighbors",
+                    )
+                    retrieval_case_results[case.id] = retrieval_failure
+                    retrieval_failure_count += 1
+                    await _persist_case_results(
+                        session,
+                        job_id=job_id,
+                        student_id=eval_student_id,
+                        strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                        split=eval_split,
+                        case_by_id=case_by_id,
+                        case_results=[retrieval_failure],
+                    )
+                    continue
+
+                retrieval_prompt, retrieval_prompt_tokens, _ = build_few_shot_prompt_with_budget(
+                    baseline_prompt=baseline_prompt_text,
+                    examples=retrieved_examples,
+                    max_prompt_tokens=task.max_prompt_tokens,
+                )
+                retrieval_prompt_token_peak = max(
+                    retrieval_prompt_token_peak,
+                    retrieval_prompt_tokens,
+                )
+
+                set_tracking_context(
+                    ModelCallContext(
+                        job_id=job_id,
+                        stage=PipelineStage.EVALUATING_BASELINE,
+                        role="student",
+                        provider_profile=student_profile,
+                        provider=student_config.provider,
+                        model=student_config.model,
+                        strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                        case_id=case.id,
+                    ),
+                    collector,
+                )
+                single_case_eval = await evaluate_prompt(
+                    retrieval_prompt,
+                    [case],
+                    task,
+                    student_chat,
+                    student_config,
+                    strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                    split=eval_split,
+                    bootstrap_enabled=evaluation_bootstrap_enabled,
+                    bootstrap_iterations=evaluation_bootstrap_iterations,
+                    bootstrap_seed=_evaluation_bootstrap_seed(
+                        job_id=job_id,
+                        strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                        split=eval_split,
+                        seed_offset=evaluation_bootstrap_seed_offset,
+                        case_id=case.id,
+                    ),
+                )
+                if single_case_eval.case_results:
+                    case_result = single_case_eval.case_results[0]
+                else:
+                    case_result = CaseEvalResult(
+                        case_id=case.id,
+                        score=0.0,
+                        passed=False,
+                        malformed=True,
+                        assertion_scores={},
+                        actual_output=None,
+                        error="model_failure:no_case_result",
+                    )
+                if case_result.malformed:
+                    model_failure_count += 1
+                    if not case_result.error:
+                        case_result.error = "model_failure:malformed_output"
+
+                retrieval_case_results[case.id] = case_result
+                await _persist_case_results(
+                    session,
+                    job_id=job_id,
+                    student_id=eval_student_id,
+                    strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                    split=eval_split,
+                    case_by_id=case_by_id,
+                    case_results=[case_result],
+                )
+
+            ordered_retrieval_results = [
+                retrieval_case_results[case.id]
+                for case in eval_cases
+                if case.id in retrieval_case_results
+            ]
+            retrieval_eval = build_eval_result_from_case_results(
+                strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                model=student_config.model,
+                split=eval_split,
+                task=task,
+                cases=eval_cases,
+                case_results=ordered_retrieval_results,
+                prompt_token_count=retrieval_prompt_token_peak,
+                retrieval_failure_count=retrieval_failure_count,
+                model_failure_count=model_failure_count,
+                bootstrap_enabled=evaluation_bootstrap_enabled,
+                bootstrap_iterations=evaluation_bootstrap_iterations,
+                bootstrap_seed=_evaluation_bootstrap_seed(
+                    job_id=job_id,
+                    strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                    split=eval_split,
+                    seed_offset=evaluation_bootstrap_seed_offset,
+                ),
+            )
+            await _insert_eval_run_if_missing(
+                session,
+                job_id=job_id,
+                split=eval_split,
+                strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                result=retrieval_eval,
+            )
+            baseline_variant_evals[RETRIEVAL_FEW_SHOT_STRATEGY] = retrieval_eval
+            strategy_prompt_tokens[RETRIEVAL_FEW_SHOT_STRATEGY] = retrieval_prompt_token_peak
+            strategy_metadata[RETRIEVAL_FEW_SHOT_STRATEGY] = {
+                "k": RETRIEVAL_FEW_SHOT_K,
+                "distance_metric": distance_metric,
+                "retrieval_failures": retrieval_failure_count,
+                "model_failures": model_failure_count,
+            }
+        else:
+            logger.warning(
+                "embedding_baselines_skipped",
+                job_id=job_id,
+                reason="No labeled training cases available for embedding baselines.",
+            )
+
         await mark_stage_complete(session, job_id, PipelineStage.EVALUATING_BASELINE)
 
     if phase == "evaluate_baseline":
@@ -717,14 +1215,14 @@ async def _run(
         return
 
     # ── Stage: evaluating_distilled ───────────────────────────────────────
-    eval_map: dict[str, EvalResult] = {}
+    eval_map: dict[str, EvalResult] = dict(baseline_variant_evals)
     distilled_strategies: tuple[str, ...]
     if phase == "evaluate_dbscan":
         distilled_strategies = ("dbscan",)
     elif phase == "evaluate_hdbscan":
         distilled_strategies = ("hdbscan",)
     elif phase == "full":
-        distilled_strategies = ("dbscan", "hdbscan")
+        distilled_strategies = DISTILLED_STRATEGIES
     else:
         distilled_strategies = ()
 
@@ -788,6 +1286,14 @@ async def _run(
             split=eval_split,
             completed_case_results=completed_case_results,
             on_case_result=_persist_strategy_case,
+            bootstrap_enabled=evaluation_bootstrap_enabled,
+            bootstrap_iterations=evaluation_bootstrap_iterations,
+            bootstrap_seed=_evaluation_bootstrap_seed(
+                job_id=job_id,
+                strategy=strategy,
+                split=eval_split,
+                seed_offset=evaluation_bootstrap_seed_offset,
+            ),
         )
         eval_map[strategy] = ev
         existing_eval_runs = await get_eval_runs_for_job(session, job_id)
@@ -805,15 +1311,82 @@ async def _run(
         return
 
     if run_aggregate:
+        paired_comparison_artifacts: PairedComparisonArtifacts | None = None
+
         if baseline_eval is None:
             baseline_eval = await _load_eval_result_from_db(
                 session,
                 job_id=job_id,
                 student_id=eval_student_id,
-                strategy="baseline",
+                strategy=BASELINE_STRATEGY,
                 split=eval_split,
             )
-        for strategy in ("dbscan", "hdbscan"):
+
+        if baseline_scaffold_eval is None:
+            baseline_scaffold_eval = await _load_eval_result_from_db(
+                session,
+                job_id=job_id,
+                student_id=eval_student_id,
+                strategy=BASELINE_SCAFFOLD_STRATEGY,
+                split=eval_split,
+            )
+            if baseline_scaffold_eval is None and baseline_eval is not None:
+                baseline_scaffold_eval = baseline_eval.model_copy(
+                    update={
+                        "strategy": BASELINE_SCAFFOLD_STRATEGY,
+                        "prompt_token_count": baseline_prompt_tokens,
+                    }
+                )
+
+        if baseline_scaffold_eval is not None:
+            eval_map.setdefault(BASELINE_SCAFFOLD_STRATEGY, baseline_scaffold_eval)
+
+        for strategy in (*BASELINE_FEW_SHOT_STRATEGIES, *EMBEDDING_BASELINE_STRATEGIES):
+            if strategy in eval_map:
+                continue
+            loaded = await _load_eval_result_from_db(
+                session,
+                job_id=job_id,
+                student_id=eval_student_id,
+                strategy=strategy,
+                split=eval_split,
+            )
+            if loaded is not None:
+                eval_map[strategy] = loaded
+
+        if _is_classification_task_mode(task.task_mode):
+            refreshed_eval_map: dict[str, EvalResult] = {}
+            for strategy_name, strategy_eval in eval_map.items():
+                refreshed_eval_map[strategy_name] = _refresh_eval_classification_statistics(
+                    eval_result=strategy_eval,
+                    eval_cases=eval_cases,
+                    bootstrap_enabled=evaluation_bootstrap_enabled,
+                    bootstrap_iterations=evaluation_bootstrap_iterations,
+                    bootstrap_seed=_evaluation_bootstrap_seed(
+                        job_id=job_id,
+                        strategy=strategy_name,
+                        split=eval_split,
+                        seed_offset=evaluation_bootstrap_seed_offset,
+                    ),
+                )
+            eval_map = refreshed_eval_map
+            if baseline_eval is not None and BASELINE_STRATEGY in eval_map:
+                baseline_eval = eval_map[BASELINE_STRATEGY]
+            if baseline_scaffold_eval is not None and BASELINE_SCAFFOLD_STRATEGY in eval_map:
+                baseline_scaffold_eval = eval_map[BASELINE_SCAFFOLD_STRATEGY]
+
+        if RETRIEVAL_FEW_SHOT_STRATEGY not in eval_map:
+            loaded_retrieval = await _load_eval_result_from_db(
+                session,
+                job_id=job_id,
+                student_id=eval_student_id,
+                strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                split=eval_split,
+            )
+            if loaded_retrieval is not None:
+                eval_map[RETRIEVAL_FEW_SHOT_STRATEGY] = loaded_retrieval
+
+        for strategy in DISTILLED_STRATEGIES:
             if strategy in eval_map:
                 continue
             loaded = await _load_eval_result_from_db(
@@ -828,7 +1401,11 @@ async def _run(
 
         # ── Stage: checking_quality_gates ─────────────────────────────────
         gate_map: dict[str, QualityGateResult] = {}
-        for strategy in ("dbscan", "hdbscan"):
+        token_counts: dict[str, int] = dict(strategy_prompt_tokens)
+        token_counts.setdefault(BASELINE_SCAFFOLD_STRATEGY, baseline_prompt_tokens)
+        compiled_prompts: dict[str, str] = dict(baseline_variant_prompts)
+
+        for strategy in DISTILLED_STRATEGIES:
             strategy_eval = eval_map.get(strategy)
             if strategy_eval is None:
                 continue
@@ -840,15 +1417,17 @@ async def _run(
             db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
             schemas = [_db_synth_to_schema(r) for r in db_synth]
             prompt_text, _ = compile_prompt(task, schemas, strategy)
+            compiled_prompts[strategy] = prompt_text
+            token_counts[strategy] = count_tokens_approx(prompt_text)
             gate = check_quality_gates(
                 strategy=strategy,
                 distilled_eval=strategy_eval,
-                baseline_eval=baseline_eval,
+                baseline_eval=baseline_scaffold_eval or baseline_eval,
                 cases=cases,
                 task_mode=task.task_mode,
                 task_gates=task.quality_gates,
                 settings_defaults=settings.default_quality_gate,
-                prompt_token_count=count_tokens_approx(prompt_text),
+                prompt_token_count=token_counts[strategy],
             )
             gate_map[strategy] = gate
             if not gate_stage_complete:
@@ -856,17 +1435,48 @@ async def _run(
                     session, job_id, PipelineStage.CHECKING_QUALITY_GATES, strategy=strategy
                 )
 
-        token_counts: dict[str, int] = {}
-        compiled_prompts: dict[str, str] = {}
-        for strategy in ("dbscan", "hdbscan"):
-            db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
-            schemas = [_db_synth_to_schema(r) for r in db_synth]
-            prompt_text, _ = compile_prompt(task, schemas, strategy)
-            compiled_prompts[strategy] = prompt_text
-            token_counts[strategy] = count_tokens_approx(prompt_text)
+        for strategy in (
+            *BASELINE_FEW_SHOT_STRATEGIES,
+            *EMBEDDING_BASELINE_STRATEGIES,
+            RETRIEVAL_FEW_SHOT_STRATEGY,
+        ):
+            strategy_eval = eval_map.get(strategy)
+            if strategy_eval is None:
+                continue
+            if strategy not in token_counts:
+                fallback_tokens = strategy_eval.prompt_token_count or baseline_prompt_tokens
+                token_counts[strategy] = fallback_tokens
+
+            gate_stage_complete = await is_stage_complete(
+                session,
+                job_id,
+                PipelineStage.CHECKING_QUALITY_GATES,
+                strategy=strategy,
+            )
+            if not gate_stage_complete:
+                await _set_stage(session, job_id, PipelineStage.CHECKING_QUALITY_GATES)
+
+            gate = check_quality_gates(
+                strategy=strategy,
+                distilled_eval=strategy_eval,
+                baseline_eval=baseline_scaffold_eval or baseline_eval,
+                cases=cases,
+                task_mode=task.task_mode,
+                task_gates=task.quality_gates,
+                settings_defaults=settings.default_quality_gate,
+                prompt_token_count=token_counts[strategy],
+            )
+            gate_map[strategy] = gate
+            if not gate_stage_complete:
+                await mark_stage_complete(
+                    session,
+                    job_id,
+                    PipelineStage.CHECKING_QUALITY_GATES,
+                    strategy=strategy,
+                )
 
         comparison = build_strategy_comparison(
-            baseline_eval=baseline_eval,
+            baseline_eval=baseline_scaffold_eval or baseline_eval,
             dbscan_eval=eval_map.get("dbscan"),
             hdbscan_eval=eval_map.get("hdbscan"),
             dbscan_gate=gate_map.get("dbscan"),
@@ -874,14 +1484,69 @@ async def _run(
             task_mode=task.task_mode,
             dbscan_token_count=token_counts.get("dbscan", 0),
             hdbscan_token_count=token_counts.get("hdbscan", 0),
+            strategy_evals=eval_map,
+            strategy_gates=gate_map,
+            strategy_prompt_tokens=token_counts,
+            baseline_strategy=BASELINE_SCAFFOLD_STRATEGY,
         )
+        comparison.strategy_metadata.update(strategy_metadata)
         comparison.evaluation_split_warning = split_policy.fallback_warning
-        selected_strategy = comparison.selected_strategy or "baseline"
+        selected_strategy = comparison.selected_strategy or BASELINE_SCAFFOLD_STRATEGY
+        comparison.selected_strategy_id = selected_strategy
+        comparison.selected_strategy_family = _strategy_family(selected_strategy)
+
+        best_baseline_strategy_id = _best_strategy_for_family(
+            strategy_evals=eval_map,
+            strategy_prompt_tokens=token_counts,
+            primary_metric=primary_metric,
+            family="baseline",
+        )
+        best_distilled_strategy_id = _best_strategy_for_family(
+            strategy_evals=eval_map,
+            strategy_prompt_tokens=token_counts,
+            primary_metric=primary_metric,
+            family="distilled",
+        )
+        best_by_family: dict[str, str] = {}
+        if best_baseline_strategy_id is not None:
+            best_by_family["baseline"] = best_baseline_strategy_id
+        if best_distilled_strategy_id is not None:
+            best_by_family["distilled"] = best_distilled_strategy_id
+
+        comparison.best_baseline_strategy_id = best_baseline_strategy_id
+        comparison.best_distilled_strategy_id = best_distilled_strategy_id
+        comparison.best_by_family = best_by_family
+
+        baseline_reference_eval = baseline_scaffold_eval or baseline_eval
+        selected_eval = eval_map.get(selected_strategy)
+        if (
+            _is_classification_task_mode(task.task_mode)
+            and baseline_reference_eval is not None
+            and selected_eval is not None
+        ):
+            paired_comparison_artifacts, regressed_labels = _build_runtime_paired_comparison(
+                eval_cases=eval_cases,
+                baseline_eval=baseline_reference_eval,
+                candidate_eval=selected_eval,
+                baseline_strategy_id=BASELINE_SCAFFOLD_STRATEGY,
+                candidate_strategy_id=selected_strategy,
+            )
+            comparison.paired_comparison = paired_comparison_artifacts.summary
+
+            selected_eval = selected_eval.model_copy(update={"regressed_labels": regressed_labels})
+            eval_map[selected_strategy] = selected_eval
+            comparison.strategy_evals[selected_strategy] = selected_eval
+            if selected_strategy == "dbscan":
+                comparison.dbscan_eval = selected_eval
+            elif selected_strategy == "hdbscan":
+                comparison.hdbscan_eval = selected_eval
+            elif selected_strategy == BASELINE_SCAFFOLD_STRATEGY:
+                comparison.baseline_eval = selected_eval
 
         # ── Stage: selecting_strategy ─────────────────────────────────────
         if not await is_stage_complete(session, job_id, PipelineStage.SELECTING_STRATEGY):
             await _set_stage(session, job_id, PipelineStage.SELECTING_STRATEGY)
-            if selected_strategy != "baseline":
+            if selected_strategy in DISTILLED_STRATEGIES:
                 await mark_prompt_version_selected(session, job_id, selected_strategy)
             logger.info(
                 "strategy_selected",
@@ -895,19 +1560,23 @@ async def _run(
         if not await is_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES):
             await _set_stage(session, job_id, PipelineStage.ANALYZING_FAILURES)
             selected_eval = eval_map.get(selected_strategy)
-            if selected_eval and selected_strategy in {"dbscan", "hdbscan"}:
+            if selected_eval and selected_strategy in DISTILLED_STRATEGIES:
                 db_synth = await get_selected_synthesized_rules_for_job(
                     session, job_id, selected_strategy
                 )
                 selected_schemas = [_db_synth_to_schema(r) for r in db_synth]
-                analyze_failures(baseline_eval, selected_eval, selected_schemas)
+                analyze_failures(
+                    baseline_scaffold_eval or baseline_eval,
+                    selected_eval,
+                    selected_schemas,
+                )
             await mark_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES)
 
         # ── Late stages ───────────────────────────────────────────────────
         if not await is_stage_complete(session, job_id, PipelineStage.LOGGING_ARTIFACTS):
             await _set_stage(session, job_id, PipelineStage.LOGGING_ARTIFACTS)
             selected_prompt_text = compiled_prompts.get(selected_strategy)
-            if selected_strategy in {"dbscan", "hdbscan"} and selected_prompt_text is None:
+            if selected_strategy in DISTILLED_STRATEGIES and selected_prompt_text is None:
                 selected_db = await get_selected_synthesized_rules_for_job(
                     session, job_id, selected_strategy
                 )
@@ -915,7 +1584,10 @@ async def _run(
                 selected_prompt_text, _ = compile_prompt(task, selected_schemas, selected_strategy)
                 compiled_prompts[selected_strategy] = selected_prompt_text
 
-            prompt_hash_source = selected_prompt_text or baseline_prompt_text
+            prompt_hash_source = selected_prompt_text or baseline_variant_prompts.get(
+                BASELINE_SCAFFOLD_STRATEGY,
+                baseline_prompt_text,
+            )
             prompt_hash = sha256(prompt_hash_source.encode("utf-8")).hexdigest()
 
             mlflow_run_id = create_run(
@@ -954,36 +1626,37 @@ async def _run(
             }
             log_params(settings.mlflow_tracking_uri, mlflow_run_id, run_params)
 
-            selected_eval_for_metrics = (
-                baseline_eval
-                if selected_strategy == "baseline"
-                else eval_map.get(selected_strategy)
-            )
-            selected_gate = (
-                gate_map.get(selected_strategy)
-                if selected_strategy in {"dbscan", "hdbscan"}
-                else None
-            )
+            selected_eval_for_metrics = eval_map.get(selected_strategy)
+            if selected_eval_for_metrics is None and selected_strategy == BASELINE_STRATEGY:
+                selected_eval_for_metrics = baseline_eval
+            selected_gate = gate_map.get(selected_strategy)
             dbscan_eval = eval_map.get("dbscan")
             hdbscan_eval = eval_map.get("hdbscan")
+            baseline_reference_eval = baseline_scaffold_eval or baseline_eval
             eval_metrics = build_demo_eval_metrics(
-                baseline_macro_f1=baseline_eval.macro_f1 if baseline_eval else None,
-                baseline_accuracy=baseline_eval.accuracy if baseline_eval else None,
+                baseline_macro_f1=(
+                    baseline_reference_eval.macro_f1 if baseline_reference_eval else None
+                ),
+                baseline_accuracy=(
+                    baseline_reference_eval.accuracy if baseline_reference_eval else None
+                ),
                 baseline_malformed_output_rate=(
-                    baseline_eval.malformed_output_rate if baseline_eval else None
+                    baseline_reference_eval.malformed_output_rate
+                    if baseline_reference_eval
+                    else None
                 ),
                 dbscan_macro_f1=dbscan_eval.macro_f1 if dbscan_eval else None,
                 dbscan_accuracy=dbscan_eval.accuracy if dbscan_eval else None,
                 dbscan_delta_vs_baseline=_delta_vs_baseline(
                     dbscan_eval,
-                    baseline_eval,
+                    baseline_reference_eval,
                     primary_metric,
                 ),
                 hdbscan_macro_f1=hdbscan_eval.macro_f1 if hdbscan_eval else None,
                 hdbscan_accuracy=hdbscan_eval.accuracy if hdbscan_eval else None,
                 hdbscan_delta_vs_baseline=_delta_vs_baseline(
                     hdbscan_eval,
-                    baseline_eval,
+                    baseline_reference_eval,
                     primary_metric,
                 ),
                 selected_primary_score=_primary_score_for_metric(
@@ -992,7 +1665,7 @@ async def _run(
                 ),
                 selected_delta_vs_baseline=_delta_vs_baseline(
                     selected_eval_for_metrics,
-                    baseline_eval,
+                    baseline_reference_eval,
                     primary_metric,
                 ),
                 selected_passed_quality_gates=(
@@ -1016,12 +1689,49 @@ async def _run(
                 write_task(artifact_root, task),
                 write_cases_normalized(artifact_root, cases),
                 write_baseline_prompt(artifact_root, baseline_prompt_text),
+                write_baseline_scaffold_prompt(artifact_root, baseline_prompt_text),
                 write_eval_report(artifact_root, comparison),
                 write_strategy_comparison(artifact_root, comparison),
                 write_settings_snapshot(artifact_root, settings),
             ]
 
-            for strategy in ("dbscan", "hdbscan"):
+            for strategy_name, strategy_eval in comparison.strategy_evals.items():
+                written_artifacts.append(
+                    write_strategy_eval(artifact_root, strategy_name, strategy_eval)
+                )
+
+            selected_eval_for_artifacts = comparison.strategy_evals.get(selected_strategy)
+            if selected_eval_for_artifacts is not None:
+                written_artifacts.append(
+                    write_confusion_matrix_csv(
+                        artifact_root / "outputs" / "confusion_matrix.csv",
+                        selected_eval_for_artifacts.confusion_matrix,
+                    )
+                )
+                written_artifacts.append(
+                    write_per_label_metrics_csv(
+                        artifact_root / "outputs" / "per_label_metrics.csv",
+                        selected_eval_for_artifacts.per_label_metrics,
+                    )
+                )
+                written_artifacts.append(
+                    write_top_confusions_markdown(
+                        artifact_root / "outputs" / "top_confusions.md",
+                        selected_eval_for_artifacts.top_confusions,
+                        baseline_strategy_id=BASELINE_SCAFFOLD_STRATEGY,
+                        candidate_strategy_id=selected_strategy,
+                    )
+                )
+
+            if paired_comparison_artifacts is not None:
+                written_artifacts.extend(
+                    write_paired_comparison_artifacts(
+                        artifact_root / "outputs" / "paired_comparison",
+                        paired_comparison_artifacts,
+                    )
+                )
+
+            for strategy in DISTILLED_STRATEGIES:
                 prompt_text = compiled_prompts.get(strategy)
                 if prompt_text is None:
                     db_synth = await get_selected_synthesized_rules_for_job(
@@ -1032,7 +1742,24 @@ async def _run(
                     compiled_prompts[strategy] = prompt_text
                 written_artifacts.append(write_prompt(artifact_root, strategy, prompt_text))
 
-            if selected_strategy in {"dbscan", "hdbscan"}:
+            for strategy in BASELINE_FEW_SHOT_STRATEGIES:
+                prompt_text = compiled_prompts.get(strategy)
+                if prompt_text is None:
+                    selected_examples = select_deterministic_few_shot_examples(
+                        train_cases,
+                        k=BASELINE_FEW_SHOT_STRATEGY_TO_K[strategy],
+                    )
+                    prompt_text, _, _ = build_few_shot_prompt_with_budget(
+                        baseline_prompt=baseline_prompt_text,
+                        examples=selected_examples,
+                        max_prompt_tokens=task.max_prompt_tokens,
+                    )
+                    compiled_prompts[strategy] = prompt_text
+                written_artifacts.append(
+                    write_strategy_prompt(artifact_root, strategy, prompt_text)
+                )
+
+            if selected_strategy in compiled_prompts:
                 selected_prompt_text = compiled_prompts.get(selected_strategy)
                 if selected_prompt_text:
                     written_artifacts.append(
@@ -1343,6 +2070,178 @@ def _is_invalid_label(
     return actual_output.strip() == ""
 
 
+def _is_classification_task_mode(task_mode: str) -> bool:
+    return task_mode in {"classification", "routing"}
+
+
+def _prediction_label_from_case_result(case_result: CaseEvalResult | None) -> str:
+    if case_result is None or case_result.actual_output is None:
+        return ""
+    if isinstance(case_result.actual_output, dict):
+        label_value = case_result.actual_output.get("label")
+        if isinstance(label_value, str):
+            return label_value.strip()
+        return ""
+    return case_result.actual_output.strip()
+
+
+def _case_input_text(case: RuleKilnCase) -> str:
+    utterance = case.input.get("utterance")
+    if isinstance(utterance, str):
+        return utterance
+
+    text_value = case.input.get("text")
+    if isinstance(text_value, str):
+        return text_value
+
+    return json.dumps(case.input, sort_keys=True, ensure_ascii=False)
+
+
+def _aligned_classification_columns(
+    *,
+    eval_cases: list[RuleKilnCase],
+    eval_result: EvalResult,
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    case_results_by_id = {
+        case_result.case_id: case_result for case_result in eval_result.case_results
+    }
+
+    case_ids: list[str] = []
+    expected_labels: list[str] = []
+    predicted_labels: list[str] = []
+    input_texts: list[str] = []
+
+    for case in eval_cases:
+        expected = expected_label(case)
+        if expected is None:
+            continue
+        case_ids.append(case.id)
+        expected_labels.append(expected)
+        predicted_labels.append(_prediction_label_from_case_result(case_results_by_id.get(case.id)))
+        input_texts.append(_case_input_text(case))
+
+    return case_ids, expected_labels, predicted_labels, input_texts
+
+
+def _refresh_eval_classification_statistics(
+    *,
+    eval_result: EvalResult,
+    eval_cases: list[RuleKilnCase],
+    bootstrap_enabled: bool,
+    bootstrap_iterations: int,
+    bootstrap_seed: int,
+) -> EvalResult:
+    case_ids, expected_labels, predicted_labels, _ = _aligned_classification_columns(
+        eval_cases=eval_cases,
+        eval_result=eval_result,
+    )
+    if not case_ids:
+        return eval_result
+
+    classification_stats = compute_classification_statistics(
+        actual_labels=expected_labels,
+        predicted_labels=predicted_labels,
+        case_ids=case_ids,
+        bootstrap_enabled=bootstrap_enabled,
+        bootstrap_iterations=bootstrap_iterations,
+        bootstrap_seed=bootstrap_seed,
+    )
+
+    return eval_result.model_copy(
+        update={
+            "accuracy": classification_stats.accuracy,
+            "accuracy_ci_95": classification_stats.accuracy_ci_95,
+            "macro_f1": classification_stats.macro_f1,
+            "macro_f1_ci_95": classification_stats.macro_f1_ci_95,
+            "per_label_metrics": classification_stats.per_label_metrics,
+            "per_outcome_precision": classification_stats.per_outcome_precision,
+            "per_outcome_recall": classification_stats.per_outcome_recall,
+            "confusion_matrix": classification_stats.confusion_matrix,
+            "top_confusions": classification_stats.top_confusions,
+        }
+    )
+
+
+def _strategy_family(strategy: str) -> str:
+    return "distilled" if strategy in DISTILLED_STRATEGIES else "baseline"
+
+
+def _best_strategy_for_family(
+    *,
+    strategy_evals: dict[str, EvalResult],
+    strategy_prompt_tokens: dict[str, int],
+    primary_metric: str,
+    family: Literal["baseline", "distilled"],
+) -> str | None:
+    candidates = [
+        strategy_name
+        for strategy_name in strategy_evals
+        if _strategy_family(strategy_name) == family
+    ]
+    if not candidates:
+        return None
+
+    def sort_key(strategy_name: str) -> tuple[float, float, int, str]:
+        strategy_eval = strategy_evals[strategy_name]
+        fallback_token_count = (
+            strategy_eval.prompt_token_count
+            if strategy_eval.prompt_token_count is not None
+            else 0
+        )
+        token_count = strategy_prompt_tokens.get(
+            strategy_name,
+            fallback_token_count,
+        )
+        return (
+            -_primary_score_for_metric(strategy_eval, primary_metric),
+            strategy_eval.malformed_output_rate,
+            token_count,
+            strategy_name,
+        )
+
+    return sorted(candidates, key=sort_key)[0]
+
+
+def _build_runtime_paired_comparison(
+    *,
+    eval_cases: list[RuleKilnCase],
+    baseline_eval: EvalResult,
+    candidate_eval: EvalResult,
+    baseline_strategy_id: str,
+    candidate_strategy_id: str,
+) -> tuple[PairedComparisonArtifacts, list[RegressedLabelRow]]:
+    (
+        case_ids,
+        expected_labels,
+        baseline_predictions,
+        input_texts,
+    ) = _aligned_classification_columns(
+        eval_cases=eval_cases,
+        eval_result=baseline_eval,
+    )
+    _, _, candidate_predictions, _ = _aligned_classification_columns(
+        eval_cases=eval_cases,
+        eval_result=candidate_eval,
+    )
+
+    paired_artifacts = compute_paired_comparison(
+        case_ids=case_ids,
+        actual_labels=expected_labels,
+        baseline_predictions=baseline_predictions,
+        candidate_predictions=candidate_predictions,
+        input_texts=input_texts,
+        baseline_strategy_id=baseline_strategy_id,
+        candidate_strategy_id=candidate_strategy_id,
+    )
+    regressed_labels = compute_regressed_labels(
+        case_ids=case_ids,
+        actual_labels=expected_labels,
+        baseline_predictions=baseline_predictions,
+        candidate_predictions=candidate_predictions,
+    )
+    return paired_artifacts, regressed_labels
+
+
 def _resolve_primary_metric(payload: DistillationRequest, task_mode: str) -> str:
     if payload.metric and payload.metric.strip():
         return payload.metric.strip()
@@ -1406,3 +2305,144 @@ def _build_manifest_entries(root: Path, paths: Sequence[Path]) -> list[str]:
 
 def _artifact_root(artifact_root_setting: str, job_id: str) -> Path:
     return Path(artifact_root_setting) / job_id
+
+
+async def _insert_eval_run_if_missing(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    split: str,
+    strategy: str,
+    result: EvalResult,
+) -> None:
+    existing_eval_runs = await get_eval_runs_for_job(session, job_id)
+    has_strategy_eval = any(
+        run.strategy == strategy and run.split == split for run in existing_eval_runs
+    )
+    if not has_strategy_eval:
+        await insert_eval_run(session, _eval_to_db(job_id, None, result))
+
+
+async def _persist_case_results(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    student_id: str,
+    strategy: str,
+    split: str,
+    case_by_id: dict[str, RuleKilnCase],
+    case_results: list[CaseEvalResult],
+) -> None:
+    for case_result in case_results:
+        case = case_by_id.get(case_result.case_id)
+        if case is None:
+            continue
+        payload_row = _build_eval_case_upsert_payload(
+            job_id=job_id,
+            student_id=student_id,
+            strategy=strategy,
+            split=split,
+            case=case,
+            result=case_result,
+        )
+        await upsert_eval_case_result(session, payload_row)
+
+
+async def _evaluate_prompt_strategy(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    strategy: str,
+    split: str,
+    student_id: str,
+    system_prompt: str,
+    cases: list[RuleKilnCase],
+    task: RuleKilnTask,
+    case_by_id: dict[str, RuleKilnCase],
+    chat_client: ChatModelClient,
+    config: ProviderConfig,
+    bootstrap_enabled: bool,
+    bootstrap_iterations: int,
+    bootstrap_seed_offset: int,
+) -> EvalResult:
+    existing_rows = await get_eval_case_results(
+        session,
+        job_id=job_id,
+        student_id=student_id,
+        strategy=strategy,
+        split=split,
+    )
+    completed_case_results = {
+        row.case_id: _eval_case_record_to_schema(row) for row in existing_rows
+    }
+
+    async def _persist_strategy_case(case_result: CaseEvalResult) -> None:
+        case = case_by_id.get(case_result.case_id)
+        if case is None:
+            return
+        payload_row = _build_eval_case_upsert_payload(
+            job_id=job_id,
+            student_id=student_id,
+            strategy=strategy,
+            split=split,
+            case=case,
+            result=case_result,
+        )
+        await upsert_eval_case_result(session, payload_row)
+
+    result = await evaluate_prompt(
+        system_prompt,
+        cases,
+        task,
+        chat_client,
+        config,
+        strategy=strategy,
+        split=split,
+        completed_case_results=completed_case_results,
+        on_case_result=_persist_strategy_case,
+        bootstrap_enabled=bootstrap_enabled,
+        bootstrap_iterations=bootstrap_iterations,
+        bootstrap_seed=_evaluation_bootstrap_seed(
+            job_id=job_id,
+            strategy=strategy,
+            split=split,
+            seed_offset=bootstrap_seed_offset,
+        ),
+    )
+    await _insert_eval_run_if_missing(
+        session,
+        job_id=job_id,
+        split=split,
+        strategy=strategy,
+        result=result,
+    )
+    return result
+
+
+def _resolve_distance_metric_from_task(task: RuleKilnTask) -> str:
+    raw_metric = task.prompt_scaffold.get("embedding_distance_metric")
+    if isinstance(raw_metric, str):
+        return resolve_distance_metric(raw_metric)
+    return resolve_distance_metric(None)
+
+
+def _resolve_training_cases(
+    extraction_cases: list[RuleKilnCase],
+    eval_cases: list[RuleKilnCase],
+) -> list[RuleKilnCase]:
+    if extraction_cases:
+        return extraction_cases
+    return eval_cases
+
+
+def _evaluation_bootstrap_seed(
+    *,
+    job_id: str,
+    strategy: str,
+    split: str,
+    seed_offset: int,
+    case_id: str | None = None,
+) -> int:
+    raw_seed = f"{job_id}|{strategy}|{split}|{seed_offset}|{case_id or ''}"
+    digest = sha256(raw_seed.encode("utf-8")).hexdigest()
+    return int(digest[:8], 16)

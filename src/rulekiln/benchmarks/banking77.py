@@ -23,9 +23,11 @@ from rulekiln.benchmarks.reporting import (
     write_confusion_matrix_csv,
     write_dataset_manifest,
     write_eval,
+    write_paired_comparison,
     write_per_label_metrics_csv,
     write_strategy_comparison,
     write_summary_markdown,
+    write_top_confusions_markdown,
 )
 from rulekiln.benchmarks.schemas import (
     Banking77Example,
@@ -38,9 +40,13 @@ from rulekiln.benchmarks.schemas import (
     CostSummary,
     DatasetManifest,
     DatasetSource,
-    PerLabelMetricRow,
 )
 from rulekiln.pipeline.prompt_compiler import compile_baseline_prompt
+from rulekiln.pipeline.statistics import (
+    compute_classification_statistics,
+    compute_paired_comparison,
+    compute_regressed_labels,
+)
 from rulekiln.schemas.pipeline import CaseEvalResult, EvalResult
 from rulekiln.schemas.task_case import (
     EvaluationAssertion,
@@ -77,6 +83,9 @@ def run_banking77_benchmark(
     teacher_model: str = "benchmark.teacher.not_used",
     student_model: str = "benchmark.student.tfidf_linear_svc",
     embedding_model: str = "benchmark.embedding.none",
+    bootstrap_enabled: bool = True,
+    bootstrap_iterations: int = 1000,
+    bootstrap_seed: int | None = None,
 ) -> BenchmarkRunResult:
     """Run the BANKING77 benchmark with deterministic data splits and artifacts."""
     repo_root = _repo_root()
@@ -142,18 +151,48 @@ def run_banking77_benchmark(
         seed=seed,
     )
 
-    baseline_eval, baseline_support = _evaluate_predictions(
+    resolved_bootstrap_seed = bootstrap_seed if bootstrap_seed is not None else seed + 1701
+
+    baseline_eval = _evaluate_predictions(
         examples=split_result.test_examples,
         predictions=baseline_predictions,
         strategy="baseline",
         model_name="majority_label",
+        bootstrap_enabled=bootstrap_enabled,
+        bootstrap_iterations=bootstrap_iterations,
+        bootstrap_seed=resolved_bootstrap_seed,
     )
-    rulekiln_eval, rulekiln_support = _evaluate_predictions(
+    rulekiln_eval = _evaluate_predictions(
         examples=split_result.test_examples,
         predictions=rulekiln_predictions,
         strategy="rulekiln",
         model_name="tfidf_linear_svc",
+        bootstrap_enabled=bootstrap_enabled,
+        bootstrap_iterations=bootstrap_iterations,
+        bootstrap_seed=resolved_bootstrap_seed,
     )
+
+    expected_labels = [example.label for example in split_result.test_examples]
+    case_ids = [example.source_id for example in split_result.test_examples]
+    input_texts = [example.text for example in split_result.test_examples]
+
+    paired_comparison = compute_paired_comparison(
+        case_ids=case_ids,
+        input_texts=input_texts,
+        actual_labels=expected_labels,
+        baseline_predictions=baseline_predictions,
+        candidate_predictions=rulekiln_predictions,
+        baseline_strategy_id="baseline",
+        candidate_strategy_id="rulekiln",
+    )
+
+    regressed_labels = compute_regressed_labels(
+        case_ids=case_ids,
+        actual_labels=expected_labels,
+        baseline_predictions=baseline_predictions,
+        candidate_predictions=rulekiln_predictions,
+    )
+    rulekiln_eval = rulekiln_eval.model_copy(update={"regressed_labels": regressed_labels})
 
     primary_metric = "macro_f1"
     baseline_score = baseline_eval.macro_f1 or 0.0
@@ -166,6 +205,12 @@ def run_banking77_benchmark(
         baseline_score=baseline_score,
         rulekiln_score=rulekiln_score,
         delta_vs_baseline=rulekiln_score - baseline_score,
+        selected_strategy_id=selected_strategy,
+        selected_strategy_family=("distilled" if selected_strategy == "rulekiln" else "baseline"),
+        best_distilled_strategy_id="rulekiln",
+        best_baseline_strategy_id="baseline",
+        best_by_family={"baseline": "baseline", "distilled": "rulekiln"},
+        paired_comparison=paired_comparison.summary,
         selected_strategy=selected_strategy,
         selection_reason=(
             "RuleKiln selected due to higher or equal macro_f1."
@@ -235,20 +280,26 @@ def run_banking77_benchmark(
     write_eval(run_root / "rulekiln_eval.json", rulekiln_eval)
     write_strategy_comparison(run_root / "strategy_comparison.json", comparison)
     write_confusion_matrix_csv(run_root / "confusion_matrix.csv", rulekiln_eval)
-
-    per_label_rows = _build_per_label_rows(
-        baseline_eval=baseline_eval,
-        baseline_support=baseline_support,
-        rulekiln_eval=rulekiln_eval,
-        rulekiln_support=rulekiln_support,
-    )
-    write_per_label_metrics_csv(run_root / "per_label_metrics.csv", per_label_rows)
+    write_per_label_metrics_csv(run_root / "per_label_metrics.csv", rulekiln_eval.per_label_metrics)
+    write_top_confusions_markdown(run_root / "top_confusions.md", rulekiln_eval.top_confusions)
+    write_paired_comparison(run_root / "paired_comparison", paired_comparison)
 
     summary_path = write_summary_markdown(
         run_root / "summary.md",
         benchmark_manifest,
         dataset_manifest,
         comparison,
+        reproduction_command=_build_reproduction_command(
+            profile=profile,
+            seed=seed,
+            run_id=resolved_run_id,
+            artifact_root=artifact_root,
+            dataset_source=resolved_source,
+            fixture_path=resolved_fixture_path,
+            bootstrap_enabled=bootstrap_enabled,
+            bootstrap_iterations=bootstrap_iterations,
+            bootstrap_seed=resolved_bootstrap_seed,
+        ),
     )
 
     if update_readme:
@@ -351,54 +402,23 @@ def _evaluate_predictions(
     predictions: list[str],
     strategy: str,
     model_name: str,
-) -> tuple[EvalResult, dict[str, int]]:
+    bootstrap_enabled: bool,
+    bootstrap_iterations: int,
+    bootstrap_seed: int,
+) -> EvalResult:
     if len(examples) != len(predictions):
         raise ValueError("Number of predictions must equal number of examples.")
 
-    expected_labels = [example.label for example in examples]
-    labels = sorted(set(expected_labels) | set(predictions))
-    label_indices = {label: index for index, label in enumerate(labels)}
-
-    matrix_rows = [[0 for _ in labels] for _ in labels]
-    for expected_label, predicted_label in zip(expected_labels, predictions, strict=True):
-        expected_index = label_indices[expected_label]
-        predicted_index = label_indices[predicted_label]
-        matrix_rows[expected_index][predicted_index] += 1
-
-    correct_predictions = sum(
-        matrix_rows[index][index] for index in range(len(labels))
+    actual_labels = [example.label for example in examples]
+    case_ids = [example.source_id for example in examples]
+    classification_stats = compute_classification_statistics(
+        actual_labels=actual_labels,
+        predicted_labels=predictions,
+        case_ids=case_ids,
+        bootstrap_enabled=bootstrap_enabled,
+        bootstrap_iterations=bootstrap_iterations,
+        bootstrap_seed=bootstrap_seed,
     )
-    accuracy = correct_predictions / len(examples) if examples else 0.0
-
-    per_outcome_precision: dict[str, float] = {}
-    per_outcome_recall: dict[str, float] = {}
-    support_map: dict[str, int] = {}
-    f1_scores: list[float] = []
-    for label_index, label in enumerate(labels):
-        true_positives = matrix_rows[label_index][label_index]
-        predicted_total = sum(matrix_rows[row][label_index] for row in range(len(labels)))
-        actual_total = sum(matrix_rows[label_index][column] for column in range(len(labels)))
-
-        precision = true_positives / predicted_total if predicted_total > 0 else 0.0
-        recall = true_positives / actual_total if actual_total > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-
-        per_outcome_precision[label] = precision
-        per_outcome_recall[label] = recall
-        support_map[label] = actual_total
-        f1_scores.append(f1)
-
-    macro_f1 = sum(f1_scores) / len(f1_scores) if f1_scores else 0.0
-
-    confusion_payload: dict[str, dict[str, int]] = {}
-    for expected_index, expected_label in enumerate(labels):
-        row: dict[str, int] = {}
-        for predicted_index, predicted_label in enumerate(labels):
-            count = matrix_rows[expected_index][predicted_index]
-            if count > 0:
-                row[predicted_label] = count
-        if row:
-            confusion_payload[expected_label] = row
 
     case_results: list[CaseEvalResult] = []
     for example, prediction in zip(examples, predictions, strict=True):
@@ -418,55 +438,21 @@ def _evaluate_predictions(
         strategy=strategy,
         model=model_name,
         split="test",
-        accuracy=accuracy,
-        macro_f1=macro_f1,
-        weighted_case_score=accuracy,
+        accuracy=classification_stats.accuracy,
+        accuracy_ci_95=classification_stats.accuracy_ci_95,
+        macro_f1=classification_stats.macro_f1,
+        macro_f1_ci_95=classification_stats.macro_f1_ci_95,
+        weighted_case_score=classification_stats.accuracy,
         malformed_output_rate=0.0,
-        per_outcome_precision=per_outcome_precision,
-        per_outcome_recall=per_outcome_recall,
-        confusion_matrix=confusion_payload,
+        per_outcome_precision=classification_stats.per_outcome_precision,
+        per_outcome_recall=classification_stats.per_outcome_recall,
+        per_label_metrics=classification_stats.per_label_metrics,
+        confusion_matrix=classification_stats.confusion_matrix,
+        top_confusions=classification_stats.top_confusions,
         case_results=case_results,
     )
 
-    return eval_result, support_map
-
-
-def _build_per_label_rows(
-    *,
-    baseline_eval: EvalResult,
-    baseline_support: dict[str, int],
-    rulekiln_eval: EvalResult,
-    rulekiln_support: dict[str, int],
-) -> list[PerLabelMetricRow]:
-    labels = sorted(
-        set(baseline_eval.per_outcome_precision.keys())
-        | set(rulekiln_eval.per_outcome_precision.keys())
-        | set(baseline_support.keys())
-        | set(rulekiln_support.keys())
-    )
-
-    rows: list[PerLabelMetricRow] = []
-    for label in labels:
-        rows.append(
-            PerLabelMetricRow(
-                label=label,
-                precision=baseline_eval.per_outcome_precision.get(label, 0.0),
-                recall=baseline_eval.per_outcome_recall.get(label, 0.0),
-                support=baseline_support.get(label, 0),
-                strategy="baseline",
-            )
-        )
-        rows.append(
-            PerLabelMetricRow(
-                label=label,
-                precision=rulekiln_eval.per_outcome_precision.get(label, 0.0),
-                recall=rulekiln_eval.per_outcome_recall.get(label, 0.0),
-                support=rulekiln_support.get(label, 0),
-                strategy="rulekiln",
-            )
-        )
-
-    return rows
+    return eval_result
 
 
 def _resolve_dataset_source(
@@ -748,6 +734,35 @@ def _write_split_ids(path: Path, examples: list[Banking77Example]) -> Path:
     payload = "\n".join(ids) + "\n" if ids else ""
     path.write_text(payload, encoding="utf-8")
     return path
+
+
+def _build_reproduction_command(
+    *,
+    profile: BenchmarkProfileName,
+    seed: int,
+    run_id: str,
+    artifact_root: Path,
+    dataset_source: Literal["fixture", "download"],
+    fixture_path: Path,
+    bootstrap_enabled: bool,
+    bootstrap_iterations: int,
+    bootstrap_seed: int,
+) -> str:
+    parts = [
+        "uv run rulekiln-benchmark banking77",
+        f"--profile {profile}",
+        f"--seed {seed}",
+        f"--run-id {run_id}",
+        f"--artifact-root {artifact_root}",
+        f"--dataset-source {dataset_source}",
+        f"--bootstrap-iterations {bootstrap_iterations}",
+        f"--bootstrap-seed {bootstrap_seed}",
+    ]
+    if dataset_source == "fixture":
+        parts.append(f"--fixture-path {fixture_path}")
+    if not bootstrap_enabled:
+        parts.append("--no-bootstrap")
+    return " \\\n+  ".join(parts)
 
 
 def _repo_root() -> Path:

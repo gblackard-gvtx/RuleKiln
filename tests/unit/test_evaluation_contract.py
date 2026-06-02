@@ -59,6 +59,29 @@ def test_accuracy_range() -> None:
     assert 0.0 <= ev.accuracy <= 1.0
 
 
+def test_confidence_interval_object_shape() -> None:
+    ev = _eval_result(
+        accuracy_ci_95={
+            "low": 0.6,
+            "high": 0.8,
+            "iterations": 1000,
+            "seed": 12345,
+        },
+        macro_f1_ci_95={
+            "low": 0.55,
+            "high": 0.75,
+            "iterations": 1000,
+            "seed": 12345,
+        },
+    )
+    assert ev.accuracy_ci_95 is not None
+    assert ev.macro_f1_ci_95 is not None
+    assert ev.accuracy_ci_95.method == "bootstrap"
+    assert ev.accuracy_ci_95.iterations == 1000
+    assert ev.accuracy_ci_95.seed == 12345
+    assert ev.macro_f1_ci_95.method == "bootstrap"
+
+
 def test_case_eval_result_passed_flag() -> None:
     cr = CaseEvalResult(
         case_id="c1",

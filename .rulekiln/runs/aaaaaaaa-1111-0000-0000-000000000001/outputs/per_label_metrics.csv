@@ -1,0 +1,3 @@
+label,support,true_positive,false_positive,false_negative,precision,recall,f1
+negative,2,2,0,0,1.0000000000,1.0000000000,1.0000000000
+positive,2,2,0,0,1.0000000000,1.0000000000,1.0000000000
