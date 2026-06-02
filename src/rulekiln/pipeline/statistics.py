@@ -299,9 +299,7 @@ def compute_paired_comparison(
         net_fix_rate = (fixed_count - broken_count) / changed_outcomes
         net_fix_rate_status = "ok"
 
-    overall_net_fix_rate = (
-        (fixed_count - broken_count) / total_cases if total_cases > 0 else 0.0
-    )
+    overall_net_fix_rate = (fixed_count - broken_count) / total_cases if total_cases > 0 else 0.0
 
     summary = PairedComparisonSummary(
         baseline_strategy_id=baseline_strategy_id,

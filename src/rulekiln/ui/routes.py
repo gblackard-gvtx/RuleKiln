@@ -96,6 +96,9 @@ _KNOWN_ARTIFACT_PATTERNS: list[str] = [
     "outputs/paired_comparison/summary.json",
     "outputs/failures_fixed.jsonl",
     "outputs/failures_broken.jsonl",
+    "outputs/rule_provenance.json",
+    "outputs/rule_provenance.md",
+    "outputs/rule_ablation.json",
 ]
 _DB_CASE_ID_DELIMITER = "::"
 _EXTRACTION_CASE_MARKER_PREFIX = "extracting_case:"
@@ -973,9 +976,7 @@ async def job_results(
         if isinstance(getattr(run, "strategy", None), str)
         and str(getattr(run, "strategy", "")).strip()
     }
-    baseline_strategy = (
-        "baseline_scaffold" if "baseline_scaffold" in strategy_names else "baseline"
-    )
+    baseline_strategy = "baseline_scaffold" if "baseline_scaffold" in strategy_names else "baseline"
 
     for strategy in sorted(strategy_names):
         run = _select_summary_eval_run(eval_runs, strategy)
@@ -1225,17 +1226,11 @@ async def job_eval_report(
             paired_summary = {
                 "fixed_count": _as_int(paired_payload.get("fixed_count")),
                 "broken_count": _as_int(paired_payload.get("broken_count")),
-                "unchanged_correct_count": _as_int(
-                    paired_payload.get("unchanged_correct_count")
-                ),
+                "unchanged_correct_count": _as_int(paired_payload.get("unchanged_correct_count")),
                 "unchanged_wrong_count": _as_int(paired_payload.get("unchanged_wrong_count")),
                 "net_fix_rate": _as_float(paired_payload.get("net_fix_rate")),
-                "net_fix_rate_status": _as_non_empty_str(
-                    paired_payload.get("net_fix_rate_status")
-                ),
-                "overall_net_fix_rate": _as_float(
-                    paired_payload.get("overall_net_fix_rate")
-                ),
+                "net_fix_rate_status": _as_non_empty_str(paired_payload.get("net_fix_rate_status")),
+                "overall_net_fix_rate": _as_float(paired_payload.get("overall_net_fix_rate")),
             }
 
     if selected_strategy_family is None and selected_strategy_id is not None:

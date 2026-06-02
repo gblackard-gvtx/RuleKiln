@@ -4,6 +4,96 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+# ── Rule provenance ──────────────────────────────────────────────────────────
+
+
+class RuleProvenanceRecord(BaseModel):
+    """Provenance metadata for a single selected rule."""
+
+    rule_id: str
+    topic: str
+
+    # Associative attribution (always present)
+    source_case_ids: list[str] = Field(default_factory=list)
+    cluster_id: str | None = None
+    support_count: int = 0
+    support_ratio: float = 0.0
+    examples_fixed: list[str] = Field(default_factory=list)
+    examples_broken: list[str] = Field(default_factory=list)
+    attribution_method: Literal["associative", "causal"] = "associative"
+
+    # Causal fields (populated when ablation results are available)
+    ablation_classification: Literal["helpful", "harmful", "neutral", "inconclusive"] | None = None
+    ablation_metric_delta: float | None = None
+    ablation_changed_cases: int | None = None
+
+    # Flags
+    zero_validation_impact: bool = False
+    regression_flag: bool = False
+
+    # Optional notes from conflict review / evaluator
+    notes: list[str] = Field(default_factory=list)
+
+
+class RuleProvenanceArtifact(BaseModel):
+    """Full provenance artifact for a distillation job."""
+
+    schema_version: Literal["rulekiln.rule_provenance.v1"] = "rulekiln.rule_provenance.v1"
+    job_id: str
+    strategy_id: str
+    rules: list[RuleProvenanceRecord] = Field(default_factory=list)
+
+
+# ── Rule ablation ────────────────────────────────────────────────────────────
+
+
+class RuleAblationRecord(BaseModel):
+    """Leave-one-rule-out ablation result for a single rule."""
+
+    rule_id: str
+    topic: str
+    classification: Literal["helpful", "harmful", "neutral", "inconclusive"]
+    metric_delta_without_rule: float | None = None
+    changed_cases: int | None = None
+    primary_metric: str | None = None
+    error: str | None = None
+
+
+class RuleAblationArtifact(BaseModel):
+    """Full ablation artifact for a distillation job."""
+
+    schema_version: Literal["rulekiln.rule_ablation.v1"] = "rulekiln.rule_ablation.v1"
+    job_id: str
+    strategy_id: str
+    primary_metric: str | None = None
+    records: list[RuleAblationRecord] = Field(default_factory=list)
+
+
+# ── Pruning-mode comparison ──────────────────────────────────────────────────
+
+
+class PruningModeRow(BaseModel):
+    """One row in a pruning-mode comparison table."""
+
+    mode: Literal["support_count", "utility", "utility_per_token"]
+    strategy_id: str
+    rule_count: int
+    prompt_tokens: int
+    primary_metric: str | None = None
+    score: float | None = None
+    delta_vs_support_count: float | None = None
+    evaluated: bool = False
+
+
+class PruningModeComparison(BaseModel):
+    """Cross-mode pruning comparison attached to strategy comparison artifacts."""
+
+    schema_version: Literal["rulekiln.pruning_mode_comparison.v1"] = (
+        "rulekiln.pruning_mode_comparison.v1"
+    )
+    selected_mode: Literal["support_count", "utility", "utility_per_token"]
+    rows: list[PruningModeRow] = Field(default_factory=list)
+
 # ── Rule extraction ──────────────────────────────────────────────────────────
 
 
@@ -269,9 +359,7 @@ class StrategyComparison(BaseModel):
     strategy_evals: dict[str, EvalResult] = Field(default_factory=dict)
     strategy_gates: dict[str, QualityGateResult] = Field(default_factory=dict)
     strategy_prompt_tokens: dict[str, int] = Field(default_factory=dict)
-    strategy_metadata: dict[str, dict[str, str | int | float | bool]] = Field(
-        default_factory=dict
-    )
+    strategy_metadata: dict[str, dict[str, str | int | float | bool]] = Field(default_factory=dict)
     selected_strategy_id: str | None = None
     selected_strategy_family: str | None = None
     best_distilled_strategy_id: str | None = None
@@ -281,3 +369,4 @@ class StrategyComparison(BaseModel):
     selected_strategy: str | None = None
     selection_reason: str | None = None
     evaluation_split_warning: str | None = None
+    pruning_mode_comparison: PruningModeComparison | None = None

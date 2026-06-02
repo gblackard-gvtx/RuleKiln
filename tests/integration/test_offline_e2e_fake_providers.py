@@ -235,6 +235,31 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
     if selected_prompt_path.exists():
         assert "outputs/selected_distilled_prompt.md" in manifest_entries
 
+    # Rule provenance artifacts should exist for distilled strategies
+    selected_strategy_id = strategy_comparison.get("selected_strategy_id", "")
+    if selected_strategy_id in ("dbscan", "hdbscan"):
+        prov_json_path = artifact_root / "outputs" / "rule_provenance.json"
+        prov_md_path = artifact_root / "outputs" / "rule_provenance.md"
+        assert prov_json_path.exists(), "rule_provenance.json missing for distilled strategy"
+        assert prov_md_path.exists(), "rule_provenance.md missing for distilled strategy"
+
+        provenance = json.loads(prov_json_path.read_text(encoding="utf-8"))
+        assert provenance.get("schema_version") == "rulekiln.rule_provenance.v1"
+        assert provenance.get("job_id") == job_id
+        assert isinstance(provenance.get("rules"), list)
+
+        # Every rule must have required fields
+        for rec in provenance["rules"]:
+            assert "rule_id" in rec
+            assert "topic" in rec
+            assert "support_count" in rec
+            assert "attribution_method" in rec
+            assert rec["attribution_method"] in ("associative", "causal")
+
+    # strategy_comparison.json should carry pruning_mode_comparison when present
+    # (it may be None for baseline-only runs; just check the key is present)
+    assert "pruning_mode_comparison" in strategy_comparison
+
 
 @pytest.mark.asyncio
 async def test_pipeline_with_baseline_runs(db_factory, fake_settings, monkeypatch) -> None:

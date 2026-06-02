@@ -18,6 +18,8 @@ def test_all_required_stages_present() -> None:
         "evaluating_distilled",
         "selecting_strategy",
         "analyzing_failures",
+        "ablating_rules",
+        "optimizing_pruning",
         "checking_quality_gates",
         "logging_artifacts",
         "exporting_artifacts",
@@ -29,7 +31,7 @@ def test_all_required_stages_present() -> None:
 
 
 def test_stage_count() -> None:
-    assert len(PipelineStage) == 18
+    assert len(PipelineStage) == 20
 
 
 def test_new_stages_present() -> None:

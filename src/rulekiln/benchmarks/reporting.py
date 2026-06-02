@@ -28,6 +28,7 @@ from rulekiln.schemas.pipeline import (
     EvalResult,
     MetricConfidenceInterval,
     PerLabelMetricsRow,
+    PruningModeComparison,
     RegressedLabelRow,
     TopConfusionRow,
 )
@@ -86,6 +87,32 @@ def _format_ci(metric_ci: MetricConfidenceInterval | None) -> str:
     if metric_ci is None:
         return "null"
     return json.dumps(metric_ci.model_dump(mode="json"), ensure_ascii=False)
+
+
+def _render_pruning_mode_comparison_section(
+    comparison: PruningModeComparison,
+) -> list[str]:
+    lines: list[str] = [
+        "## Pruning Mode Comparison",
+        "",
+        f"selected_mode: {comparison.selected_mode}",
+        "",
+        "| mode | strategy_id | rules | prompt_tokens | score | delta_vs_support_count | evaluated |",  # noqa: E501
+        "|---|---|---:|---:|---:|---:|---|",  # noqa: E501
+    ]
+    for row in comparison.rows:
+        score_str = f"{row.score:.6f}" if row.score is not None else "null"
+        delta_str = (
+            f"{row.delta_vs_support_count:+.6f}"
+            if row.delta_vs_support_count is not None
+            else "null"
+        )
+        lines.append(
+            f"| {row.mode} | {row.strategy_id} | {row.rule_count} | {row.prompt_tokens} "
+            f"| {score_str} | {delta_str} | {row.evaluated} |"
+        )
+    lines.append("")
+    return lines
 
 
 def _render_regressed_labels_section(rows: list[RegressedLabelRow]) -> list[str]:
@@ -175,9 +202,7 @@ def render_summary_markdown(
 
     if paired_summary is not None:
         net_fix_rate_value: float | str = (
-            paired_summary.net_fix_rate
-            if paired_summary.net_fix_rate is not None
-            else "null"
+            paired_summary.net_fix_rate if paired_summary.net_fix_rate is not None else "null"
         )
         result_lines.extend(
             [
@@ -188,6 +213,11 @@ def render_summary_markdown(
                 f"- net_fix_rate: {net_fix_rate_value}",
                 f"- overall_net_fix_rate: {paired_summary.overall_net_fix_rate}",
             ]
+        )
+
+    if comparison.pruning_mode_comparison is not None:
+        result_lines.extend(
+            ["", *_render_pruning_mode_comparison_section(comparison.pruning_mode_comparison)]
         )
 
     result_lines.extend(["", *(_render_regressed_labels_section(candidate_eval.regressed_labels))])

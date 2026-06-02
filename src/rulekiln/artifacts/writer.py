@@ -12,6 +12,8 @@ from rulekiln.pipeline.statistics import PairedComparisonArtifacts
 from rulekiln.schemas.pipeline import (
     EvalResult,
     PerLabelMetricsRow,
+    RuleAblationArtifact,
+    RuleProvenanceArtifact,
     StrategyComparison,
     SynthesizedRuleSchema,
     TopConfusionRow,
@@ -95,8 +97,7 @@ def write_eval_report(root: Path, comparison: StrategyComparison) -> Path:
     outputs.mkdir(parents=True, exist_ok=True)
     path = outputs / "eval_report.json"
     strategy_evals_exclude: dict[str, set[str]] = {
-        strategy_name: {"case_results"}
-        for strategy_name in comparison.strategy_evals
+        strategy_name: {"case_results"} for strategy_name in comparison.strategy_evals
     }
     exclude_payload: dict[str, set[str] | dict[str, set[str]]] = {
         "dbscan_eval": {"case_results"},
@@ -303,3 +304,91 @@ def write_paired_comparison_artifacts(
     )
 
     return [fixed_path, broken_path, unchanged_path, summary_path]
+
+
+def write_rule_provenance_json(root: Path, artifact: RuleProvenanceArtifact) -> Path:
+    """Write rule_provenance.json to outputs/."""
+    outputs = root / "outputs"
+    outputs.mkdir(parents=True, exist_ok=True)
+    path = outputs / "rule_provenance.json"
+    path.write_text(
+        json.dumps(artifact.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_rule_provenance_markdown(root: Path, artifact: RuleProvenanceArtifact) -> Path:
+    """Write rule_provenance.md to outputs/ with a human-readable table."""
+    outputs = root / "outputs"
+    outputs.mkdir(parents=True, exist_ok=True)
+    path = outputs / "rule_provenance.md"
+
+    lines: list[str] = [
+        f"# Rule Provenance — {artifact.strategy_id}",
+        "",
+        f"job_id: {artifact.job_id}",
+        "",
+        "| rule_id | topic | support | attribution | ablation | flags |",
+        "|---|---|---:|---|---|---|",
+    ]
+    for rec in artifact.rules:
+        flags: list[str] = []
+        if rec.zero_validation_impact:
+            flags.append("zero_validation_impact")
+        if rec.regression_flag:
+            flags.append("regression_flag")
+        ablation_str = (
+            f"{rec.ablation_classification} (Δ={rec.ablation_metric_delta:.4f})"
+            if rec.ablation_classification is not None and rec.ablation_metric_delta is not None
+            else rec.ablation_classification or "—"
+        )
+        lines.append(
+            f"| {rec.rule_id} | {rec.topic} | {rec.support_count} "
+            f"| {rec.attribution_method} | {ablation_str} | {', '.join(flags) or '—'} |"
+        )
+    lines.append("")
+
+    for rec in artifact.rules:
+        lines.extend(
+            [
+                f"## {rec.rule_id}: {rec.topic}",
+                "",
+                f"- support_count: {rec.support_count}",
+                f"- support_ratio: {rec.support_ratio:.4f}",
+                f"- cluster_id: {rec.cluster_id or '—'}",
+                f"- attribution_method: {rec.attribution_method}",
+                f"- source_case_ids: {', '.join(rec.source_case_ids[:10])}"
+                + (" …" if len(rec.source_case_ids) > 10 else ""),
+                f"- examples_fixed: {', '.join(rec.examples_fixed[:5])}"
+                + (" …" if len(rec.examples_fixed) > 5 else ""),
+                f"- examples_broken: {', '.join(rec.examples_broken[:5])}"
+                + (" …" if len(rec.examples_broken) > 5 else ""),
+            ]
+        )
+        if rec.ablation_classification is not None:
+            lines.extend(
+                [
+                    f"- ablation_classification: {rec.ablation_classification}",
+                    f"- ablation_metric_delta: {rec.ablation_metric_delta}",
+                    f"- ablation_changed_cases: {rec.ablation_changed_cases}",
+                ]
+            )
+        if rec.notes:
+            lines.append(f"- notes: {'; '.join(rec.notes)}")
+        lines.append("")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def write_rule_ablation_json(root: Path, artifact: RuleAblationArtifact) -> Path:
+    """Write rule_ablation.json to outputs/."""
+    outputs = root / "outputs"
+    outputs.mkdir(parents=True, exist_ok=True)
+    path = outputs / "rule_ablation.json"
+    path.write_text(
+        json.dumps(artifact.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path

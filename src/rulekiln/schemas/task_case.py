@@ -70,6 +70,16 @@ class RuleKilnTask(BaseModel):
     min_rule_support_count: int = 2
     preserve_golden_rules: bool = True
 
+    # ── Rule pruning optimizer (Phase 4) ─────────────────────────────────
+    rule_pruning_mode: Literal["support_count", "utility", "utility_per_token"] = "support_count"
+    rule_regression_penalty: float = 2.0
+
+    # ── Leave-one-rule-out ablation (Phase 4) ────────────────────────────
+    enable_rule_ablation: bool = False
+    max_ablation_rules: int = 20
+    small_run_case_threshold: int = 200
+    ablation_min_changed_cases: int = 5
+
 
 AssertionType = Literal[
     "must_include",

@@ -241,6 +241,10 @@ async def test_split_policy_uses_train_for_extraction_and_validation_for_eval(
         split: str = "train",
         completed_case_results: Mapping[str, CaseEvalResult] | None = None,
         on_case_result: Callable[[CaseEvalResult], Awaitable[None]] | None = None,
+        *,
+        bootstrap_enabled: bool = True,
+        bootstrap_iterations: int = 1000,
+        bootstrap_seed: int = 1729,
     ) -> EvalResult:
         del system_prompt
         del task
@@ -420,6 +424,10 @@ async def test_split_policy_falls_back_to_train_with_warning(
         split: str = "train",
         completed_case_results: Mapping[str, CaseEvalResult] | None = None,
         on_case_result: Callable[[CaseEvalResult], Awaitable[None]] | None = None,
+        *,
+        bootstrap_enabled: bool = True,
+        bootstrap_iterations: int = 1000,
+        bootstrap_seed: int = 1729,
     ) -> EvalResult:
         del system_prompt
         del task

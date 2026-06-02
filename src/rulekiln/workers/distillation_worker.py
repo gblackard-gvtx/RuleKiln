@@ -28,6 +28,9 @@ from rulekiln.artifacts.writer import (
     write_paired_comparison_artifacts,
     write_per_label_metrics_csv,
     write_prompt,
+    write_rule_ablation_json,
+    write_rule_provenance_json,
+    write_rule_provenance_markdown,
     write_selected_prompt,
     write_strategy_comparison,
     write_strategy_eval,
@@ -57,6 +60,7 @@ from rulekiln.db.repositories.jobs import (
     bulk_insert_rule_clusters,
     get_eval_runs_for_job,
     get_micro_rules_for_job,
+    get_rule_clusters_for_job,
     get_selected_synthesized_rules_for_job,
     get_synthesized_rules_for_job,
     insert_eval_run,
@@ -116,7 +120,11 @@ from rulekiln.pipeline.prompt_compiler import (
     count_tokens_approx,
 )
 from rulekiln.pipeline.quality_gates import check_quality_gates
-from rulekiln.pipeline.rule_pruning import prune_rules
+from rulekiln.pipeline.rule_provenance import (
+    build_cluster_id_by_micro_rule,
+    build_provenance_records,
+)
+from rulekiln.pipeline.rule_pruning import PruningMode, prune_rules
 from rulekiln.pipeline.split_policy import resolve_split_policy
 from rulekiln.pipeline.statistics import (
     PairedComparisonArtifacts,
@@ -141,8 +149,12 @@ from rulekiln.schemas.pipeline import (
     EvalResult,
     MicroRuleSchema,
     OutcomeCondition,
+    PruningModeComparison,
+    PruningModeRow,
     QualityGateResult,
     RegressedLabelRow,
+    RuleAblationArtifact,
+    RuleAblationRecord,
     RuleClusterSchema,
     SynthesizedRuleSchema,
 )
@@ -182,6 +194,8 @@ class PipelineStage(StrEnum):
     EVALUATING_DISTILLED = "evaluating_distilled"
     SELECTING_STRATEGY = "selecting_strategy"
     ANALYZING_FAILURES = "analyzing_failures"
+    ABLATING_RULES = "ablating_rules"
+    OPTIMIZING_PRUNING = "optimizing_pruning"
     CHECKING_QUALITY_GATES = "checking_quality_gates"
     LOGGING_ARTIFACTS = "logging_artifacts"
     EXPORTING_ARTIFACTS = "exporting_artifacts"
@@ -1008,8 +1022,7 @@ async def _run(
                 if existing_result.error and existing_result.error.startswith("retrieval_failure:"):
                     retrieval_failure_count += 1
                 elif existing_result.malformed or (
-                    existing_result.error
-                    and existing_result.error.startswith("model_failure:")
+                    existing_result.error and existing_result.error.startswith("model_failure:")
                 ):
                     model_failure_count += 1
 
@@ -1312,6 +1325,7 @@ async def _run(
 
     if run_aggregate:
         paired_comparison_artifacts: PairedComparisonArtifacts | None = None
+        ablation_artifact: RuleAblationArtifact | None = None
 
         if baseline_eval is None:
             baseline_eval = await _load_eval_result_from_db(
@@ -1572,6 +1586,51 @@ async def _run(
                 )
             await mark_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES)
 
+        # ── Stage: ablating_rules ─────────────────────────────────────────
+        if not await is_stage_complete(session, job_id, PipelineStage.ABLATING_RULES):
+            ablation_artifact = await _run_rule_ablation(
+                session,
+                job_id=job_id,
+                task=task,
+                selected_strategy=selected_strategy,
+                eval_cases=eval_cases,
+                eval_split=eval_split,
+                case_by_id=case_by_id,
+                student_id=eval_student_id,
+                student_chat=student_chat,
+                student_config=student_config,
+                primary_metric=primary_metric,
+                bootstrap_enabled=evaluation_bootstrap_enabled,
+                bootstrap_iterations=evaluation_bootstrap_iterations,
+                bootstrap_seed_offset=evaluation_bootstrap_seed_offset,
+                eval_map=eval_map,
+            )
+            await mark_stage_complete(session, job_id, PipelineStage.ABLATING_RULES)
+
+        # ── Stage: optimizing_pruning (two-pass) ─────────────────────────
+        if not await is_stage_complete(session, job_id, PipelineStage.OPTIMIZING_PRUNING):
+            pruning_mode_comparison = await _run_two_pass_optimizer(
+                session,
+                job_id=job_id,
+                task=task,
+                selected_strategy=selected_strategy,
+                eval_cases=eval_cases,
+                eval_split=eval_split,
+                case_by_id=case_by_id,
+                student_id=eval_student_id,
+                student_chat=student_chat,
+                student_config=student_config,
+                primary_metric=primary_metric,
+                bootstrap_enabled=evaluation_bootstrap_enabled,
+                bootstrap_iterations=evaluation_bootstrap_iterations,
+                bootstrap_seed_offset=evaluation_bootstrap_seed_offset,
+                eval_map=eval_map,
+                ablation_artifact=ablation_artifact,
+            )
+            if pruning_mode_comparison is not None:
+                comparison.pruning_mode_comparison = pruning_mode_comparison
+            await mark_stage_complete(session, job_id, PipelineStage.OPTIMIZING_PRUNING)
+
         # ── Late stages ───────────────────────────────────────────────────
         if not await is_stage_complete(session, job_id, PipelineStage.LOGGING_ARTIFACTS):
             await _set_stage(session, job_id, PipelineStage.LOGGING_ARTIFACTS)
@@ -1730,6 +1789,47 @@ async def _run(
                         paired_comparison_artifacts,
                     )
                 )
+
+            # ── Rule ablation artifact ───────────────────────────────────
+            if ablation_artifact is not None:
+                written_artifacts.append(
+                    write_rule_ablation_json(artifact_root, ablation_artifact)
+                )
+
+            # ── Rule provenance artifact ──────────────────────────────────
+            if selected_strategy in DISTILLED_STRATEGIES:
+                prov_selected_eval = comparison.strategy_evals.get(selected_strategy)
+                prov_db_synth = await get_selected_synthesized_rules_for_job(
+                    session, job_id, selected_strategy
+                )
+                prov_schemas = [_db_synth_to_schema(r) for r in prov_db_synth]
+                if prov_schemas:
+                    prov_failure_analysis = analyze_failures(
+                        baseline_scaffold_eval or baseline_eval,
+                        prov_selected_eval,
+                        prov_schemas,
+                    ) if prov_selected_eval else None
+                    db_clusters = await get_rule_clusters_for_job(
+                        session, job_id, selected_strategy
+                    )
+                    cluster_pairs = [
+                        (c.id, list(c.rule_ids)) for c in db_clusters
+                    ]
+                    cluster_id_map = build_cluster_id_by_micro_rule(cluster_pairs)
+                    prov_artifact = build_provenance_records(
+                        job_id=job_id,
+                        strategy_id=selected_strategy,
+                        selected_rules=prov_schemas,
+                        failure_analysis=prov_failure_analysis,
+                        cluster_id_by_micro_rule=cluster_id_map,
+                        ablation_artifact=ablation_artifact,
+                    )
+                    written_artifacts.append(
+                        write_rule_provenance_json(artifact_root, prov_artifact)
+                    )
+                    written_artifacts.append(
+                        write_rule_provenance_markdown(artifact_root, prov_artifact)
+                    )
 
             for strategy in DISTILLED_STRATEGIES:
                 prompt_text = compiled_prompts.get(strategy)
@@ -2184,9 +2284,7 @@ def _best_strategy_for_family(
     def sort_key(strategy_name: str) -> tuple[float, float, int, str]:
         strategy_eval = strategy_evals[strategy_name]
         fallback_token_count = (
-            strategy_eval.prompt_token_count
-            if strategy_eval.prompt_token_count is not None
-            else 0
+            strategy_eval.prompt_token_count if strategy_eval.prompt_token_count is not None else 0
         )
         token_count = strategy_prompt_tokens.get(
             strategy_name,
@@ -2289,6 +2387,374 @@ def _delta_vs_baseline(
     return _primary_score_for_metric(result, primary_metric) - _primary_score_for_metric(
         baseline, primary_metric
     )
+
+
+async def _run_rule_ablation(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    task: RuleKilnTask,
+    selected_strategy: str,
+    eval_cases: list[RuleKilnCase],
+    eval_split: str,
+    case_by_id: dict[str, RuleKilnCase],
+    student_id: str,
+    student_chat: ChatModelClient,
+    student_config: ProviderConfig,
+    primary_metric: str,
+    bootstrap_enabled: bool,
+    bootstrap_iterations: int,
+    bootstrap_seed_offset: int,
+    eval_map: dict[str, EvalResult],
+) -> RuleAblationArtifact | None:
+    """Run leave-one-rule-out ablation for the selected strategy.
+
+    Gated by task.enable_rule_ablation and case count threshold.
+    Returns None when ablation is skipped.
+    """
+    if not task.enable_rule_ablation:
+        return None
+    if len(eval_cases) > task.small_run_case_threshold:
+        logger.info(
+            "ablation_skipped_case_threshold",
+            job_id=job_id,
+            case_count=len(eval_cases),
+            threshold=task.small_run_case_threshold,
+        )
+        return None
+    if selected_strategy not in DISTILLED_STRATEGIES:
+        return None
+
+    db_synth = await get_selected_synthesized_rules_for_job(session, job_id, selected_strategy)
+    selected_schemas = [_db_synth_to_schema(r) for r in db_synth]
+    if not selected_schemas:
+        return None
+
+    full_eval = eval_map.get(selected_strategy)
+    full_score = _primary_score_for_metric(full_eval, primary_metric)
+    candidates = selected_schemas[: task.max_ablation_rules]
+
+    records: list[RuleAblationRecord] = []
+    for rule in candidates:
+        ablation_strategy_id = f"ablation_without_{rule.id}"
+        if await is_stage_complete(session, job_id, ablation_strategy_id):
+            # Reload previously persisted result from eval_map if present
+            prior = eval_map.get(ablation_strategy_id)
+            if prior is not None:
+                ablation_score = _primary_score_for_metric(prior, primary_metric)
+                delta = ablation_score - full_score
+                changed = sum(
+                    1
+                    for br in (full_eval.case_results if full_eval else [])
+                    for ar in (prior.case_results if prior else [])
+                    if br.case_id == ar.case_id and br.passed != ar.passed
+                )
+                classification = _ablation_classify(delta, changed, task.ablation_min_changed_cases)
+                records.append(
+                    RuleAblationRecord(
+                        rule_id=rule.id,
+                        topic=rule.topic,
+                        classification=classification,
+                        metric_delta_without_rule=delta,
+                        changed_cases=changed,
+                        primary_metric=primary_metric,
+                    )
+                )
+            continue
+
+        reduced_rules = [r for r in selected_schemas if r.id != rule.id]
+        try:
+            reduced_prompt, _ = compile_prompt(task, reduced_rules, ablation_strategy_id)
+        except Exception as exc:
+            logger.warning(
+                "ablation_compile_failed", job_id=job_id, rule_id=rule.id, error=str(exc)
+            )
+            records.append(
+                RuleAblationRecord(
+                    rule_id=rule.id,
+                    topic=rule.topic,
+                    classification="inconclusive",
+                    primary_metric=primary_metric,
+                    error=f"compile_failed: {exc}",
+                )
+            )
+            await mark_stage_complete(session, job_id, ablation_strategy_id)
+            continue
+
+        try:
+            ablation_eval = await _evaluate_prompt_strategy(
+                session,
+                job_id=job_id,
+                strategy=ablation_strategy_id,
+                split=eval_split,
+                student_id=student_id,
+                system_prompt=reduced_prompt,
+                cases=eval_cases,
+                task=task,
+                case_by_id=case_by_id,
+                chat_client=student_chat,
+                config=student_config,
+                bootstrap_enabled=bootstrap_enabled,
+                bootstrap_iterations=bootstrap_iterations,
+                bootstrap_seed_offset=bootstrap_seed_offset,
+            )
+        except Exception as exc:
+            logger.warning(
+                "ablation_eval_failed", job_id=job_id, rule_id=rule.id, error=str(exc)
+            )
+            records.append(
+                RuleAblationRecord(
+                    rule_id=rule.id,
+                    topic=rule.topic,
+                    classification="inconclusive",
+                    primary_metric=primary_metric,
+                    error=f"eval_failed: {exc}",
+                )
+            )
+            await mark_stage_complete(session, job_id, ablation_strategy_id)
+            continue
+
+        eval_map[ablation_strategy_id] = ablation_eval
+        ablation_score = _primary_score_for_metric(ablation_eval, primary_metric)
+        delta = ablation_score - full_score
+
+        full_case_map = {r.case_id: r.passed for r in (full_eval.case_results if full_eval else [])}
+        changed = sum(
+            1
+            for ar in ablation_eval.case_results
+            if full_case_map.get(ar.case_id, ar.passed) != ar.passed
+        )
+        classification = _ablation_classify(delta, changed, task.ablation_min_changed_cases)
+        records.append(
+            RuleAblationRecord(
+                rule_id=rule.id,
+                topic=rule.topic,
+                classification=classification,
+                metric_delta_without_rule=delta,
+                changed_cases=changed,
+                primary_metric=primary_metric,
+            )
+        )
+        await mark_stage_complete(session, job_id, ablation_strategy_id)
+
+    return RuleAblationArtifact(
+        job_id=job_id,
+        strategy_id=selected_strategy,
+        primary_metric=primary_metric,
+        records=records,
+    )
+
+
+async def _run_two_pass_optimizer(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    task: RuleKilnTask,
+    selected_strategy: str,
+    eval_cases: list[RuleKilnCase],
+    eval_split: str,
+    case_by_id: dict[str, RuleKilnCase],
+    student_id: str,
+    student_chat: ChatModelClient,
+    student_config: ProviderConfig,
+    primary_metric: str,
+    bootstrap_enabled: bool,
+    bootstrap_iterations: int,
+    bootstrap_seed_offset: int,
+    eval_map: dict[str, EvalResult],
+    ablation_artifact: RuleAblationArtifact | None,
+) -> PruningModeComparison | None:
+    """Run pass-2 optimizer (utility / utility_per_token) and produce comparison rows.
+
+    Returns None when the configured mode is support_count (no pass-2 needed).
+    """
+    configured_mode: PruningMode = getattr(task, "rule_pruning_mode", "support_count")
+    if configured_mode == "support_count":
+        # Still build a single-row comparison for the report
+        pass1_eval = eval_map.get(selected_strategy)
+        pass1_score = _primary_score_for_metric(pass1_eval, primary_metric)
+        pass1_tokens = (
+            pass1_eval.prompt_token_count if pass1_eval and pass1_eval.prompt_token_count else 0
+        )
+        db_synth = await get_selected_synthesized_rules_for_job(session, job_id, selected_strategy)
+        return PruningModeComparison(
+            selected_mode="support_count",
+            rows=[
+                PruningModeRow(
+                    mode="support_count",
+                    strategy_id=selected_strategy,
+                    rule_count=len(db_synth),
+                    prompt_tokens=pass1_tokens,
+                    primary_metric=primary_metric,
+                    score=pass1_score if pass1_score else None,
+                    delta_vs_support_count=0.0,
+                    evaluated=True,
+                )
+            ],
+        )
+
+    if selected_strategy not in DISTILLED_STRATEGIES:
+        return None
+
+    # Build utility signals from ablation (preferred) or provenance fallback
+    utility_signals: dict[str, tuple[int, int]] = {}
+    if ablation_artifact is not None:
+        pass1_eval = eval_map.get(selected_strategy)
+        for rec in ablation_artifact.records:
+            if rec.classification == "helpful":
+                # Ablation said removing it made things worse → it has utility
+                # Use changed_cases as a proxy for fixed_count
+                fixed = abs(int(rec.changed_cases or 0))
+                utility_signals[rec.rule_id] = (fixed, 0)
+            elif rec.classification == "harmful":
+                broken = abs(int(rec.changed_cases or 0))
+                utility_signals[rec.rule_id] = (0, broken)
+    # Fallback: use support_count if no ablation
+    if not utility_signals:
+        db_synth_all = await get_synthesized_rules_for_job(session, job_id, selected_strategy)
+        for sr in db_synth_all:
+            if not sr.is_pruned:
+                utility_signals.setdefault(sr.id, (sr.support_count, 0))
+
+    pass1_eval = eval_map.get(selected_strategy)
+    pass1_score = _primary_score_for_metric(pass1_eval, primary_metric)
+    pass1_tokens = (
+        pass1_eval.prompt_token_count if pass1_eval and pass1_eval.prompt_token_count else 0
+    )
+    db_synth_pass1 = await get_selected_synthesized_rules_for_job(
+        session, job_id, selected_strategy
+    )
+    schemas_all = [_db_synth_to_schema(r) for r in db_synth_pass1]
+
+    rows: list[PruningModeRow] = [
+        PruningModeRow(
+            mode="support_count",
+            strategy_id=selected_strategy,
+            rule_count=len(db_synth_pass1),
+            prompt_tokens=pass1_tokens,
+            primary_metric=primary_metric,
+            score=pass1_score if pass1_score else None,
+            delta_vs_support_count=0.0,
+            evaluated=True,
+        )
+    ]
+
+    regression_penalty: float = getattr(task, "rule_regression_penalty", 2.0)
+
+    for mode in ("utility", "utility_per_token"):
+        mode_strategy_id = f"{selected_strategy}_pruning_{mode}"
+        if await is_stage_complete(session, job_id, mode_strategy_id):
+            prior = eval_map.get(mode_strategy_id)
+            if prior is not None:
+                prior_score = _primary_score_for_metric(prior, primary_metric)
+                prior_tokens = prior.prompt_token_count or 0
+                rows.append(
+                    PruningModeRow(
+                        mode=mode,  # type: ignore[arg-type]
+                        strategy_id=mode_strategy_id,
+                        rule_count=len(
+                            [r for r in (prior.case_results or []) if True]
+                        ),
+                        prompt_tokens=prior_tokens,
+                        primary_metric=primary_metric,
+                        score=prior_score if prior_score else None,
+                        delta_vs_support_count=(
+                            (prior_score - pass1_score)
+                            if prior_score is not None and pass1_score is not None
+                            else None
+                        ),
+                        evaluated=True,
+                    )
+                )
+            continue
+
+        pruned_result = prune_rules(
+            schemas_all,
+            max_rules=task.max_rules,
+            max_prompt_tokens=task.max_prompt_tokens,
+            min_rule_support_count=task.min_rule_support_count,
+            preserve_golden_rules=task.preserve_golden_rules,
+            ranking_mode=mode,  # type: ignore[arg-type]
+            regression_penalty=regression_penalty,
+            utility_signals=utility_signals,
+        )
+        if not pruned_result.selected:
+            await mark_stage_complete(session, job_id, mode_strategy_id)
+            continue
+
+        try:
+            mode_prompt, _ = compile_prompt(task, pruned_result.selected, mode_strategy_id)
+        except Exception as exc:
+            logger.warning(
+                "pruning_mode_compile_failed", job_id=job_id, mode=mode, error=str(exc)
+            )
+            await mark_stage_complete(session, job_id, mode_strategy_id)
+            continue
+
+        try:
+            mode_eval = await _evaluate_prompt_strategy(
+                session,
+                job_id=job_id,
+                strategy=mode_strategy_id,
+                split=eval_split,
+                student_id=student_id,
+                system_prompt=mode_prompt,
+                cases=eval_cases,
+                task=task,
+                case_by_id=case_by_id,
+                chat_client=student_chat,
+                config=student_config,
+                bootstrap_enabled=bootstrap_enabled,
+                bootstrap_iterations=bootstrap_iterations,
+                bootstrap_seed_offset=bootstrap_seed_offset,
+            )
+        except Exception as exc:
+            logger.warning(
+                "pruning_mode_eval_failed", job_id=job_id, mode=mode, error=str(exc)
+            )
+            await mark_stage_complete(session, job_id, mode_strategy_id)
+            continue
+
+        eval_map[mode_strategy_id] = mode_eval
+        mode_score = _primary_score_for_metric(mode_eval, primary_metric)
+        mode_tokens = mode_eval.prompt_token_count or 0
+        rows.append(
+            PruningModeRow(
+                mode=mode,  # type: ignore[arg-type]
+                strategy_id=mode_strategy_id,
+                rule_count=len(pruned_result.selected),
+                prompt_tokens=mode_tokens,
+                primary_metric=primary_metric,
+                score=mode_score if mode_score else None,
+                delta_vs_support_count=(
+                    (mode_score - pass1_score)
+                    if mode_score is not None and pass1_score is not None
+                    else None
+                ),
+                evaluated=True,
+            )
+        )
+        await mark_stage_complete(session, job_id, mode_strategy_id)
+
+    return PruningModeComparison(
+        selected_mode=configured_mode,
+        rows=rows,
+    )
+
+
+def _ablation_classify(
+    delta: float,
+    changed_cases: int,
+    min_changed_cases: int,
+) -> Literal['helpful', 'harmful', 'neutral', 'inconclusive']:
+    """Classify a leave-one-rule-out ablation result."""
+    if changed_cases < min_changed_cases:
+        return "inconclusive"
+    if delta < -0.005:
+        return "helpful"
+    if delta > 0.005:
+        return "harmful"
+    return "neutral"
 
 
 def _build_manifest_entries(root: Path, paths: Sequence[Path]) -> list[str]:

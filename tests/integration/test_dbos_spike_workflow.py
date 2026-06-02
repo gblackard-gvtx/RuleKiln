@@ -173,6 +173,10 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
         split: str = "train",
         completed_case_results: Mapping[str, CaseEvalResult] | None = None,
         on_case_result: CaseResultPersistFn | None = None,
+        *,
+        bootstrap_enabled: bool = True,
+        bootstrap_iterations: int = 1000,
+        bootstrap_seed: int = 1729,
     ) -> EvalResult:
         if strategy == "dbscan" and not failed_once["dbscan"]:
             failed_once["dbscan"] = True
@@ -187,6 +191,9 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
             split=split,
             completed_case_results=completed_case_results,
             on_case_result=on_case_result,
+            bootstrap_enabled=bootstrap_enabled,
+            bootstrap_iterations=bootstrap_iterations,
+            bootstrap_seed=bootstrap_seed,
         )
 
     monkeypatch.setattr(

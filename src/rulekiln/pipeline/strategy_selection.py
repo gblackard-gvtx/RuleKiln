@@ -56,9 +56,7 @@ def _select_lowest_prompt_tokens(
         strategy: strategy_prompt_tokens.get(strategy, 0) for strategy in contenders
     }
     min_tokens = min(token_by_strategy.values())
-    return [
-        strategy for strategy in contenders if token_by_strategy.get(strategy, 0) == min_tokens
-    ]
+    return [strategy for strategy in contenders if token_by_strategy.get(strategy, 0) == min_tokens]
 
 
 def select_strategy_generic(

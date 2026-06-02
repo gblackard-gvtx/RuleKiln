@@ -206,10 +206,7 @@ def predict_with_centroids(
     for embedding in eval_embeddings:
         query = np.asarray(embedding, dtype=np.float64)
         ranked = sorted(
-            (
-                (_distance(query, centroids[label], metric), label)
-                for label in label_order
-            ),
+            ((_distance(query, centroids[label], metric), label) for label in label_order),
             key=lambda item: (item[0], item[1]),
         )
         predictions.append(ranked[0][1] if ranked else "")

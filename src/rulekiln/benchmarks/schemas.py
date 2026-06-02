@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-from rulekiln.schemas.pipeline import EvalResult, PairedComparisonSummary
+from rulekiln.schemas.pipeline import EvalResult, PairedComparisonSummary, PruningModeComparison
 
 BenchmarkProfileName = Literal["smoke", "standard", "full"]
 DatasetSource = Literal["auto", "fixture", "download"]
@@ -92,6 +92,7 @@ class BenchmarkStrategyComparison(BaseModel):
     paired_comparison: PairedComparisonSummary | None = None
     selected_strategy: str
     selection_reason: str
+    pruning_mode_comparison: PruningModeComparison | None = None
 
 
 class Banking77Example(BaseModel):
