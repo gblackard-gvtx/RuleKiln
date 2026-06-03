@@ -1,3 +1,6 @@
+examples/datasets/*/raw/
+examples/datasets/*/generated/
+
 # Python-generated files
 __pycache__/
 *.py[oc]
@@ -16,4 +19,4 @@ wheels/
 .serena/*
 .headroom/memory_graph.db
 .headroom/memory_vectors.db
-.headroom/memory.db
+.headroom*
