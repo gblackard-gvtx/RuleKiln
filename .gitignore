@@ -20,4 +20,4 @@ wheels/
 .headroom/memory_graph.db
 .headroom/memory_vectors.db
 .headroom*
-.serena*
+.serena
