@@ -144,6 +144,7 @@ from rulekiln.providers.tracking import (
     set_tracking_context,
     update_tracking_context,
 )
+from rulekiln.schemas.classroom import TeacherConfig
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.pipeline import (
     CaseEvalResult,
@@ -292,7 +293,6 @@ async def _run(
     run_baseline_eval = phase in {"full", "evaluate_baseline"}
     run_aggregate = phase in {"full", "aggregate_evaluation_report"}
 
-    teacher_profile = payload.teacher.provider_profile
     student_profile = payload.student.provider_profile
     embedding_profile = payload.embedding.provider_profile
     judge_route = payload.judge or payload.teacher
@@ -339,6 +339,47 @@ async def _run(
     embedding_client = get_embedding_client(embedding_config)
     judge_chat = get_chat_client(judge_config)
     eval_student_id = student_config.model
+    # Per-phase teacher configs — resolved after teacher_chat is available.
+    tc: TeacherConfig | None = payload.teacher_config
+    extraction_teacher_config = (
+        resolve_provider_config(
+            tc.for_phase("instruction_extraction").provider,
+            tc.for_phase("instruction_extraction").model,
+            role="teacher",
+            settings=settings,
+        )
+        if tc is not None
+        else teacher_config
+    )
+    synthesis_teacher_config = (
+        resolve_provider_config(
+            tc.for_phase("cluster_consolidation").provider,
+            tc.for_phase("cluster_consolidation").model,
+            role="teacher",
+            settings=settings,
+        )
+        if tc is not None
+        else teacher_config
+    )
+    refinement_teacher_config = (
+        resolve_provider_config(
+            tc.for_phase("conflict_resolution").provider,
+            tc.for_phase("conflict_resolution").model,
+            role="teacher",
+            settings=settings,
+        )
+        if tc is not None
+        else teacher_config
+    )
+    extraction_teacher_chat = (
+        get_chat_client(extraction_teacher_config) if tc is not None else teacher_chat
+    )
+    synthesis_teacher_chat = (
+        get_chat_client(synthesis_teacher_config) if tc is not None else teacher_chat
+    )
+    refinement_teacher_chat = (
+        get_chat_client(refinement_teacher_config) if tc is not None else teacher_chat
+    )
     primary_metric = _resolve_primary_metric(payload, task.task_mode)
     dataset = _build_dataset_identifier(cases)
 
@@ -358,9 +399,9 @@ async def _run(
                     job_id=job_id,
                     stage=PipelineStage.EXTRACTING_RULES,
                     role="teacher",
-                    provider_profile=teacher_profile,
-                    provider=teacher_config.provider,
-                    model=teacher_config.model,
+                    provider_profile=extraction_teacher_config.profile_name,
+                    provider=extraction_teacher_config.provider,
+                    model=extraction_teacher_config.model,
                 ),
                 collector,
             )
@@ -376,7 +417,9 @@ async def _run(
                     continue
 
                 update_tracking_context(case_id=case.id)
-                extraction = await extract_rules_for_case(task, case, teacher_chat, teacher_config)
+                extraction = await extract_rules_for_case(
+                    task, case, extraction_teacher_chat, extraction_teacher_config
+                )
                 case_micro_rules: list[MicroRule] = []
                 for rule in extraction.rules:
                     case_micro_rules.append(
@@ -465,9 +508,9 @@ async def _run(
                     job_id=job_id,
                     stage=PipelineStage.SYNTHESIZING_RULES,
                     role="teacher",
-                    provider_profile=teacher_profile,
-                    provider=teacher_config.provider,
-                    model=teacher_config.model,
+                    provider_profile=synthesis_teacher_config.profile_name,
+                    provider=synthesis_teacher_config.provider,
+                    model=synthesis_teacher_config.model,
                     strategy=strategy,
                 ),
                 collector,
@@ -513,8 +556,8 @@ async def _run(
                     cluster_micro,
                     case_ids,
                     cluster.rule_ids,
-                    teacher_chat,
-                    teacher_config,
+                    synthesis_teacher_chat,
+                    synthesis_teacher_config,
                 )
                 cluster_synth_rules: list[SynthesizedRule] = []
                 for rule in synthesis.rules:
@@ -1613,8 +1656,8 @@ async def _run(
                         eval_cases=eval_cases,
                         eval_split=eval_split,
                         case_by_id=case_by_id,
-                        teacher_chat=teacher_chat,
-                        teacher_config=teacher_config,
+                        teacher_chat=refinement_teacher_chat,
+                        teacher_config=refinement_teacher_config,
                         student_chat=student_chat,
                         student_config=student_config,
                         primary_metric=primary_metric,

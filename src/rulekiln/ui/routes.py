@@ -538,10 +538,15 @@ async def preview_job(
             status_code=422,
         )
 
+    # ── Validate per-phase teacher overrides ──
+    errors.extend(form.validate_phase_overrides())
+
     # ── Build DistillationRequest & cross-validate ──
     judge: ModelRoute | None = None
     if form.judge_profile and form.judge_model:
         judge = ModelRoute(provider_profile=form.judge_profile, model=form.judge_model)
+
+    teacher_config = form.build_teacher_config()
 
     distillation_request = DistillationRequest(
         task=task,
@@ -551,6 +556,7 @@ async def preview_job(
         embedding=ModelRoute(provider_profile=form.embedding_profile, model=form.embedding_model),
         judge=judge,
         baseline_prompt=form.baseline_prompt or None,
+        teacher_config=teacher_config,
     )
     try:
         validate_distillation_request(distillation_request, settings)
@@ -616,6 +622,7 @@ async def preview_job(
         estimated_embedding_calls=train_count * 5,
         warnings=warnings,
         errors=errors,
+        teacher_routing=form.build_teacher_routing_view(),
     )
 
     if errors:

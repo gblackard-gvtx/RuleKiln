@@ -109,6 +109,63 @@
 
     <hr class="border-gray-200" />
 
+    {# ── Advanced teacher routing ──────────────────────────── #}
+    <div x-data="{ showTeacherPhases: false }">
+      <button type="button" @click="showTeacherPhases = !showTeacherPhases"
+              class="text-sm text-indigo-600 hover:underline">
+        <span x-text="showTeacherPhases
+          ? '− Hide advanced teacher routing'
+          : '+ Advanced teacher routing (optional)'">
+          + Advanced teacher routing (optional)
+        </span>
+      </button>
+
+      <div x-show="showTeacherPhases" class="mt-4 space-y-4">
+        <p class="text-xs text-gray-500">
+          Use different teacher models for different pipeline phases.
+          Leave blank to inherit the default teacher model.
+          Classroom / multi-student evaluation is available through the API, not this form.
+        </p>
+
+        {% for field_prefix, label in [
+            ("extraction",          "Extraction (O(n) calls — cheapest capable model)"),
+            ("synthesis",           "Synthesis (O(clusters) calls)"),
+            ("conflict_resolution", "Conflict resolution (O(iterations) calls — highest reasoning)"),
+        ] %}
+        <div>
+          <p class="text-sm font-medium text-gray-700 mb-1">{{ label }}</p>
+          <div class="grid grid-cols-2 gap-3">
+            <div>
+              <label class="block text-xs text-gray-500 mb-1"
+                     for="{{ field_prefix }}_teacher_profile">Profile</label>
+              <select id="{{ field_prefix }}_teacher_profile"
+                      name="{{ field_prefix }}_teacher_profile"
+                      class="w-full rounded border border-gray-300 text-sm px-2.5 py-1.5
+                             focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                <option value="">Inherit default</option>
+                {% for p in profile_names %}
+                <option value="{{ p }}">{{ p }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs text-gray-500 mb-1"
+                     for="{{ field_prefix }}_teacher_model">Model ID</label>
+              <input id="{{ field_prefix }}_teacher_model"
+                     name="{{ field_prefix }}_teacher_model"
+                     type="text"
+                     placeholder="e.g. gpt-4o-mini"
+                     class="w-full rounded border border-gray-300 text-sm px-2.5 py-1.5
+                            focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <hr class="border-gray-200" />
+
     {# ── Optional baseline prompt ──────────────────────────── #}
     <div>
       <label class="block text-sm font-medium text-gray-700 mb-1" for="baseline_prompt">

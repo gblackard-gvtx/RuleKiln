@@ -22,6 +22,7 @@ from rulekiln.benchmarks.schemas import (
     BenchmarkManifest,
     BenchmarkStrategyComparison,
     DatasetManifest,
+    StudentEvalSummary,
 )
 from rulekiln.pipeline.statistics import PairedComparisonArtifacts
 from rulekiln.schemas.pipeline import (
@@ -143,6 +144,30 @@ def _render_regressed_labels_section(rows: list[RegressedLabelRow]) -> list[str]
     return lines
 
 
+def _render_student_matrix_section(
+    student_results: dict[str, StudentEvalSummary],
+) -> list[str]:
+    """Render a strategy × student metric matrix table."""
+    if not student_results:
+        return []
+    lines: list[str] = [
+        "## Student Evaluation Matrix",
+        "",
+        "| student_id | macro_f1 | accuracy | malformed_rate | cost_usd |",
+        "|---|---:|---:|---:|---:|",
+    ]
+    for student_id, summary in sorted(student_results.items()):
+        macro_f1_str = f"{summary.macro_f1:.6f}" if summary.macro_f1 is not None else "null"
+        accuracy_str = f"{summary.accuracy:.6f}" if summary.accuracy is not None else "null"
+        cost_str = f"{summary.cost_usd:.4f}" if summary.cost_usd is not None else "null"
+        lines.append(
+            f"| {student_id} | {macro_f1_str} | {accuracy_str} "
+            f"| {summary.malformed_rate:.4f} | {cost_str} |"
+        )
+    lines.append("")
+    return lines
+
+
 def _render_top_confusions_section(rows: list[TopConfusionRow]) -> list[str]:
     lines: list[str] = ["## Top Confusions", ""]
     if not rows:
@@ -219,6 +244,9 @@ def render_summary_markdown(
         result_lines.extend(
             ["", *_render_pruning_mode_comparison_section(comparison.pruning_mode_comparison)]
         )
+
+    if comparison.student_results:
+        result_lines.extend(["", *_render_student_matrix_section(comparison.student_results)])
 
     result_lines.extend(["", *(_render_regressed_labels_section(candidate_eval.regressed_labels))])
     result_lines.extend(_render_top_confusions_section(candidate_eval.top_confusions))

@@ -8,6 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from rulekiln.schemas.classroom import ClassroomConfig, TeacherConfig
 from rulekiln.schemas.pipeline import EvalResult, PairedComparisonSummary, PruningModeComparison
 
 BenchmarkProfileName = Literal["smoke", "standard", "full"]
@@ -22,9 +23,50 @@ class BenchmarkProfileConfig(BaseModel):
     test_cases: int | Literal["all"]
 
 
-class CostSummary(BaseModel):
-    """Token and cost summary for a benchmark run."""
+class StudentEvalSummary(BaseModel):
+    """Per-student evaluation summary for a single strategy."""
 
+    schema_version: Literal["rulekiln.student_eval_summary.v1"] = (
+        "rulekiln.student_eval_summary.v1"
+    )
+    student_id: str
+    macro_f1: float | None = None
+    macro_f1_ci_95: tuple[float, float] | None = None
+    accuracy: float | None = None
+    accuracy_ci_95: tuple[float, float] | None = None
+    malformed_rate: float = 0.0
+    cost_usd: float | None = None
+    latency_p95_ms: float | None = None
+
+
+class PhaseCostBreakdown(BaseModel):
+    """Cost attribution for one pipeline phase."""
+
+    phase: str  # e.g. "instruction_extraction", "cluster_consolidation", "conflict_resolution"
+    model_id: str  # "{provider}/{model}" identifier
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    model_calls: int = 0
+
+
+class StudentCostBreakdown(BaseModel):
+    """Cost attribution for one evaluation student."""
+
+    student_id: str
+    model_id: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+    total_tokens: int = 0
+    estimated_cost_usd: float = 0.0
+    model_calls: int = 0
+
+
+class CostSummary(BaseModel):
+    """Token and cost summary for a benchmark run, with per-phase and per-student breakdowns."""
+
+    schema_version: Literal["rulekiln.cost_summary.v1"] = "rulekiln.cost_summary.v1"
     total_input_tokens: int = 0
     total_output_tokens: int = 0
     total_tokens: int = 0
@@ -35,11 +77,17 @@ class CostSummary(BaseModel):
     judge_cost_usd: float = 0.0
     has_estimated_usage: bool = False
     total_model_calls: int = 0
+    # ── Phase and student breakdowns (populated when classroom config is used) ──
+    by_phase: list[PhaseCostBreakdown] = Field(default_factory=list)
+    by_student: list[StudentCostBreakdown] = Field(default_factory=list)
 
 
 class BenchmarkManifest(BaseModel):
     """Provenance manifest for a benchmark run."""
 
+    schema_version: Literal["rulekiln.benchmark_manifest.v2"] = (
+        "rulekiln.benchmark_manifest.v2"
+    )
     benchmark_name: str
     run_id: str
     created_at: datetime = Field(
@@ -58,6 +106,12 @@ class BenchmarkManifest(BaseModel):
     prompt_hashes: dict[str, str] = Field(default_factory=dict)
     case_counts: dict[str, int] = Field(default_factory=dict)
     cost_summary: CostSummary = Field(default_factory=CostSummary)
+    # ── Classroom / tiered teacher additions (v2) ────────────────────────
+    teacher_config: TeacherConfig | None = None
+    classroom_config: ClassroomConfig | None = None
+    extraction_cache_hits: int = 0
+    extraction_cache_misses: int = 0
+    conflict_resolution_anchor_id: str | None = None
 
 
 class DatasetManifest(BaseModel):
@@ -78,6 +132,9 @@ class DatasetManifest(BaseModel):
 class BenchmarkStrategyComparison(BaseModel):
     """Baseline vs RuleKiln benchmark comparison."""
 
+    schema_version: Literal["rulekiln.strategy_comparison.v2"] = (
+        "rulekiln.strategy_comparison.v2"
+    )
     primary_metric: str
     baseline_eval: EvalResult
     rulekiln_eval: EvalResult
@@ -93,6 +150,8 @@ class BenchmarkStrategyComparison(BaseModel):
     selected_strategy: str
     selection_reason: str
     pruning_mode_comparison: PruningModeComparison | None = None
+    # ── Per-student results (classroom, v2) ──────────────────────────────
+    student_results: dict[str, StudentEvalSummary] = Field(default_factory=dict)
 
 
 class Banking77Example(BaseModel):
