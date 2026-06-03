@@ -40,6 +40,8 @@ def test_pydantic_validation_error_is_terminal() -> None:
         _Model.model_validate({"value": "not-an-int"})
     except ValidationError as exc:
         classification = classify_worker_error(exc)
+    else:
+        raise AssertionError("Expected ValidationError")
 
     assert classification.retryable is False
 

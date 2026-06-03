@@ -4,6 +4,7 @@ baseline and distilled."""
 from __future__ import annotations
 
 import json
+import re
 
 from rulekiln.schemas.pipeline import (
     CaseEvalResult,
@@ -11,6 +12,12 @@ from rulekiln.schemas.pipeline import (
     EvalResult,
     SynthesizedRuleSchema,
 )
+from rulekiln.schemas.task_case import RuleKilnCase
+
+# Sentinel rule ID for failures that cannot be attributed to any rule.
+UNATTRIBUTED_RULE_ID = "__unattributed__"
+
+_ASSERTION_KEY_RE = re.compile(r"^assertion_(\d+)$")
 
 
 class FailureAnalysisResult:
@@ -31,46 +38,109 @@ class FailureAnalysisResult:
         return "\n".join(json.dumps(item) for item in items)
 
     def violated_rule_summary(self) -> dict[str, dict[str, int]]:
-        """Aggregate violation counts per rule ID across all failure classes."""
+        """Aggregate violation and fix counts per rule ID across all failure classes."""
         summary: dict[str, dict[str, int]] = {}
         for failure in self.structured_failures:
+            if failure.failure_class == "fixed":
+                for rule_id in failure.matched_rule_ids:
+                    entry = summary.setdefault(
+                        rule_id,
+                        {
+                            "violated_count": 0,
+                            "broken_count": 0,
+                            "unchanged_wrong_count": 0,
+                            "fixed_count": 0,
+                        },
+                    )
+                    entry["fixed_count"] += 1
             for rule_id in failure.violated_rule_ids:
-                if rule_id not in summary:
-                    summary[rule_id] = {
+                entry = summary.setdefault(
+                    rule_id,
+                    {
                         "violated_count": 0,
                         "broken_count": 0,
                         "unchanged_wrong_count": 0,
-                    }
-                summary[rule_id]["violated_count"] += 1
+                        "fixed_count": 0,
+                    },
+                )
+                entry["violated_count"] += 1
                 if failure.failure_class == "broken":
-                    summary[rule_id]["broken_count"] += 1
+                    entry["broken_count"] += 1
                 elif failure.failure_class == "unchanged_wrong":
-                    summary[rule_id]["unchanged_wrong_count"] += 1
+                    entry["unchanged_wrong_count"] += 1
         return summary
+
+    def build_utility_signals(self) -> dict[str, tuple[int, int]]:
+        """Build rule_id -> (fixed_count, broken_count) for use with prune_rules.
+
+        Excludes the UNATTRIBUTED_RULE_ID sentinel.
+        """
+        summary = self.violated_rule_summary()
+        return {
+            rule_id: (counts.get("fixed_count", 0), counts.get("broken_count", 0))
+            for rule_id, counts in summary.items()
+            if rule_id != UNATTRIBUTED_RULE_ID
+        }
+
+    def unattributed_fraction(self) -> float:
+        """Fraction of non-fixed failures with no real rule attribution."""
+        non_fixed = [
+            f
+            for f in self.structured_failures
+            if f.failure_class in ("broken", "unchanged_wrong")
+        ]
+        if not non_fixed:
+            return 0.0
+        unattributed = sum(
+            1
+            for f in non_fixed
+            if not f.violated_rule_ids or f.violated_rule_ids == [UNATTRIBUTED_RULE_ID]
+        )
+        return unattributed / len(non_fixed)
+
+
+def _build_outcome_to_rule_ids(
+    rules: list[SynthesizedRuleSchema],
+) -> dict[str, list[str]]:
+    """Build outcome_label -> [rule_id, ...] from rule.outcome_conditions."""
+    index: dict[str, list[str]] = {}
+    for rule in rules:
+        if not rule.id:
+            continue
+        for oc in rule.outcome_conditions.values():
+            label = oc.outcome
+            bucket = index.setdefault(label, [])
+            if rule.id not in bucket:
+                bucket.append(rule.id)
+    return index
 
 
 def analyze_failures(
     baseline_eval: EvalResult | None,
     distilled_eval: EvalResult,
     selected_rules: list[SynthesizedRuleSchema] | None = None,
+    cases: list[RuleKilnCase] | None = None,
 ) -> FailureAnalysisResult:
     """Compare baseline vs distilled per-case results and categorize changes.
 
     If selected_rules is provided, maps failed assertion paths to violated rule IDs
     and populates structured_failures with CaseEvaluationFailure records.
+
+    If cases is also provided, uses assertion definitions (type, expected value) to
+    populate failed_assertion_types and perform outcome-based rule attribution via
+    outcome_conditions. Without cases, only the raw assertion key paths are recorded.
     """
     result = FailureAnalysisResult()
 
-    # Build rule output-path → rule ID mapping for eval-to-rule mapping
-    rule_output_path_index: dict[str, str] = {}
+    outcome_to_rule_ids: dict[str, list[str]] = {}
     if selected_rules:
-        for rule in selected_rules:
-            for _oc in rule.outcome_conditions.values():
-                # outcome_conditions may have paths embedded in the "when" conditions
-                pass
-            # Primary mapping: rule topic used as fallback key
-            if rule.id:
-                rule_output_path_index[rule.topic.lower()] = rule.id
+        outcome_to_rule_ids = _build_outcome_to_rule_ids(selected_rules)
+
+    case_map: dict[str, RuleKilnCase] = {}
+    if cases:
+        case_map = {c.id: c for c in cases}
+
+    want_structured = selected_rules is not None
 
     if baseline_eval is None:
         for r in distilled_eval.case_results:
@@ -79,7 +149,10 @@ def analyze_failures(
                 result.unchanged_passing.append(entry)
             else:
                 result.unchanged_failing.append(entry)
-                _maybe_add_structured_failure(result, r, "unchanged_wrong", rule_output_path_index)
+                if want_structured:
+                    _add_structured_failure(
+                        result, r, "unchanged_wrong", outcome_to_rule_ids, case_map
+                    )
         return result
 
     baseline_map: dict[str, CaseEvalResult] = {r.case_id: r for r in baseline_eval.case_results}
@@ -97,50 +170,92 @@ def analyze_failures(
                 result.unchanged_passing.append(entry)
             else:
                 result.unchanged_failing.append(entry)
-                if d:
-                    _maybe_add_structured_failure(
-                        result, d, "unchanged_wrong", rule_output_path_index
+                if d and want_structured:
+                    _add_structured_failure(
+                        result, d, "unchanged_wrong", outcome_to_rule_ids, case_map
                     )
         elif d is None:
             result.unchanged_failing.append(entry)
         elif not b.passed and d.passed:
             result.fixed.append(entry)
-            _maybe_add_structured_failure(result, d, "fixed", rule_output_path_index)
+            if want_structured:
+                _add_structured_failure(result, d, "fixed", outcome_to_rule_ids, case_map)
         elif b.passed and not d.passed:
             result.broken.append(entry)
-            _maybe_add_structured_failure(result, d, "broken", rule_output_path_index)
+            if want_structured:
+                _add_structured_failure(result, d, "broken", outcome_to_rule_ids, case_map)
         elif d.passed:
             result.unchanged_passing.append(entry)
         else:
             result.unchanged_failing.append(entry)
-            _maybe_add_structured_failure(result, d, "unchanged_wrong", rule_output_path_index)
+            if want_structured:
+                _add_structured_failure(result, d, "unchanged_wrong", outcome_to_rule_ids, case_map)
 
     return result
 
 
-def _maybe_add_structured_failure(
+def _add_structured_failure(
     result: FailureAnalysisResult,
     case_result: CaseEvalResult,
     failure_class: str,
-    rule_output_path_index: dict[str, str],
+    outcome_to_rule_ids: dict[str, list[str]],
+    case_map: dict[str, RuleKilnCase],
 ) -> None:
-    """Build a CaseEvaluationFailure by mapping failed assertion paths to rules."""
+    """Build a CaseEvaluationFailure by mapping failed assertion paths to rules.
+
+    For 'fixed' class: populates matched_rule_ids with rules governing expected outcomes.
+    For 'broken'/'unchanged_wrong': populates violated_rule_ids and failed_assertion_types.
+    Adds UNATTRIBUTED_RULE_ID sentinel when a non-fixed failure has no rule match.
+    """
+    from typing import Literal
+
+    fc: Literal["fixed", "broken", "unchanged_wrong"] = failure_class  # type: ignore[assignment]
+    case = case_map.get(case_result.case_id)
+
+    if failure_class == "fixed":
+        matched: list[str] = []
+        if case is not None:
+            for assertion in case.evaluation.assertions:
+                label = str(assertion.value) if assertion.value is not None else ""
+                for rule_id in outcome_to_rule_ids.get(label, []):
+                    if rule_id not in matched:
+                        matched.append(rule_id)
+        result.structured_failures.append(
+            CaseEvaluationFailure(
+                case_id=case_result.case_id,
+                split="",
+                failure_class=fc,
+                matched_rule_ids=matched,
+                violated_rule_ids=[],
+                failed_assertion_paths=[],
+                failed_assertion_types=[],
+            )
+        )
+        return
+
     failed_paths: list[str] = [
         path for path, score in case_result.assertion_scores.items() if score < 1.0
     ]
     failed_types: list[str] = []
-
-    # Map failed paths to violated rules
     violated: list[str] = []
+
     for path in failed_paths:
-        # Direct path match
-        rule_id = rule_output_path_index.get(path)
-        if rule_id and rule_id not in violated:
-            violated.append(rule_id)
+        m = _ASSERTION_KEY_RE.match(path)
+        if m and case is not None:
+            idx = int(m.group(1))
+            assertions = case.evaluation.assertions
+            if idx < len(assertions):
+                assertion = assertions[idx]
+                atype = assertion.type
+                if atype not in failed_types:
+                    failed_types.append(atype)
+                label = str(assertion.value) if assertion.value is not None else ""
+                for rule_id in outcome_to_rule_ids.get(label, []):
+                    if rule_id not in violated:
+                        violated.append(rule_id)
 
-    from typing import Literal
-
-    fc: Literal["fixed", "broken", "unchanged_wrong"] = failure_class  # type: ignore[assignment]
+    if not violated and failed_paths:
+        violated = [UNATTRIBUTED_RULE_ID]
 
     result.structured_failures.append(
         CaseEvaluationFailure(

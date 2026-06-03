@@ -102,7 +102,7 @@ async def get_job_eval_report(
             accuracy=r.accuracy,
             macro_f1=r.macro_f1,
             weighted_case_score=r.weighted_case_score,
-            malformed_output_rate=r.malformed_output_rate,
+            malformed_output_rate=r.malformed_output_rate or 0.0,
             per_outcome_precision=dict(r.per_outcome_precision or {}),
             per_outcome_recall=dict(r.per_outcome_recall or {}),
             confusion_matrix={k: dict(v) for k, v in (r.confusion_matrix or {}).items()},

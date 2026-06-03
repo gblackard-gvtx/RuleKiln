@@ -8,7 +8,7 @@
 
 A prompt compiler that turns labelled cases into tested, versioned, auditable system prompts.
 
-RuleKiln runs a full distillation pipeline: it extracts micro-rules from your cases, clusters them into coherent groups, synthesises rule sets, reviews each rule for logical conflicts, prunes the rule set to fit token and quality budgets, compiles deterministic prompts, evaluates both DBSCAN and HDBSCAN strategies against your cases, applies quality gates, selects the best strategy, and surfaces the winner as a ready-to-use system prompt with a full MLflow audit trail.
+RuleKiln runs a full distillation pipeline: it extracts micro-rules from your cases, clusters them into coherent groups, synthesises rule sets, runs a static linguistic review of each rule, prunes the rule set to fit token and quality budgets, compiles deterministic prompts, evaluates both DBSCAN and HDBSCAN strategies against your cases, applies an empirical closed-loop refinement pass (paper Phase 3), selects the best strategy, and surfaces the winner as a ready-to-use system prompt with a full MLflow audit trail.
 
 ---
 
@@ -117,14 +117,16 @@ That makes RuleKiln a practical prompt-hardening layer for local and edge AI sys
 
 ## Quick start
 
+Canonical setup path for both local workflows: [docs/dev/docker.md](docs/dev/docker.md).
+
 ### Option A — Native Python
 
 **Requirements**: Python 3.13+, [uv](https://docs.astral.sh/uv/), PostgreSQL 14+, MLflow server
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/your-org/rulekiln.git
-cd rulekiln
+git clone https://github.com/gblackard-gvtx/RuleKiln.git
+cd RuleKiln
 uv sync --extra dev
 
 # 2. Configure environment
@@ -151,8 +153,8 @@ API docs available at <http://localhost:8000/docs>.
 
 ```bash
 # 1. Clone
-git clone https://github.com/your-org/rulekiln.git
-cd rulekiln
+git clone https://github.com/gblackard-gvtx/RuleKiln.git
+cd RuleKiln
 
 # 2. Start the stack (copies .env.example → .env automatically on first run)
 ./scripts/dev-up.sh
@@ -170,6 +172,14 @@ This starts:
 ```bash
 # Stop the stack
 ./scripts/dev-down.sh
+```
+
+### Post-setup smoke test (both options)
+
+```bash
+DATABASE_URL="sqlite+aiosqlite://" \
+MLFLOW_TRACKING_URI="file:///tmp/mlflow-ci" \
+uv run pytest -m "not external" --tb=short -q
 ```
 
 ---
@@ -211,8 +221,9 @@ Granular resume coverage for costly stages:
 
 - `extracting_rules`: per case
 - `synthesizing_rules`: per cluster
-- `reviewing_rule_conflicts`: per synthesized rule
+- `reviewing_rule_conflicts`: per synthesized rule (static review)
 - `evaluating_baseline` / `evaluating_distilled`: per case
+- `refining_rules`: per-iteration artifact files checkpoint loop progress
 
 ### Provider profiles
 
@@ -358,7 +369,7 @@ GET /v1/jobs/{job_id}
 
 Common status values: `pending`, `running`, `waiting_for_retry`, `failed_retryable`, `failed_terminal`, `completed`.
 
-Full pipeline stage order (`dbos`): `validating_project` → `extracting_rules` → `embedding_rules` → `clustering_rules` → `synthesizing_rules` → `reviewing_rule_conflicts` → `pruning_rules` → `compiling_prompts` → `evaluating_baseline` → `evaluating_distilled` → `selecting_strategy` → `analyzing_failures` → `checking_quality_gates` → `logging_artifacts` → `exporting_artifacts` → `completed`.
+Full pipeline stage order (`dbos`): `validating_project` → `extracting_rules` → `embedding_rules` → `clustering_rules` → `synthesizing_rules` → `reviewing_rule_conflicts` (static rule review) → `pruning_rules` → `compiling_prompts` → `evaluating_baseline` → `evaluating_distilled` → `selecting_strategy` → `analyzing_failures` → `refining_rules` (closed-loop conflict resolution, flag-toggled) → `checking_quality_gates` → `logging_artifacts` → `exporting_artifacts` → `completed`.
 
 ### Retrieve outputs (once `status == "completed"`)
 
@@ -425,6 +436,22 @@ uv run pytest -m external
 
 ---
 
+## Phase 2 strategy expansion
+
+RuleKiln now evaluates a wider strategy set beyond the legacy baseline plus DBSCAN and HDBSCAN.
+
+- Baseline scaffold: `baseline_scaffold`
+- Deterministic few-shot baselines: `baseline_few_shot_k3`, `baseline_few_shot_k5`
+- Embedding-only baselines: `embedding_centroid`, `embedding_knn_k1`, `embedding_knn_k3`, `embedding_knn_k5`
+- Retrieval few-shot baseline: `retrieval_few_shot_k5`
+- Distilled strategies: `dbscan`, `hdbscan`
+
+Few-shot prompts are assembled deterministically by pipeline code from training examples. They are not authored by teacher or student models at runtime.
+
+For implementation and operator details, see [docs/dev/phase2.md](docs/dev/phase2.md).
+
+---
+
 ## Artifact layout
 
 Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
@@ -434,9 +461,23 @@ Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
   task.yaml
   cases.normalized.jsonl
   outputs/
+    baseline_prompt.md
+    baseline_scaffold_prompt.md
+    baseline_few_shot_k3_prompt.md
+    baseline_few_shot_k5_prompt.md
     distilled_prompt_dbscan.md
     distilled_prompt_hdbscan.md
     selected_distilled_prompt.md
+    baseline_scaffold_eval.json
+    baseline_few_shot_k3_eval.json
+    baseline_few_shot_k5_eval.json
+    embedding_centroid_eval.json
+    embedding_knn_k1_eval.json
+    embedding_knn_k3_eval.json
+    embedding_knn_k5_eval.json
+    retrieval_few_shot_k5_eval.json
+    dbscan_eval.json
+    hdbscan_eval.json
     rules_dbscan.jsonl
     rules_hdbscan.jsonl
     eval_report.json
@@ -452,6 +493,8 @@ Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
     manifest.json
 ```
 
+`strategy_comparison.json` is the source of truth for the evaluated strategy set (`strategy_evals`, `strategy_gates`, `strategy_prompt_tokens`, `strategy_metadata`) and selected winner.
+
 ---
 
 ## Benchmark examples
@@ -462,6 +505,20 @@ Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
 ---
 
 ## Development
+
+Use Make command aliases for a single command surface, or run the raw commands directly.
+
+| Target | Runs | Typical use |
+|--------|------|-------------|
+| `make lint` | `uv run ruff check src/ tests/` | Verify lint before commit/CI |
+| `make format` | `uv run ruff format src/ tests/` | Apply repo formatting |
+| `make typecheck` | `uv run pyright` | Verify static typing |
+| `make test` | Offline non-external test suite | Main local validation path |
+| `make test-ui` | Offline UI test subset | Validate UI routes/templates |
+| `make ci-local` | `lint + typecheck + test` | One-command pre-push check |
+| `make docker-up` | `./scripts/dev-up.sh` | Start local Docker stack |
+| `make docker-down` | `./scripts/dev-down.sh` | Stop local Docker stack |
+| `make benchmark-smoke` | Dataset presence checks | Quick benchmark fixture sanity |
 
 ```bash
 # Lint
@@ -478,6 +535,7 @@ uv run alembic upgrade head
 ```
 
 See [docs/dev/docker.md](docs/dev/docker.md) for the full Docker Compose development guide.
+See [docs/dev/phase2.md](docs/dev/phase2.md) for detailed Phase 2 strategy and artifact documentation.
 See [docs/reference/python_module_reference.md](docs/reference/python_module_reference.md) for a full module-by-module model/function reference.
 See [docs/README.md](docs/README.md) for the full documentation map and canonical task/spec pointers.
 

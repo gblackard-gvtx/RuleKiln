@@ -6,6 +6,7 @@ from rulekiln.providers.contracts import (
     ProviderNotImplementedError,
 )
 from rulekiln.providers.rate_limiter import get_rate_limiter
+from rulekiln.schemas.usage import EmbeddingResult
 
 
 class _RateLimitedEmbeddingClient(EmbeddingClient):
@@ -19,7 +20,7 @@ class _RateLimitedEmbeddingClient(EmbeddingClient):
         *,
         texts: list[str],
         config: ProviderConfig,
-    ) -> list[list[float]]:
+    ) -> EmbeddingResult:
         limiter = get_rate_limiter()
         await limiter.acquire(config)
         try:

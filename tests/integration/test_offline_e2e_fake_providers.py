@@ -5,6 +5,7 @@ Exercises the full pipeline orchestration in-process with SQLite + fake chat/emb
 
 import json
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -103,7 +104,7 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(
@@ -144,9 +145,9 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
     assert db_job.stage == PipelineStage.COMPLETED
     assert db_job.mlflow_run_id is not None
 
-    import mlflow  # type: ignore[import-untyped]
+    from mlflow.tracking.client import MlflowClient  # type: ignore[import-untyped]
 
-    client = mlflow.tracking.MlflowClient(tracking_uri=fake_settings.mlflow_tracking_uri)
+    client = MlflowClient(tracking_uri=fake_settings.mlflow_tracking_uri)
     run = client.get_run(db_job.mlflow_run_id)
 
     required_params = {
@@ -194,10 +195,19 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
         "task.yaml",
         "cases.normalized.jsonl",
         "outputs/baseline_prompt.md",
+        "outputs/baseline_scaffold_prompt.md",
+        "outputs/baseline_scaffold_eval.json",
         "outputs/distilled_prompt_dbscan.md",
         "outputs/distilled_prompt_hdbscan.md",
         "outputs/eval_report.json",
         "outputs/strategy_comparison.json",
+        "outputs/confusion_matrix.csv",
+        "outputs/per_label_metrics.csv",
+        "outputs/top_confusions.md",
+        "outputs/paired_comparison/fixed.jsonl",
+        "outputs/paired_comparison/broken.jsonl",
+        "outputs/paired_comparison/unchanged.jsonl",
+        "outputs/paired_comparison/summary.json",
         "metadata/settings_snapshot.json",
         "metadata/manifest.json",
     ]
@@ -210,9 +220,45 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
     for relative_path in required_artifacts:
         assert relative_path in manifest_entries
 
+    strategy_comparison = json.loads(
+        (artifact_root / "outputs" / "strategy_comparison.json").read_text(encoding="utf-8")
+    )
+    strategy_evals = strategy_comparison.get("strategy_evals", {})
+    assert isinstance(strategy_evals, dict)
+    assert "baseline_scaffold" in strategy_evals
+    assert strategy_comparison.get("selected_strategy_id")
+    assert strategy_comparison.get("selected_strategy_family")
+    assert isinstance(strategy_comparison.get("best_by_family"), dict)
+    assert isinstance(strategy_comparison.get("paired_comparison"), dict)
+
     selected_prompt_path = artifact_root / "outputs" / "selected_distilled_prompt.md"
     if selected_prompt_path.exists():
         assert "outputs/selected_distilled_prompt.md" in manifest_entries
+
+    # Rule provenance artifacts should exist for distilled strategies
+    selected_strategy_id = strategy_comparison.get("selected_strategy_id", "")
+    if selected_strategy_id in ("dbscan", "hdbscan"):
+        prov_json_path = artifact_root / "outputs" / "rule_provenance.json"
+        prov_md_path = artifact_root / "outputs" / "rule_provenance.md"
+        assert prov_json_path.exists(), "rule_provenance.json missing for distilled strategy"
+        assert prov_md_path.exists(), "rule_provenance.md missing for distilled strategy"
+
+        provenance = json.loads(prov_json_path.read_text(encoding="utf-8"))
+        assert provenance.get("schema_version") == "rulekiln.rule_provenance.v1"
+        assert provenance.get("job_id") == job_id
+        assert isinstance(provenance.get("rules"), list)
+
+        # Every rule must have required fields
+        for rec in provenance["rules"]:
+            assert "rule_id" in rec
+            assert "topic" in rec
+            assert "support_count" in rec
+            assert "attribution_method" in rec
+            assert rec["attribution_method"] in ("associative", "causal")
+
+    # strategy_comparison.json should carry pruning_mode_comparison when present
+    # (it may be None for baseline-only runs; just check the key is present)
+    assert "pruning_mode_comparison" in strategy_comparison
 
 
 @pytest.mark.asyncio
@@ -225,7 +271,7 @@ async def test_pipeline_with_baseline_runs(db_factory, fake_settings, monkeypatc
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(
@@ -277,7 +323,7 @@ async def test_compile_phase_resumes_extraction_by_case(
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(
@@ -366,7 +412,7 @@ async def test_compile_phase_resumes_synthesis_by_cluster(
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(
@@ -554,7 +600,7 @@ async def test_compile_phase_resumes_conflict_review_by_rule(
         profile_name: str,
         model: str,
         *,
-        role: str,
+        role: Literal["teacher", "student", "embedding", "judge"],
         settings: AppSettings,
     ) -> ProviderConfig:
         return _resolver.resolve_provider_config(

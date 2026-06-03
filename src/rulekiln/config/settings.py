@@ -64,6 +64,14 @@ class QualityGateDefaults(BaseModel):
     require_human_approval: bool = True
 
 
+class EvaluationSettings(BaseModel):
+    """Evaluation metric settings including bootstrap CI controls."""
+
+    bootstrap_enabled: bool = True
+    bootstrap_iterations: int = 1000
+    bootstrap_seed_offset: int = 1701
+
+
 class AppSettings(BaseSettings):
     """Application-wide settings loaded from environment / .env file."""
 
@@ -105,6 +113,11 @@ class AppSettings(BaseSettings):
     default_quality_gate: QualityGateDefaults = Field(
         default_factory=QualityGateDefaults,
         alias="DEFAULT_QUALITY_GATE",
+    )
+
+    evaluation: EvaluationSettings = Field(
+        default_factory=EvaluationSettings,
+        alias="EVALUATION",
     )
 
     provider_profiles: dict[str, ProviderProfile] = Field(default_factory=dict)

@@ -14,6 +14,51 @@
 </div>
 {% endif %}
 
+{% if selected_strategy_id or best_baseline_strategy_id or best_distilled_strategy_id or paired_summary %}
+<div class="card mb-6">
+  <h2 class="text-lg font-semibold mb-3">Strategy Comparison</h2>
+  <dl class="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
+    <dt class="text-gray-500">Selected strategy</dt>
+    <dd>{{ selected_strategy_id if selected_strategy_id else "—" }}</dd>
+    <dt class="text-gray-500">Selected family</dt>
+    <dd>{{ selected_strategy_family if selected_strategy_family else "—" }}</dd>
+    <dt class="text-gray-500">Best baseline strategy</dt>
+    <dd>{{ best_baseline_strategy_id if best_baseline_strategy_id else "—" }}</dd>
+    <dt class="text-gray-500">Best distilled strategy</dt>
+    <dd>{{ best_distilled_strategy_id if best_distilled_strategy_id else "—" }}</dd>
+
+    {% if paired_summary %}
+    <dt class="text-gray-500">Paired fixed</dt>
+    <dd>{{ paired_summary.fixed_count if paired_summary.fixed_count is not none else "—" }}</dd>
+    <dt class="text-gray-500">Paired broken</dt>
+    <dd>{{ paired_summary.broken_count if paired_summary.broken_count is not none else "—" }}</dd>
+    <dt class="text-gray-500">Unchanged correct</dt>
+    <dd>{{ paired_summary.unchanged_correct_count if paired_summary.unchanged_correct_count is not none else "—" }}</dd>
+    <dt class="text-gray-500">Unchanged wrong</dt>
+    <dd>{{ paired_summary.unchanged_wrong_count if paired_summary.unchanged_wrong_count is not none else "—" }}</dd>
+    <dt class="text-gray-500">Net fix rate</dt>
+    <dd>
+      {% if paired_summary.net_fix_rate is not none %}
+        {{ "%+.2f" | format(paired_summary.net_fix_rate * 100) }}%
+      {% elif paired_summary.net_fix_rate_status %}
+        {{ paired_summary.net_fix_rate_status }}
+      {% else %}
+        —
+      {% endif %}
+    </dd>
+    <dt class="text-gray-500">Overall net fix rate</dt>
+    <dd>
+      {% if paired_summary.overall_net_fix_rate is not none %}
+        {{ "%+.2f" | format(paired_summary.overall_net_fix_rate * 100) }}%
+      {% else %}
+        —
+      {% endif %}
+    </dd>
+    {% endif %}
+  </dl>
+</div>
+{% endif %}
+
 {% if eval_runs %}
 <div class="card p-0 overflow-hidden">
   <table class="data-table">

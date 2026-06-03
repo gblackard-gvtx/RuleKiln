@@ -2,8 +2,8 @@
 
 ## 📚 Core Principles
 
-**Python Version**: 3.12+ (Modern syntax only, no backwards compatibility)
-**Required Libraries**: Pydantic 2.0+, SQLAlchemy 2.0+, SQLModel, Structlog
+**Python Version**: 3.13+ (Modern syntax only, no backwards compatibility)
+**Required Libraries**: Pydantic 2.7+, SQLAlchemy 2.0+, Structlog 24.2+
 
 ### Essential Rules
 
@@ -12,6 +12,19 @@
 3. **No Magic Strings**: Use object attributes (`.property`) instead of dictionary access (`["key"]`)
 4. **Modern Python**: Use `str | None` not `Optional[str]`, `list[str]` not `List[str]`
 5. **No Type Shortcuts**: Create proper types instead of using `# pyright: ignore` or `Any`
+
+### Architecture Change Guardrail
+
+Do not introduce new architecture unless it is directly tied to benchmark evidence, reproducibility requirements, or operational correctness.
+
+## ✅ Before Opening a PR (Coding Agent Checklist)
+
+- [ ] Run `uv run ruff check src/ tests/`
+- [ ] Run `uv run pyright`
+- [ ] Run `DATABASE_URL="sqlite+aiosqlite://" MLFLOW_TRACKING_URI="file:///tmp/mlflow-ci" uv run pytest -m "not external" --tb=short -q`
+- [ ] Update docs when setup, command, dependency, or behavior contracts change.
+- [ ] Validate there are no placeholder URLs or stale dependency references.
+- [ ] Do not add new architecture unless tied to benchmark evidence, reproducibility, or operational correctness.
 
 ---
 
@@ -102,7 +115,7 @@ from typing import Union, Optional, List, Dict  # ❌ Don't import these
 def handle_data(data: Union[str, int]) -> Optional[bool]:  # ❌ Use | instead
 ```
 
-### Modern Python 3.12+ Syntax
+### Modern Python 3.13+ Syntax
 
 - Use `str | None` not `Optional[str]`
 - Use `list[str]` not `List[str]`
@@ -398,10 +411,10 @@ class APIRequest(BaseModel):
 
 ```python
 # ❌ VULNERABLE to SQL injection
-query = f"SELECT * FROM users WHERE id = {user_id}"  # ❌ Use SQLModel instead
+query = f"SELECT * FROM users WHERE id = {user_id}"  # ❌ Use SQLAlchemy select() instead
 
 # ✅ SAFE - Use parameterized queries
-query = select(User).where(User.id == user_id)  # ✅ SQLModel safe
+query = select(User).where(User.id == user_id)  # ✅ SQLAlchemy parameterized query
 
 # ❌ EXTREMELY DANGEROUS
 def process_user_data(raw_input: str):
@@ -416,7 +429,7 @@ def evaluate_expression(expr: str):
 
 - Always use Pydantic validators for data sanitization
 - Never use `eval()` or `exec()` with user input
-- Use parameterized queries (SQLModel), never string concatenation
+- Use parameterized queries (SQLAlchemy `select()`), never string concatenation
 - Validate file uploads (filename, content type, size)
 - Mask sensitive data in URLs/logs
 - Store secrets in environment variables, never in code
@@ -449,7 +462,7 @@ Before submitting code, verify:
 - [ ] No `# pyright: ignore` shortcuts to avoid creating proper types
 - [ ] No `Any` usage to bypass proper typing
 - [ ] All function signatures have explicit type annotations
-- [ ] Used modern Python 3.12+ syntax (`str | None` not `Optional[str]`)
+- [ ] Used modern Python 3.13+ syntax (`str | None` not `Optional[str]`)
 
 ### Data Structure
 - [ ] Used dot notation (`.property`) instead of dict access (`["key"]`)
@@ -483,7 +496,7 @@ This document consolidates key standards. For detailed information, see:
 ## 🎯 Quick Reference Summary
 
 **Core Principles:**
-1. Modern Python Only - Use Python 3.12+ features, no backwards compatibility
+1. Modern Python Only - Use Python 3.13+ features, no backwards compatibility
 2. Type Safety First - Explicit typing for complex objects
 3. No Magic Strings - Use object attributes over dictionary access
 4. Smart Data Structures - Use appropriate types for complexity level

@@ -39,6 +39,17 @@ Before opening a PR:
 - Update docs for user-facing changes.
 - Include examples when adding task/case functionality.
 - Avoid committing full benchmark datasets unless explicitly approved.
+- Do not add new architecture unless tied to benchmark evidence, reproducibility, or operational correctness.
+
+### Before opening a PR checklist (coding agents)
+
+- [ ] Run `uv run ruff check src/ tests/`
+- [ ] Run `uv run pyright`
+- [ ] Run `DATABASE_URL="sqlite+aiosqlite://" MLFLOW_TRACKING_URI="file:///tmp/mlflow-ci" uv run pytest -m "not external" --tb=short -q`
+- [ ] Confirm docs and command references are updated for user-facing setup or workflow changes.
+- [ ] Confirm no placeholder URLs remain in edited docs.
+
+For coding standards and typing/security conventions, follow [AGENTS.md](AGENTS.md).
 
 ## Commit Style
 

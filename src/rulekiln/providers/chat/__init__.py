@@ -8,6 +8,7 @@ from rulekiln.providers.contracts import (
     ProviderNotImplementedError,
 )
 from rulekiln.providers.rate_limiter import get_rate_limiter
+from rulekiln.schemas.usage import ChatCompletionResult
 
 
 class _RateLimitedChatClient(ChatModelClient):
@@ -23,7 +24,7 @@ class _RateLimitedChatClient(ChatModelClient):
         user_prompt: str,
         output_schema: type[BaseModel],
         config: ProviderConfig,
-    ) -> BaseModel:
+    ) -> ChatCompletionResult:
         limiter = get_rate_limiter()
         await limiter.acquire(config)
         try:

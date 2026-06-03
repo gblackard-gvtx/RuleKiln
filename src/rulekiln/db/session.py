@@ -2,15 +2,20 @@
 
 from collections.abc import AsyncGenerator
 
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
 
 from rulekiln.config.settings import get_settings
 
-_engine = None
+_engine: AsyncEngine | None = None
 _session_factory: async_sessionmaker[AsyncSession] | None = None
 
 
-def get_engine() -> object:
+def get_engine() -> AsyncEngine:
     """Return the async engine, creating it on first call."""
     global _engine  # noqa: PLW0603
     if _engine is None:
@@ -29,7 +34,7 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
     if _session_factory is None:
         engine = get_engine()
         _session_factory = async_sessionmaker(
-            bind=engine,  # pyright: ignore[reportArgumentType]
+            bind=engine,
             class_=AsyncSession,
             expire_on_commit=False,
         )

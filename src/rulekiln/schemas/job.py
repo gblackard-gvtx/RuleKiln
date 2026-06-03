@@ -2,6 +2,7 @@
 
 from pydantic import BaseModel, model_validator
 
+from rulekiln.schemas.classroom import ClassroomConfig, TeacherConfig
 from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask
 
 # Legacy top-level fields that strict mode rejects
@@ -21,6 +22,10 @@ class DistillationRequest(BaseModel):
     judge: ModelRoute | None = None
     baseline_prompt: str | None = None
     metric: str | None = None
+    # ── Optional tiered/classroom configs (Spec 2) ───────────────────────
+    # When absent the pipeline falls back to flat teacher/student ModelRoutes.
+    teacher_config: TeacherConfig | None = None
+    classroom_config: ClassroomConfig | None = None
 
     model_config = {"extra": "forbid"}
 

@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from rulekiln.db.models import DistillationJob, ModelCallEvent
 from rulekiln.schemas.usage import ModelCallRecord
 
+type RoleUsageBucket = dict[str, int | float]
+
 
 def _record_to_event(record: ModelCallRecord, job_id: str) -> ModelCallEvent:
     usage = record.usage
@@ -131,7 +133,7 @@ async def summarize_model_call_events(
     total_cost = Decimal("0")
     has_estimated_usage = False
 
-    by_role: dict[str, dict[str, object]] = {}
+    by_role: dict[str, RoleUsageBucket] = {}
 
     for event in events:
         input_tokens = event.input_tokens or 0

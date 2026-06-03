@@ -211,18 +211,24 @@ def build_demo_eval_metrics(
     }
 
 
+def _as_float(value: object) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return 0.0
+
+
 def build_token_cost_metrics(summary: dict[str, object]) -> dict[str, float]:
     """Build a flat metrics dict from a token/cost summary for MLflow logging."""
     return {
-        "tokens.total": float(summary.get("total_tokens", 0)),
-        "tokens.input": float(summary.get("total_input_tokens", 0)),
-        "tokens.output": float(summary.get("total_output_tokens", 0)),
-        "cost.total_usd": float(summary.get("estimated_total_cost_usd", 0.0)),
-        "cost.teacher_usd": float(summary.get("teacher_cost_usd", 0.0)),
-        "cost.student_usd": float(summary.get("student_cost_usd", 0.0)),
-        "cost.embedding_usd": float(summary.get("embedding_cost_usd", 0.0)),
-        "cost.judge_usd": float(summary.get("judge_cost_usd", 0.0)),
-        "model_calls.total": float(summary.get("total_model_calls", 0)),
+        "tokens.total": _as_float(summary.get("total_tokens", 0)),
+        "tokens.input": _as_float(summary.get("total_input_tokens", 0)),
+        "tokens.output": _as_float(summary.get("total_output_tokens", 0)),
+        "cost.total_usd": _as_float(summary.get("estimated_total_cost_usd", 0.0)),
+        "cost.teacher_usd": _as_float(summary.get("teacher_cost_usd", 0.0)),
+        "cost.student_usd": _as_float(summary.get("student_cost_usd", 0.0)),
+        "cost.embedding_usd": _as_float(summary.get("embedding_cost_usd", 0.0)),
+        "cost.judge_usd": _as_float(summary.get("judge_cost_usd", 0.0)),
+        "model_calls.total": _as_float(summary.get("total_model_calls", 0)),
     }
 
 

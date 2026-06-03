@@ -101,6 +101,44 @@
     </table>
   </div>
 
+  {# ── Teacher routing ─────────────────────────────────────── #}
+  {% if preview.teacher_routing %}
+  <div class="card mb-4">
+    <h2 class="text-lg font-semibold mb-3">Teacher Routing</h2>
+    <p class="text-xs text-gray-500 mb-3">
+      Default: <span class="font-mono">{{ preview.teacher_routing.default_profile }} /
+      {{ preview.teacher_routing.default_model }}</span>
+    </p>
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Phase</th>
+          <th>Profile</th>
+          <th>Model</th>
+          <th>Source</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for phase in preview.teacher_routing.phases %}
+        <tr>
+          <td>{{ phase.phase_label }}</td>
+          <td class="font-mono text-sm">{{ phase.profile_name }}</td>
+          <td class="font-mono text-sm">{{ phase.model_id }}</td>
+          <td>
+            {% if phase.is_override %}
+            <span class="bg-indigo-100 text-indigo-700 text-xs font-medium
+                         px-2 py-0.5 rounded">override</span>
+            {% else %}
+            <span class="text-gray-400 text-xs">inherits default</span>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
   {# ── Estimated calls ─────────────────────────────────────── #}
   <div class="card mb-6">
     <h2 class="text-lg font-semibold mb-3">Estimated API Calls</h2>

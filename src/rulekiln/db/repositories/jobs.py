@@ -149,6 +149,19 @@ async def bulk_insert_rule_clusters(session: AsyncSession, clusters: list[RuleCl
     await session.commit()
 
 
+async def get_rule_clusters_for_job(
+    session: AsyncSession, job_id: str, strategy: str
+) -> list[RuleCluster]:
+    """Return all rule clusters for a job+strategy (for provenance cluster_id lookup)."""
+    result = await session.execute(
+        select(RuleCluster).where(
+            RuleCluster.job_id == job_id,
+            RuleCluster.strategy == strategy,
+        )
+    )
+    return list(result.scalars().all())
+
+
 # ── Synthesized rules ─────────────────────────────────────────
 
 
@@ -521,4 +534,6 @@ async def recover_expired_leases(
     )
 
     await session.commit()
-    return (retried.rowcount, failed.rowcount)
+    retried_count = int(getattr(retried, "rowcount", 0) or 0)
+    failed_count = int(getattr(failed, "rowcount", 0) or 0)
+    return (retried_count, failed_count)

@@ -16,7 +16,8 @@ as idempotency guards during incremental migration.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -31,24 +32,28 @@ except Exception:  # pragma: no cover - DBOS is optional in some local test envs
     DBOS = None  # type: ignore[assignment]
     SetWorkflowID = None  # type: ignore[assignment]
 
-def _workflow_decorator(name: str) -> Callable[[Callable[..., object]], Callable[..., object]]:
+
+type WorkflowFunc = Callable[[str, dict[str, object]], Coroutine[object, object, None]]
+
+
+def _workflow_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
     if DBOS is None:
 
-        def _noop(func: Callable[..., object]) -> Callable[..., object]:
+        def _noop(func: WorkflowFunc) -> WorkflowFunc:
             return func
 
         return _noop
-    return DBOS.workflow(name=name)
+    return cast(Callable[[WorkflowFunc], WorkflowFunc], DBOS.workflow(name=name))
 
 
-def _step_decorator(name: str) -> Callable[[Callable[..., object]], Callable[..., object]]:
+def _step_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
     if DBOS is None:
 
-        def _noop(func: Callable[..., object]) -> Callable[..., object]:
+        def _noop(func: WorkflowFunc) -> WorkflowFunc:
             return func
 
         return _noop
-    return DBOS.step(name=name, retries_allowed=False)
+    return cast(Callable[[WorkflowFunc], WorkflowFunc], DBOS.step(name=name, retries_allowed=False))
 
 
 async def _await_if_needed[T](value: T | Awaitable[T]) -> T:

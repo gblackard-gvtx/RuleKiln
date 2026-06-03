@@ -25,9 +25,9 @@ def _settings(
     return AppSettings(
         DATABASE_URL="postgresql+asyncpg://x:y@localhost/db",
         MLFLOW_TRACKING_URI="http://localhost:5000",
-        default_provider_rate_limit_rpm=rpm,
-        default_provider_rate_limit_tpm=tpm,
-        default_provider_max_concurrency=concurrency,
+        DEFAULT_PROVIDER_RATE_LIMIT_RPM=rpm,
+        DEFAULT_PROVIDER_RATE_LIMIT_TPM=tpm,
+        DEFAULT_PROVIDER_MAX_CONCURRENCY=concurrency,
         provider_profiles=default_profiles,
     )
 

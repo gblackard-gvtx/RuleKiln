@@ -3,10 +3,10 @@
 import pytest
 
 from rulekiln.schemas.pipeline import CaseEvalResult, EvalResult
-from rulekiln.schemas.task_case import EvaluationSpec, RuleKilnCase, RuleKilnTask
+from rulekiln.schemas.task_case import EvaluationSpec, RuleKilnCase, RuleKilnTask, TaskMode
 
 
-def _task(mode: str = "classification") -> RuleKilnTask:
+def _task(mode: TaskMode = "classification") -> RuleKilnTask:
     return RuleKilnTask(
         task_id="t1",
         task_name="T",
@@ -22,11 +22,10 @@ def _case(
     return RuleKilnCase(
         id=case_id,
         task_mode="classification",
-        split="train",
+        split="golden" if golden else "train",
         input={"q": "?"},
         expected=expected,
         evaluation=EvaluationSpec(assertions=[]),
-        is_golden=golden,
         weight=weight,
     )
 
@@ -56,7 +55,31 @@ def test_malformed_output_rate_in_eval_result() -> None:
 
 def test_accuracy_range() -> None:
     ev = _eval_result(accuracy=1.0)
+    assert ev.accuracy is not None
     assert 0.0 <= ev.accuracy <= 1.0
+
+
+def test_confidence_interval_object_shape() -> None:
+    ev = _eval_result(
+        accuracy_ci_95={
+            "low": 0.6,
+            "high": 0.8,
+            "iterations": 1000,
+            "seed": 12345,
+        },
+        macro_f1_ci_95={
+            "low": 0.55,
+            "high": 0.75,
+            "iterations": 1000,
+            "seed": 12345,
+        },
+    )
+    assert ev.accuracy_ci_95 is not None
+    assert ev.macro_f1_ci_95 is not None
+    assert ev.accuracy_ci_95.method == "bootstrap"
+    assert ev.accuracy_ci_95.iterations == 1000
+    assert ev.accuracy_ci_95.seed == 12345
+    assert ev.macro_f1_ci_95.method == "bootstrap"
 
 
 def test_case_eval_result_passed_flag() -> None:

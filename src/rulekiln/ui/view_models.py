@@ -100,6 +100,24 @@ class ProviderRouteView(BaseModel):
     supports_embeddings: bool
 
 
+class TeacherPhaseView(BaseModel):
+    """Effective teacher routing for one pipeline phase shown in the job preview."""
+
+    phase_label: str  # human-readable: "Extraction", "Synthesis", "Conflict resolution"
+    profile_name: str
+    model_id: str
+    is_override: bool  # False → inherited from default teacher
+
+
+class TeacherRoutingView(BaseModel):
+    """Summary of per-phase teacher routing for the job preview."""
+
+    default_profile: str
+    default_model: str
+    phases: list[TeacherPhaseView] = Field(default_factory=list)
+    has_any_override: bool = False
+
+
 class PreviewView(BaseModel):
     """Parsed and validated job preview before final submission."""
 
@@ -119,6 +137,7 @@ class PreviewView(BaseModel):
     estimated_embedding_calls: int
     warnings: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    teacher_routing: TeacherRoutingView | None = None
 
 
 class ArtifactFileView(BaseModel):
