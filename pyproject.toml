@@ -11,8 +11,6 @@ dependencies = [
     # Data / validation
     "pydantic>=2.7,<3",
     "pydantic-settings>=2.3,<3",
-    # LLM agents
-    "pydantic-ai[openai,anthropic,google-vertex,bedrock]>=0.2,<1",
     # Database
     "sqlalchemy[asyncio]>=2.0,<3",
     "asyncpg>=0.29,<1",
@@ -33,6 +31,8 @@ dependencies = [
     # Logging
     "structlog>=24.2,<26",
     "ruff>=0.15.14",
+    "pydantic-ai>=1.105.0",
+    "huggingface-hub>=1.16.0",
 ]
 
 [project.optional-dependencies]
