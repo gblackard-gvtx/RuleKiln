@@ -35,6 +35,8 @@ class StudentEvalSummary(BaseModel):
     malformed_rate: float = 0.0
     cost_usd: float | None = None
     latency_p95_ms: float | None = None
+    # ── Phase 3.2: per-student paired comparison ──────────────────────────
+    paired_comparison: PairedComparisonSummary | None = None
 
 
 class PhaseCostBreakdown(BaseModel):
@@ -83,7 +85,7 @@ class CostSummary(BaseModel):
 class BenchmarkManifest(BaseModel):
     """Provenance manifest for a benchmark run."""
 
-    schema_version: Literal["rulekiln.benchmark_manifest.v2"] = "rulekiln.benchmark_manifest.v2"
+    schema_version: Literal["rulekiln.benchmark_manifest.v3"] = "rulekiln.benchmark_manifest.v3"
     benchmark_name: str
     run_id: str
     created_at: datetime = Field(
@@ -108,6 +110,12 @@ class BenchmarkManifest(BaseModel):
     extraction_cache_hits: int = 0
     extraction_cache_misses: int = 0
     conflict_resolution_anchor_id: str | None = None
+    # ── Provider and concurrency provenance (v3) ─────────────────────────
+    teacher_provider_profile: str | None = None
+    student_provider_profiles: list[str] = Field(default_factory=list)
+    embedding_provider_profile: str | None = None
+    max_concurrent_students: int | None = None
+    max_concurrent_cases: int | None = None
 
 
 class DatasetManifest(BaseModel):
@@ -145,7 +153,14 @@ class BenchmarkStrategyComparison(BaseModel):
     selection_reason: str
     pruning_mode_comparison: PruningModeComparison | None = None
     # ── Per-student results (classroom, v2) ──────────────────────────────
+    # selected/anchor strategy's per-student results (backward compat)
     student_results: dict[str, StudentEvalSummary] = Field(default_factory=dict)
+    # ── Cross-strategy × student results (classroom, v3) ─────────────────
+    # strategy_name → student_id → StudentEvalSummary (all prompt-based strategies)
+    all_student_results: dict[str, dict[str, StudentEvalSummary]] = Field(default_factory=dict)
+    # Non-LLM baseline results (embedding-only, no student calls)
+    # strategy_name → {"macro_f1": float | None, "accuracy": float | None}
+    non_llm_baseline_results: dict[str, dict[str, float | None]] = Field(default_factory=dict)
 
 
 class Banking77Example(BaseModel):

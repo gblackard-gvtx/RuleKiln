@@ -63,7 +63,7 @@ def _comparison() -> BenchmarkStrategyComparison:
 
 def test_benchmark_manifest_schema_version() -> None:
     m = _manifest()
-    assert m.schema_version == "rulekiln.benchmark_manifest.v2"
+    assert m.schema_version == "rulekiln.benchmark_manifest.v3"
 
 
 def test_strategy_comparison_schema_version() -> None:
@@ -91,6 +91,30 @@ def test_manifest_has_classroom_fields_defaulting_to_none() -> None:
     assert m.extraction_cache_hits == 0
     assert m.extraction_cache_misses == 0
     assert m.conflict_resolution_anchor_id is None
+    # Phase 1.1 provenance fields
+    assert m.teacher_provider_profile is None
+    assert m.student_provider_profiles == []
+    assert m.embedding_provider_profile is None
+    assert m.max_concurrent_students is None
+    assert m.max_concurrent_cases is None
+
+
+def test_manifest_v3_provider_fields() -> None:
+    m = _manifest()
+    m2 = m.model_copy(
+        update={
+            "teacher_provider_profile": "anthropic-default",
+            "student_provider_profiles": ["openai-qwen7b", "openai-qwen14b"],
+            "embedding_provider_profile": "openai-embed",
+            "max_concurrent_students": 4,
+            "max_concurrent_cases": 16,
+        }
+    )
+    assert m2.teacher_provider_profile == "anthropic-default"
+    assert m2.student_provider_profiles == ["openai-qwen7b", "openai-qwen14b"]
+    assert m2.embedding_provider_profile == "openai-embed"
+    assert m2.max_concurrent_students == 4
+    assert m2.max_concurrent_cases == 16
 
 
 def test_manifest_accepts_teacher_config() -> None:
@@ -206,3 +230,54 @@ def test_manifest_backward_compat_no_new_fields_required() -> None:
     )
     assert m.teacher_config is None
     assert m.classroom_config is None
+
+
+# ── all_student_results cross-strategy matrix ──────────────────────────────────
+
+
+def test_comparison_all_student_results_default_empty() -> None:
+    c = _comparison()
+    assert c.all_student_results == {}
+
+
+def test_comparison_accepts_all_student_results() -> None:
+    s1 = StudentEvalSummary(student_id="s1", macro_f1=0.75)
+    s2 = StudentEvalSummary(student_id="s2", macro_f1=0.60)
+    c = _comparison()
+    c2 = c.model_copy(
+        update={
+            "all_student_results": {
+                "baseline_scaffold": {"s1": s1, "s2": s2},
+                "rulekiln_dbscan": {"s1": s1, "s2": s2},
+            }
+        }
+    )
+    assert "baseline_scaffold" in c2.all_student_results
+    assert "s1" in c2.all_student_results["rulekiln_dbscan"]
+
+
+def test_comparison_non_llm_baseline_results_default_empty() -> None:
+    c = _comparison()
+    assert c.non_llm_baseline_results == {}
+
+
+def test_comparison_accepts_non_llm_baseline_results() -> None:
+    c = _comparison()
+    c2 = c.model_copy(
+        update={
+            "non_llm_baseline_results": {
+                "embedding_knn_k5": {"macro_f1": 0.38, "accuracy": 0.40},
+                "embedding_centroid": {"macro_f1": 0.33, "accuracy": 0.35},
+            }
+        }
+    )
+    assert "embedding_knn_k5" in c2.non_llm_baseline_results
+    assert c2.non_llm_baseline_results["embedding_centroid"]["macro_f1"] == 0.33
+
+
+# ── StudentEvalSummary paired_comparison field ────────────────────────────────
+
+
+def test_student_eval_summary_paired_comparison_defaults_none() -> None:
+    s = StudentEvalSummary(student_id="s1")
+    assert s.paired_comparison is None

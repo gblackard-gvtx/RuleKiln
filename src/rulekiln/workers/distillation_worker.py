@@ -2750,8 +2750,22 @@ async def _run_refinement_loop(
             )
             break
 
+        # Stop early if teacher returned no actions (v2) and no revised_rules (v1 compat)
+        has_actions = bool(refinement.actions) or bool(refinement.revised_rules)
+        if not has_actions:
+            logger.info(
+                "refinement_no_actions",
+                job_id=job_id,
+                iteration=iteration,
+                stop_reason="no_actions",
+            )
+            break
+
         new_rules = apply_refinements(current_rules, refinement)
-        revised_ids = [e.rule_id for e in refinement.revised_rules]
+        if refinement.actions:
+            revised_ids = [a.rule_id for a in refinement.actions if a.action != "keep"]
+        else:
+            revised_ids = [e.rule_id for e in refinement.revised_rules]
 
         pruning_result = prune_rules(
             new_rules,
@@ -2827,10 +2841,64 @@ async def _run_refinement_loop(
             stop_reason=stop_reason if stop_reason != "continue" else None,
         )
         iter_path.write_text(iter_artifact.model_dump_json())
+
+        # Provenance artifact: machine-readable record of what changed and why
+        from rulekiln.pipeline.failure_analysis import UNATTRIBUTED_RULE_ID
+
+        _failure_case_ids = [
+            sf.case_id
+            for sf in current_analysis.structured_failures
+            if sf.failure_class in ("broken", "unchanged_wrong")
+            and sf.violated_rule_ids
+            and sf.violated_rule_ids != [UNATTRIBUTED_RULE_ID]
+        ]
+        _success_case_ids = [
+            sf.case_id
+            for sf in current_analysis.structured_failures
+            if sf.failure_class in ("fixed", "unchanged_correct")
+        ]
+        _provenance_actions = [
+            {
+                "rule_id": a.rule_id,
+                "action": a.action,
+                "new_rule_ids": (
+                    [a.rule_id]
+                    if a.action in ("keep", "modify")
+                    else (
+                        [f"{a.rule_id}__refined_{i}" for i in range(1, len(a.revised_rules) + 1)]
+                        if a.action == "split"
+                        else []
+                    )
+                ),
+                "rationale": a.rationale,
+            }
+            for a in refinement.actions
+        ]
+        provenance_path = outputs_dir / f"rule_refinement_provenance_{iteration}.json"
+        provenance_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": "rulekiln.rule_refinement_provenance.v1",
+                    "job_id": job_id,
+                    "iteration": iteration,
+                    "anchor_student_id": student_config.model,
+                    "implicated_rule_ids": revised_ids,
+                    "failure_case_ids": _failure_case_ids,
+                    "success_case_ids": _success_case_ids,
+                    "actions": _provenance_actions,
+                },
+                ensure_ascii=False,
+            )
+        )
+
         logger.info(
             "refinement_iter_complete",
             job_id=job_id,
             iteration=iteration,
+            anchor_student_id=student_config.model,
+            failure_count=len(_failure_case_ids),
+            implicated_rule_count=len(revised_ids),
+            action_count=len(refinement.actions),
             prior_metric=current_metric,
             new_metric=new_metric,
             improvement=improvement,

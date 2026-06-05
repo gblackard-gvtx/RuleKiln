@@ -145,6 +145,10 @@ def analyze_failures(
             entry = _case_entry(r, None)
             if r.passed:
                 result.unchanged_passing.append(entry)
+                if want_structured:
+                    _add_structured_failure(
+                        result, r, "unchanged_correct", outcome_to_rule_ids, case_map
+                    )
             else:
                 result.unchanged_failing.append(entry)
                 if want_structured:
@@ -166,6 +170,10 @@ def analyze_failures(
         if b is None:
             if d and d.passed:
                 result.unchanged_passing.append(entry)
+                if want_structured:
+                    _add_structured_failure(
+                        result, d, "unchanged_correct", outcome_to_rule_ids, case_map
+                    )
             else:
                 result.unchanged_failing.append(entry)
                 if d and want_structured:
@@ -184,6 +192,10 @@ def analyze_failures(
                 _add_structured_failure(result, d, "broken", outcome_to_rule_ids, case_map)
         elif d.passed:
             result.unchanged_passing.append(entry)
+            if want_structured:
+                _add_structured_failure(
+                    result, d, "unchanged_correct", outcome_to_rule_ids, case_map
+                )
         else:
             result.unchanged_failing.append(entry)
             if want_structured:
@@ -207,10 +219,10 @@ def _add_structured_failure(
     """
     from typing import Literal
 
-    fc: Literal["fixed", "broken", "unchanged_wrong"] = failure_class  # type: ignore[assignment]
+    fc: Literal["fixed", "broken", "unchanged_wrong", "unchanged_correct"] = failure_class  # type: ignore[assignment]
     case = case_map.get(case_result.case_id)
 
-    if failure_class == "fixed":
+    if failure_class in ("fixed", "unchanged_correct"):
         matched: list[str] = []
         if case is not None:
             for assertion in case.evaluation.assertions:

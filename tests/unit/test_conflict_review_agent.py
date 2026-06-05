@@ -1,10 +1,10 @@
-"""Unit tests for conflict-review agent fallback behavior."""
+"""Unit tests for conflict-review agent fallback behavior and apply_conflict_reviews."""
 
 from __future__ import annotations
 
 import pytest
 
-from rulekiln.agents.rule_conflict_review import review_rule_for_conflicts
+from rulekiln.agents.rule_conflict_review import apply_conflict_reviews, review_rule_for_conflicts
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.pipeline import (
     MicroRuleSchema,
@@ -181,3 +181,99 @@ async def test_conflict_review_overrides_model_returned_rule_id() -> None:
 
     assert review.synthesized_rule_id == "rule-123"
     assert review.resolution == "discard"
+
+
+# ── apply_conflict_reviews ────────────────────────────────────────────────────
+
+
+def _synth_rule(rule_id: str, topic: str = "topic") -> SynthesizedRuleSchema:
+    return SynthesizedRuleSchema(
+        id=rule_id,
+        topic=topic,
+        applies_when=["cond"],
+        outcome_conditions={"approve": OutcomeCondition(outcome="approve", when=["cond"])},
+    )
+
+
+def _conflict_review(
+    rule_id: str,
+    resolution: str,
+    resolved_rules: list[SynthesizedRuleSchema] | None = None,
+) -> RuleConflictReview:
+    return RuleConflictReview(
+        synthesized_rule_id=rule_id,
+        has_conflicts=resolution != "keep",
+        conflict_summary=None,
+        resolution=resolution,  # type: ignore[arg-type]
+        resolved_rules=resolved_rules or [],
+    )
+
+
+def test_apply_conflict_reviews_keep_preserves_rule() -> None:
+    rule = _synth_rule("r1")
+    review = _conflict_review("r1", "keep")
+    result = apply_conflict_reviews([rule], [review])
+    assert len(result) == 1
+    assert result[0].id == "r1"
+    assert result[0].topic == "topic"
+
+
+def test_apply_conflict_reviews_modify_replaces_rule_preserves_id() -> None:
+    rule = _synth_rule("r1", "original")
+    replacement = _synth_rule("ignored_id", "modified")
+    review = _conflict_review("r1", "modify", resolved_rules=[replacement])
+    result = apply_conflict_reviews([rule], [review])
+    assert len(result) == 1
+    assert result[0].id == "r1"  # ID preserved
+    assert result[0].topic == "modified"
+
+
+def test_apply_conflict_reviews_split_creates_deterministic_child_ids() -> None:
+    rule = _synth_rule("r1")
+    child_a = _synth_rule("a", "part1")
+    child_b = _synth_rule("b", "part2")
+    review = _conflict_review("r1", "split", resolved_rules=[child_a, child_b])
+    result = apply_conflict_reviews([rule], [review])
+    assert len(result) == 2
+    assert result[0].id == "r1__split_1"
+    assert result[1].id == "r1__split_2"
+
+
+def test_apply_conflict_reviews_discard_removes_rule() -> None:
+    rule_a = _synth_rule("r1")
+    rule_b = _synth_rule("r2")
+    review = _conflict_review("r1", "discard")
+    result = apply_conflict_reviews([rule_a, rule_b], [review])
+    assert len(result) == 1
+    assert result[0].id == "r2"
+
+
+def test_apply_conflict_reviews_no_review_keeps_rule() -> None:
+    rule = _synth_rule("r1")
+    result = apply_conflict_reviews([rule], [])
+    assert len(result) == 1
+    assert result[0].id == "r1"
+
+
+# ── fallback review is distinguishable ───────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_conflict_review_fallback_has_fallback_status() -> None:
+    """Fallback review has review_status='fallback_validation_failed', not 'completed'."""
+    chat_client = _FailingChatClient(
+        RuntimeError("Exceeded maximum retries (3) for output validation")
+    )
+    review = await review_rule_for_conflicts(
+        _task(), _rule(), _micro_rules(), chat_client, _config()
+    )
+    assert review.review_status == "fallback_validation_failed"
+
+
+@pytest.mark.asyncio
+async def test_conflict_review_successful_has_completed_status() -> None:
+    """A successful review has review_status='completed'."""
+    review = await review_rule_for_conflicts(
+        _task(), _rule(), _micro_rules(), _SuccessChatClient(), _config()
+    )
+    assert review.review_status == "completed"

@@ -394,17 +394,27 @@ http://localhost:8000/ui/jobs/new
 
 ### Workflow
 
-1. **New Job** — upload a `task.yaml` and `cases.jsonl`, choose provider profiles and model IDs.
-2. **Preview** — validate files, review split counts, estimated API calls, and provider routes before committing.
-  - Split policy is centralized: extraction uses `train`; evaluation prefers `validation`, then falls back to `train`, `test`, or `golden`.
-  - When fallback is used, preview surfaces a warning before submission.
-3. **Run Pipeline** — submit the validated job; execution is delegated by `EXECUTION_BACKEND` (`dbos` queue + worker).
-4. **Monitor** — the job detail page polls live status every 2 seconds via HTMX until the job finishes.
-  - Job detail includes split totals, execution progress (`teacher extraction`, `student eval` per strategy), and pipeline diagnostics (model-call counts and rule counts).
-5. **Review results** — navigate to Results, Prompt, Rules, Eval Report, Failures, or Artifacts from the detail page.
-  - Results includes recommendation metrics: **Best strategy**, **Baseline macro_f1**, **Relative lift**, and **Accuracy lift**.
-  - Eval Report displays an evaluation-split fallback banner when non-validation evaluation was used.
-6. **Retry failed jobs** — use **Retry Pipeline** on the job detail page to requeue and resume from persisted progress.
+1. New Job — upload a `task.yaml` and `cases.jsonl`, choose provider profiles and model IDs.
+
+   ![New job form](docs/assets/operator_ui/rulekiln_new_job.png)
+
+2. Preview — validate files, review split counts, estimated API calls, and provider routes before committing.
+
+   ![Job preview](docs/assets/screenshots/operator-ui/job-preview.png)
+
+3. Run Pipeline — submit the validated job; execution is delegated by `EXECUTION_BACKEND` (`dbos` queue + worker).
+
+4. Monitor — the job detail page polls live status every 2 seconds via HTMX until the job finishes.
+
+   ![Job detail progress](docs/assets/operator_ui/Rulekiln_job_details.png)
+
+5. Review results — navigate to Results, Prompt, Rules, Eval Report, Failures, or Artifacts from the detail page.
+
+   ![Results view](docs/assets/screenshots/operator-ui/results.png)
+
+6. Retry failed jobs — use Retry Pipeline on the job detail page to requeue and resume from persisted progress.
+
+   ![Retry pipeline action](docs/assets/screenshots/operator-ui/retry-pipeline.png)
 
 ### Environment variables for the UI
 
