@@ -71,13 +71,50 @@ class RuleAblationArtifact(BaseModel):
     records: list[RuleAblationRecord] = Field(default_factory=list)
 
 
+# ── Rule utility per student (Phase 4.2) ─────────────────────────────────────
+
+
+class RuleStudentUtility(BaseModel):
+    """Utility attribution for one rule × one student."""
+
+    rule_id: str
+    student_id: str
+    fixed_count: int
+    broken_count: int
+    net_utility: int
+    utility_per_token: float
+
+
+class RuleProvenanceReport(BaseModel):
+    """Per-rule provenance with classroom-aware utility signals."""
+
+    rule_id: str
+    topic: str
+    support_count: int
+    source_case_ids: list[str] = Field(default_factory=list)
+    student_utility: list[RuleStudentUtility] = Field(default_factory=list)
+    anchor_net_utility: int | None = None
+    mean_classroom_net_utility: float | None = None
+    worst_student_net_utility: int | None = None
+
+
 # ── Pruning-mode comparison ──────────────────────────────────────────────────
+
+
+_PruningModeLiteral = Literal[
+    "support_count",
+    "utility",
+    "utility_per_token",
+    "anchor_utility",
+    "mean_classroom_utility",
+    "worst_student_utility",
+]
 
 
 class PruningModeRow(BaseModel):
     """One row in a pruning-mode comparison table."""
 
-    mode: Literal["support_count", "utility", "utility_per_token"]
+    mode: _PruningModeLiteral
     strategy_id: str
     rule_count: int
     prompt_tokens: int
@@ -93,7 +130,7 @@ class PruningModeComparison(BaseModel):
     schema_version: Literal["rulekiln.pruning_mode_comparison.v1"] = (
         "rulekiln.pruning_mode_comparison.v1"
     )
-    selected_mode: Literal["support_count", "utility", "utility_per_token"]
+    selected_mode: _PruningModeLiteral
     rows: list[PruningModeRow] = Field(default_factory=list)
 
 
@@ -174,6 +211,8 @@ class RuleConflictReview(BaseModel):
     conflicting_micro_rule_ids: list[str] = Field(default_factory=list)
     resolution: Literal["keep", "modify", "split", "discard"]
     resolved_rules: list[SynthesizedRuleSchema] = Field(default_factory=list)
+    # "completed" = normal review; "fallback_validation_failed" = provider exhausted retries
+    review_status: Literal["completed", "fallback_validation_failed"] = "completed"
 
 
 # ── Clustering ───────────────────────────────────────────────────────────────
@@ -187,6 +226,8 @@ class RuleClusterSchema(BaseModel):
     algorithm: str
     rule_ids: list[str]
     cluster_metadata: dict[str, str | int | float] = Field(default_factory=dict)
+
+
 class MetricConfidenceInterval(BaseModel):
     """Deterministic confidence interval descriptor for one metric."""
 
@@ -331,12 +372,13 @@ class CaseEvaluationFailure(BaseModel):
 
     case_id: str
     split: str
-    failure_class: Literal["fixed", "broken", "unchanged_wrong"]
+    failure_class: Literal["fixed", "broken", "unchanged_wrong", "unchanged_correct"]
     matched_rule_ids: list[str] = Field(default_factory=list)
     violated_rule_ids: list[str] = Field(default_factory=list)
     failed_assertion_paths: list[str] = Field(default_factory=list)
     failed_assertion_types: list[str] = Field(default_factory=list)
     explanation: str | None = None
+
 
 # ── Refinement iteration artifact ────────────────────────────────────────────
 

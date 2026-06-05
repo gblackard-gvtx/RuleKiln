@@ -57,9 +57,18 @@ jobs:
       - name: Run offline tests (exclude @external)
         run: uv run pytest -m "not external" --tb=short -q
 
-      - name: Upload coverage (optional)
+      - name: Run coverage report (optional)
         if: always()
         run: uv run pytest -m "not external" --cov=src/rulekiln --cov-report=xml -q || true
+
+      - name: Upload coverage to Codecov
+        if: always()
+        continue-on-error: true
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+          verbose: false
 
   docker-build:
     name: Docker Build (T058A)

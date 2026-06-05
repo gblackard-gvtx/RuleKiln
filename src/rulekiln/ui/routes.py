@@ -45,6 +45,7 @@ from rulekiln.db.session import get_db_session
 from rulekiln.observability.logging import get_logger
 from rulekiln.pipeline.evaluator import get_primary_metric
 from rulekiln.pipeline.split_policy import resolve_split_policy
+from rulekiln.schemas.classroom import PhaseTeacherConfig, TeacherConfig
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask, TaskMode
 from rulekiln.ui.forms import NewJobForm
@@ -152,6 +153,46 @@ def _ext_ok(filename: str | None) -> bool:
     if not filename:
         return False
     return Path(filename).suffix.lower() in _ALLOWED_EXTENSIONS
+
+
+def _auto_enable_extraction_batch(
+    teacher_config: TeacherConfig | None,
+    teacher_profile: str,
+    teacher_model: str,
+    settings: AppSettings,
+) -> TeacherConfig | None:
+    """Auto-enable extraction batch when the selected profile supports it."""
+    provider_profile = settings.provider_profiles.get(teacher_profile)
+    if provider_profile is None or not provider_profile.batch_enabled:
+        return teacher_config
+
+    if teacher_config is None:
+        return TeacherConfig(
+            default=PhaseTeacherConfig(provider=teacher_profile, model=teacher_model),
+            instruction_extraction=PhaseTeacherConfig(
+                provider=teacher_profile,
+                model=teacher_model,
+                batch_enabled=True,
+            ),
+        )
+
+    # Auto-enable batch for the resolved extraction phase config when the selected
+    # provider profile supports it.
+    phase_cfg = teacher_config.for_phase("instruction_extraction")
+    phase_provider = settings.provider_profiles.get(phase_cfg.provider)
+    if phase_provider is None or not phase_provider.batch_enabled:
+        return teacher_config
+
+    if teacher_config.instruction_extraction is None:
+        teacher_config.instruction_extraction = PhaseTeacherConfig(
+            provider=phase_cfg.provider,
+            model=phase_cfg.model,
+            batch_enabled=True,
+        )
+    elif not teacher_config.instruction_extraction.batch_enabled:
+        teacher_config.instruction_extraction.batch_enabled = True
+
+    return teacher_config
 
 
 def _resolve_primary_metric(job: DistillationJob) -> str:
@@ -408,6 +449,34 @@ async def _load_student_eval_completed_count(
     return int(completed_value or 0)
 
 
+async def _load_student_eval_completed_counts(
+    session: AsyncSession,
+    *,
+    job_id: str,
+    split: str | None,
+) -> dict[str, int]:
+    if split is None:
+        return {}
+
+    result = await session.execute(
+        select(
+            EvalCaseResultRecord.strategy,
+            func.count(func.distinct(EvalCaseResultRecord.case_id)),
+        )
+        .where(
+            EvalCaseResultRecord.job_id == job_id,
+            EvalCaseResultRecord.split == split,
+        )
+        .group_by(EvalCaseResultRecord.strategy)
+        .order_by(EvalCaseResultRecord.strategy)
+    )
+    return {
+        strategy: int(count)
+        for strategy, count in result.all()
+        if isinstance(strategy, str)
+    }
+
+
 async def _load_rule_counts(session: AsyncSession, job_id: str) -> tuple[int, int, int]:
     micro_rules_count_value = await session.scalar(
         select(func.count()).select_from(MicroRule).where(MicroRule.job_id == job_id)
@@ -581,6 +650,12 @@ async def preview_job(
         judge = ModelRoute(provider_profile=form.judge_profile, model=form.judge_model)
 
     teacher_config = form.build_teacher_config()
+    teacher_config = _auto_enable_extraction_batch(
+        teacher_config,
+        form.teacher_profile,
+        form.teacher_model,
+        settings,
+    )
     classroom_config = form.build_classroom_config()
     anchor = classroom_config.anchor_student
 
@@ -829,6 +904,11 @@ async def job_detail(
         strategy="hdbscan",
         split=student_eval_split,
     )
+    student_eval_completed_counts = await _load_student_eval_completed_counts(
+        session,
+        job_id=job.id,
+        split=student_eval_split,
+    )
 
     usage_summary = await summarize_model_call_events(session, job.id)
     by_role = usage_summary.get("by_role")
@@ -876,7 +956,14 @@ async def job_detail(
         synthesized_rules_count=synthesized_rules_count,
         selected_rules_count=selected_rules_count,
     )
-    return templates.TemplateResponse(request, "jobs/detail.html", {"job": detail})
+    return templates.TemplateResponse(
+        request,
+        "jobs/detail.html",
+        {
+            "job": detail,
+            "student_eval_completed_counts": student_eval_completed_counts,
+        },
+    )
 
 
 @router.post("/jobs/{job_id}/cancel")

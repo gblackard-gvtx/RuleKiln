@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, Field
 
+from rulekiln.observability.logging import get_logger
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.pipeline import CaseEvaluationFailure, SynthesizedRuleSchema
 from rulekiln.schemas.task_case import RuleKilnCase
@@ -20,24 +21,37 @@ from rulekiln.schemas.task_case import RuleKilnCase
 if TYPE_CHECKING:
     from rulekiln.pipeline.failure_analysis import FailureAnalysisResult
 
+logger = get_logger(__name__)
+
 
 class RevisedRuleEntry(BaseModel):
-    """A revised rule and its rationale."""
+    """v1 compat: a revised rule and its rationale. Superseded by RuleRefinementAction."""
 
     rule_id: str
     revised_rule: SynthesizedRuleSchema
     rationale: str = ""
 
 
+class RuleRefinementAction(BaseModel):
+    """One teacher-directed action on a single implicated rule."""
+
+    action: Literal["keep", "modify", "split", "discard"]
+    rule_id: str
+    revised_rules: list[SynthesizedRuleSchema] = Field(default_factory=list)
+    rationale: str = ""
+
+
 class RefinementResult(BaseModel):
     """Output from a single refinement teacher call.
 
-    Contains revised SynthesizedRuleSchema objects keyed by the rule ID they replace,
-    plus a per-rule rationale. schema_version follows the Phase 8 artifact-versioning
-    convention.
+    v2 uses ``actions`` (keep/modify/split/discard per rule).
+    ``revised_rules`` is retained for loading v1 artifacts only.
+    schema_version follows the Phase 8 artifact-versioning convention.
     """
 
-    schema_version: Literal["rulekiln.refinement_result.v1"] = "rulekiln.refinement_result.v1"
+    schema_version: Literal["rulekiln.refinement_result.v2"] = "rulekiln.refinement_result.v2"
+    actions: list[RuleRefinementAction] = Field(default_factory=list)
+    # v1 backward-compatibility field — not populated by the teacher in v2
     revised_rules: list[RevisedRuleEntry] = Field(default_factory=list)
     reasoning: str | None = None
 
@@ -48,7 +62,7 @@ You are a task-policy refinement expert performing closed-loop conflict resoluti
 You receive:
 1. The rules implicated in recent evaluation failures.
 2. FAILURE CASES: cases where the student followed the rules but still produced the wrong answer.
-3. SUCCESS CASES: cases where the student answered correctly.
+3. SUCCESS CASES: cases where the student answered correctly (must not regress).
 
 Your task:
 - Diagnose the root cause of failures.
@@ -56,10 +70,13 @@ Your task:
 - Your revisions MUST NOT break the provided success cases.
 - Leave all other rules untouched.
 
-Return a RefinementResult with a revised_rules list. For each revised rule, include:
-- rule_id: the ID of the rule being replaced
-- revised_rule: the updated SynthesizedRuleSchema
-- rationale: a brief explanation of what you changed and why
+Return a RefinementResult with an actions list. For each implicated rule, include one action:
+- keep: rule is correct as-is, no change needed
+- modify: replace the rule with exactly one improved rule (revised_rules must have exactly 1 entry)
+- split: split the rule into multiple non-conflicting rules (revised_rules has 2+ entries)
+- discard: rule is harmful or irredeemably conflicted, remove it
+
+Always include rule_id and a rationale.
 """
 
 
@@ -108,7 +125,7 @@ def _build_refinement_prompt(
 
     parts.append(
         "Revise ONLY the rules whose IDs appear in the failure list above. "
-        "Return a RefinementResult with the revised_rules list."
+        "Return a RefinementResult with the actions list."
     )
     return "\n".join(parts)
 
@@ -124,14 +141,17 @@ async def refine_rules_with_teacher(
     max_failure_cases: int = 20,
     max_success_cases: int = 20,
 ) -> RefinementResult:
-    """Call the teacher to diagnose root causes and emit revised rules.
+    """Call the teacher to diagnose root causes and emit rule refinement actions.
 
     This is the empirical refinement step (paper Phase 3, §3.3).
     Works offline with the fake provider (deterministic stub revisions).
 
     Sampling is deterministic given seed. Only failure cases with real rule
     attribution (not the UNATTRIBUTED sentinel) are sent to the teacher.
-    Success cases (fixed) are always included to prevent regressions.
+    Success cases (fixed + unchanged_correct) are included as regression guards.
+
+    Returns a no-op RefinementResult (empty actions) when there are no attributable
+    failures, without making a provider call.
     """
     from rulekiln.pipeline.failure_analysis import UNATTRIBUTED_RULE_ID
 
@@ -152,7 +172,9 @@ async def refine_rules_with_teacher(
     ]
 
     success_sfs = [
-        sf for sf in failure_analysis_result.structured_failures if sf.failure_class == "fixed"
+        sf
+        for sf in failure_analysis_result.structured_failures
+        if sf.failure_class in ("fixed", "unchanged_correct")
     ]
     sampled_success_sfs = rng.sample(success_sfs, min(max_success_cases, len(success_sfs)))
     success_pairs: list[tuple[CaseEvaluationFailure | None, RuleKilnCase | None]] = [
@@ -167,6 +189,12 @@ async def refine_rules_with_teacher(
     }
     implicated_rules = [r for r in current_rules if r.id in implicated_ids]
 
+    if not implicated_rules:
+        return RefinementResult(
+            reasoning="No attributable rule failures found; no refinement applied.",
+            actions=[],
+        )
+
     user_prompt = _build_refinement_prompt(implicated_rules, failure_pairs, success_pairs)
 
     result = await chat_client.complete_structured(
@@ -178,6 +206,24 @@ async def refine_rules_with_teacher(
     parsed = result.parsed
     if not isinstance(parsed, RefinementResult):
         parsed = RefinementResult.model_validate(parsed.model_dump() if parsed else {})
+
+    # Reject teacher actions for rule IDs not in the implicated set
+    allowed_ids = {rule.id for rule in implicated_rules}
+    accepted_actions: list[RuleRefinementAction] = []
+    rejected_rule_ids: list[str] = []
+    for action in parsed.actions:
+        if action.rule_id in allowed_ids:
+            accepted_actions.append(action)
+        else:
+            rejected_rule_ids.append(action.rule_id)
+    if rejected_rule_ids:
+        logger.warning(
+            "refinement_rejected_non_implicated_rules",
+            rejected_rule_ids=rejected_rule_ids,
+            allowed_rule_ids=sorted(allowed_ids),
+        )
+    parsed = parsed.model_copy(update={"actions": accepted_actions})
+
     return parsed
 
 
@@ -185,17 +231,66 @@ def apply_refinements(
     current_rules: list[SynthesizedRuleSchema],
     refinement: RefinementResult,
 ) -> list[SynthesizedRuleSchema]:
-    """Apply revised rules from a RefinementResult, replacing rules by ID.
+    """Apply a RefinementResult to the current rule set.
 
-    Unaffected rules are kept unchanged. The rule ID is always preserved so
-    downstream indexes remain valid.
+    Uses v2 ``actions`` when present. Falls back to v1 ``revised_rules`` for
+    loading legacy artifacts produced before the v2 schema was introduced.
     """
-    revised_by_id = {entry.rule_id: entry.revised_rule for entry in refinement.revised_rules}
+    if refinement.actions:
+        return _apply_refinement_actions(current_rules, refinement.actions)
+    if refinement.revised_rules:
+        # v1 backward-compat path: plain replacement by rule ID
+        revised_by_id = {entry.rule_id: entry.revised_rule for entry in refinement.revised_rules}
+        result: list[SynthesizedRuleSchema] = []
+        for rule in current_rules:
+            revised = revised_by_id.get(rule.id)
+            if revised is not None:
+                result.append(revised.model_copy(update={"id": rule.id}))
+            else:
+                result.append(rule)
+        return result
+    return list(current_rules)
+
+
+def _apply_refinement_actions(
+    current_rules: list[SynthesizedRuleSchema],
+    actions: list[RuleRefinementAction],
+) -> list[SynthesizedRuleSchema]:
+    """Apply action-based refinements (v2 schema)."""
+    actions_by_id = {entry.rule_id: entry for entry in actions}
     result: list[SynthesizedRuleSchema] = []
+
     for rule in current_rules:
-        revised = revised_by_id.get(rule.id)
-        if revised is not None:
-            result.append(revised.model_copy(update={"id": rule.id}))
-        else:
+        action = actions_by_id.get(rule.id)
+
+        if action is None or action.action == "keep":
             result.append(rule)
+            continue
+
+        if action.action == "modify":
+            if len(action.revised_rules) != 1:
+                logger.warning(
+                    "refinement_invalid_modify",
+                    rule_id=rule.id,
+                    revised_rule_count=len(action.revised_rules),
+                )
+                result.append(rule)
+            else:
+                result.append(action.revised_rules[0].model_copy(update={"id": rule.id}))
+            continue
+
+        if action.action == "split":
+            if not action.revised_rules:
+                logger.warning("refinement_invalid_split_empty", rule_id=rule.id)
+                result.append(rule)
+            else:
+                for idx, revised_rule in enumerate(action.revised_rules, start=1):
+                    result.append(
+                        revised_rule.model_copy(update={"id": f"{rule.id}__refined_{idx}"})
+                    )
+            continue
+
+        if action.action == "discard":
+            continue
+
     return result

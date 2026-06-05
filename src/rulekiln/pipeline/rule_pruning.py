@@ -15,14 +15,27 @@ PruningReason = Literal[
     "duplicate_or_subsumed",
 ]
 
-PruningMode = Literal["support_count", "utility", "utility_per_token"]
+PruningMode = Literal[
+    "support_count",
+    "utility",
+    "utility_per_token",
+    "anchor_utility",
+    "mean_classroom_utility",
+    "worst_student_utility",
+]
+
+# Maps rule_id -> (fixed_count, broken_count) for one student (anchor or single-student)
+UtilitySignals = dict[str, tuple[int, int]]
+
+# Maps student_id -> UtilitySignals; used by classroom-aware modes
+ClassroomUtilitySignals = dict[str, UtilitySignals]
 
 
 def _utility_score(
     rule: SynthesizedRuleSchema,
     *,
     regression_penalty: float,
-    utility_signals: dict[str, tuple[int, int]] | None,
+    utility_signals: UtilitySignals | None,
 ) -> float:
     """Utility = fixed_attributed - penalty * broken_attributed.
 
@@ -39,13 +52,41 @@ def _utility_per_token_score(
     rule: SynthesizedRuleSchema,
     *,
     regression_penalty: float,
-    utility_signals: dict[str, tuple[int, int]] | None,
+    utility_signals: UtilitySignals | None,
 ) -> float:
     tokens = rule.estimated_token_count or 1
     return (
         _utility_score(rule, regression_penalty=regression_penalty, utility_signals=utility_signals)
         / tokens
     )
+
+
+def _mean_classroom_utility_score(
+    rule: SynthesizedRuleSchema,
+    *,
+    regression_penalty: float,
+    classroom_signals: ClassroomUtilitySignals,
+) -> float:
+    """Unweighted mean net_utility across all students."""
+    per_student: list[float] = [
+        _utility_score(rule, regression_penalty=regression_penalty, utility_signals=signals)
+        for signals in classroom_signals.values()
+    ]
+    return sum(per_student) / len(per_student) if per_student else float(rule.support_count)
+
+
+def _worst_student_utility_score(
+    rule: SynthesizedRuleSchema,
+    *,
+    regression_penalty: float,
+    classroom_signals: ClassroomUtilitySignals,
+) -> float:
+    """Minimum net_utility across all students (maximizes worst-case coverage)."""
+    per_student: list[float] = [
+        _utility_score(rule, regression_penalty=regression_penalty, utility_signals=signals)
+        for signals in classroom_signals.values()
+    ]
+    return min(per_student) if per_student else float(rule.support_count)
 
 
 class PruningRecord:
@@ -105,7 +146,8 @@ def prune_rules(
     golden_case_ids: set[str] | None = None,
     ranking_mode: PruningMode = "support_count",
     regression_penalty: float = 2.0,
-    utility_signals: dict[str, tuple[int, int]] | None = None,
+    utility_signals: UtilitySignals | None = None,
+    classroom_utility_signals: ClassroomUtilitySignals | None = None,
 ) -> PruningResult:
     """Apply the full pruning pipeline to a list of synthesized rules.
 
@@ -143,7 +185,8 @@ def prune_rules(
         selected.append(rule)
 
     # 4. Sort by ranking_mode within priority tiers
-    if ranking_mode == "utility":
+    if ranking_mode == "utility" or ranking_mode == "anchor_utility":
+        # anchor_utility uses the same anchor (single-student) signals as utility
         selected.sort(
             key=lambda r: (
                 r.priority,
@@ -162,6 +205,30 @@ def prune_rules(
                     r,
                     regression_penalty=regression_penalty,
                     utility_signals=utility_signals,
+                ),
+            )
+        )
+    elif ranking_mode == "mean_classroom_utility":
+        effective_signals = classroom_utility_signals or {}
+        selected.sort(
+            key=lambda r: (
+                r.priority,
+                -_mean_classroom_utility_score(
+                    r,
+                    regression_penalty=regression_penalty,
+                    classroom_signals=effective_signals,
+                ),
+            )
+        )
+    elif ranking_mode == "worst_student_utility":
+        effective_signals = classroom_utility_signals or {}
+        selected.sort(
+            key=lambda r: (
+                r.priority,
+                -_worst_student_utility_score(
+                    r,
+                    regression_penalty=regression_penalty,
+                    classroom_signals=effective_signals,
                 ),
             )
         )

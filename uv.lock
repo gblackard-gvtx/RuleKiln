@@ -3245,6 +3245,7 @@ dependencies = [
 dev = [
     { name = "aiosqlite" },
     { name = "anyio" },
+    { name = "coverage" },
     { name = "httpx" },
     { name = "pyright" },
     { name = "pytest" },
@@ -3264,6 +3265,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.13,<2" },
     { name = "anyio", marker = "extra == 'dev'", specifier = ">=4,<5" },
     { name = "asyncpg", specifier = ">=0.29,<1" },
+    { name = "coverage", marker = "extra == 'dev'", specifier = ">=7,<8" },
     { name = "dbos", specifier = ">=2.22,<3" },
     { name = "fastapi", specifier = ">=0.115,<1" },
     { name = "hdbscan", specifier = ">=0.8,<1" },

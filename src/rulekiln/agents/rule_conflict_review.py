@@ -3,6 +3,11 @@
 This is a pre-evaluation hygiene pass that checks each rule for internal inconsistencies
 before student evaluation runs. It is NOT the paper's Phase 3 closed-loop conflict
 resolution — that iterative, case-outcome-based process is implemented in rule_refinement.py.
+
+``apply_conflict_reviews`` is provided as a standalone function but is NOT called in the
+main distillation pipeline — static reviews are advisory only. The pipeline records conflict
+metadata on each synthesized rule (has_conflicts, conflict_summary) and uses that signal
+during pruning, but does not apply keep/modify/split/discard at synthesis time.
 """
 
 from rulekiln.observability.logging import get_logger
@@ -109,6 +114,8 @@ async def review_rule_for_conflicts(
             )
             # Fallback to a conservative keep decision when the provider repeatedly
             # fails to emit schema-valid structured output.
+            # review_status="fallback_validation_failed" distinguishes this from a
+            # real "no conflict" review so callers can treat it differently.
             return RuleConflictReview(
                 synthesized_rule_id=rule.id,
                 has_conflicts=False,
@@ -118,6 +125,7 @@ async def review_rule_for_conflicts(
                 conflicting_micro_rule_ids=[],
                 resolution="keep",
                 resolved_rules=[],
+                review_status="fallback_validation_failed",
             )
         raise
 
@@ -160,3 +168,62 @@ def _collect_exception_messages(exc: BaseException) -> list[str]:
             pending.append(current.__context__)
 
     return messages
+
+
+def apply_conflict_reviews(
+    current_rules: list[SynthesizedRuleSchema],
+    reviews: list[RuleConflictReview],
+) -> list[SynthesizedRuleSchema]:
+    """Apply static conflict review decisions to a rule set.
+
+    Mirrors the semantics of ``apply_refinements`` in rule_refinement.py.
+
+    NOTE: this function is NOT called by the main distillation pipeline. Static
+    conflict reviews are advisory only — the pipeline records conflict metadata
+    (has_conflicts, conflict_summary) on each rule but does not apply
+    keep/modify/split/discard transformations at synthesis time. Call this
+    function explicitly if you want to materialise the review decisions.
+
+    Actions:
+    - keep:    rule is kept unchanged.
+    - modify:  rule is replaced by the single entry in resolved_rules, preserving ID.
+    - split:   rule is replaced by all entries in resolved_rules with deterministic IDs.
+    - discard: rule is removed.
+    """
+    reviews_by_id = {r.synthesized_rule_id: r for r in reviews}
+    result: list[SynthesizedRuleSchema] = []
+
+    for rule in current_rules:
+        review = reviews_by_id.get(rule.id)
+
+        if review is None or review.resolution == "keep":
+            result.append(rule)
+            continue
+
+        if review.resolution == "modify":
+            if len(review.resolved_rules) != 1:
+                logger.warning(
+                    "conflict_review_invalid_modify",
+                    rule_id=rule.id,
+                    resolved_rule_count=len(review.resolved_rules),
+                )
+                result.append(rule)
+            else:
+                result.append(review.resolved_rules[0].model_copy(update={"id": rule.id}))
+            continue
+
+        if review.resolution == "split":
+            if not review.resolved_rules:
+                logger.warning("conflict_review_invalid_split_empty", rule_id=rule.id)
+                result.append(rule)
+            else:
+                for idx, resolved_rule in enumerate(review.resolved_rules, start=1):
+                    result.append(
+                        resolved_rule.model_copy(update={"id": f"{rule.id}__split_{idx}"})
+                    )
+            continue
+
+        if review.resolution == "discard":
+            continue
+
+    return result

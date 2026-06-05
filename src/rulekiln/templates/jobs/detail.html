@@ -124,6 +124,25 @@
       ({{ "%.1f" | format((hdbscan_completed / student_eval_total) * 100) }}%)
       {% endif %}
     </dd>
+
+    <dt class="text-gray-500">Student eval progress by strategy</dt>
+    <dd>
+      {% if student_eval_completed_counts %}
+      <ul class="list-disc ml-4 space-y-1">
+        {% for strategy, completed in student_eval_completed_counts.items() %}
+        <li>
+          {{ strategy.replace("_", " ").title() }}:
+          {{ completed }} / {{ student_eval_total }}
+          {% if student_eval_total > 0 %}
+          ({{ "%.1f" | format((completed / student_eval_total) * 100) }}%)
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      —
+      {% endif %}
+    </dd>
   </dl>
 </div>
 

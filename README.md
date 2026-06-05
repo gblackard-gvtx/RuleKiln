@@ -4,6 +4,9 @@
 
 # RuleKiln
 
+[![CI](https://github.com/gblackard-gvtx/RuleKiln/actions/workflows/ci.yml/badge.svg)](https://github.com/gblackard-gvtx/RuleKiln/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/gblackard-gvtx/RuleKiln/branch/main/graph/badge.svg)](https://codecov.io/gh/gblackard-gvtx/RuleKiln)
+
 > **Stable Alpha** — RuleKiln has reached a stable alpha milestone. Core pipeline and Operator UI workflows are stable for internal pilots and evaluation. APIs, configuration, and behaviour may still evolve before beta. Not recommended for production use.
 
 A prompt compiler that turns labelled cases into tested, versioned, auditable system prompts.
@@ -391,17 +394,25 @@ http://localhost:8000/ui/jobs/new
 
 ### Workflow
 
-1. **New Job** — upload a `task.yaml` and `cases.jsonl`, choose provider profiles and model IDs.
-2. **Preview** — validate files, review split counts, estimated API calls, and provider routes before committing.
-  - Split policy is centralized: extraction uses `train`; evaluation prefers `validation`, then falls back to `train`, `test`, or `golden`.
-  - When fallback is used, preview surfaces a warning before submission.
-3. **Run Pipeline** — submit the validated job; execution is delegated by `EXECUTION_BACKEND` (`dbos` queue + worker).
-4. **Monitor** — the job detail page polls live status every 2 seconds via HTMX until the job finishes.
-  - Job detail includes split totals, execution progress (`teacher extraction`, `student eval` per strategy), and pipeline diagnostics (model-call counts and rule counts).
-5. **Review results** — navigate to Results, Prompt, Rules, Eval Report, Failures, or Artifacts from the detail page.
-  - Results includes recommendation metrics: **Best strategy**, **Baseline macro_f1**, **Relative lift**, and **Accuracy lift**.
-  - Eval Report displays an evaluation-split fallback banner when non-validation evaluation was used.
-6. **Retry failed jobs** — use **Retry Pipeline** on the job detail page to requeue and resume from persisted progress.
+1. New Job — upload a `task.yaml` and `cases.jsonl`, choose provider profiles and model IDs.
+
+   ![New job form](docs/assets/operator_ui/rulekiln_new_job.png)
+
+2. Preview — validate files, review split counts, estimated API calls, and provider routes before committing.
+
+
+3. Run Pipeline — submit the validated job; execution is delegated by `EXECUTION_BACKEND` (`dbos` queue + worker).
+
+4. Monitor — the job detail page polls live status every 2 seconds via HTMX until the job finishes.
+
+   ![Job detail progress](docs/assets/operator_ui/Rulekiln_job_details.png)
+
+5. Review results — navigate to Results, Prompt, Rules, Eval Report, Failures, or Artifacts from the detail page.
+
+
+
+6. Retry failed jobs — use Retry Pipeline on the job detail page to requeue and resume from persisted progress.
+
 
 ### Environment variables for the UI
 
