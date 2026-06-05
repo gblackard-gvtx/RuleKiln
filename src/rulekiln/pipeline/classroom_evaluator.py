@@ -47,11 +47,7 @@ async def evaluate_classroom(
     When ``anchor_only=True`` only the anchor student is evaluated (used during
     loop iterations to avoid paying non-anchor inference cost mid-loop).
     """
-    students = (
-        [classroom_config.anchor_student]
-        if anchor_only
-        else classroom_config.students
-    )
+    students = [classroom_config.anchor_student] if anchor_only else classroom_config.students
 
     async def _eval_one(student: StudentConfig) -> tuple[str, EvalResult]:
         chat_client = get_chat_client(student)

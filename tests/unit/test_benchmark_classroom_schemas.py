@@ -138,8 +138,12 @@ def test_comparison_accepts_student_results() -> None:
 
 def test_student_matrix_section_renders_all_students() -> None:
     summaries = {
-        "s1": StudentEvalSummary(student_id="s1", macro_f1=0.80, accuracy=0.82, malformed_rate=0.01),  # noqa: E501
-        "s2": StudentEvalSummary(student_id="s2", macro_f1=0.70, accuracy=0.72, malformed_rate=0.02),  # noqa: E501
+        "s1": StudentEvalSummary(
+            student_id="s1", macro_f1=0.80, accuracy=0.82, malformed_rate=0.01
+        ),  # noqa: E501
+        "s2": StudentEvalSummary(
+            student_id="s2", macro_f1=0.70, accuracy=0.72, malformed_rate=0.02
+        ),  # noqa: E501
     }
     lines = _render_student_matrix_section(summaries)
     joined = "\n".join(lines)

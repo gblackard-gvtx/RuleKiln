@@ -7,7 +7,6 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, cast
-from typing import Annotated, cast
 
 import yaml
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -48,7 +47,6 @@ from rulekiln.pipeline.evaluator import get_primary_metric
 from rulekiln.pipeline.split_policy import resolve_split_policy
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask, TaskMode
-from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask, TaskMode
 from rulekiln.ui.forms import NewJobForm
 from rulekiln.ui.view_models import (
     ArtifactFileView,
@@ -69,7 +67,6 @@ logger = get_logger(__name__)
 
 _ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".yaml", ".yml", ".jsonl"})
 _CONTENT_TYPE_MAP: dict[str, str] = {
-    ".csv": "text/csv",
     ".csv": "text/csv",
     ".md": "text/markdown",
     ".json": "application/json",
@@ -667,7 +664,6 @@ async def preview_job(
         warnings=warnings,
         errors=errors,
         teacher_routing=form.build_teacher_routing_view(),
-        teacher_routing=form.build_teacher_routing_view(),
     )
 
     if errors:
@@ -1031,16 +1027,6 @@ async def job_results(
     baseline_strategy = "baseline_scaffold" if "baseline_scaffold" in strategy_names else "baseline"
 
     for strategy in sorted(strategy_names):
-
-    strategy_names = {
-        str(getattr(run, "strategy", ""))
-        for run in eval_runs
-        if isinstance(getattr(run, "strategy", None), str)
-        and str(getattr(run, "strategy", "")).strip()
-    }
-    baseline_strategy = "baseline_scaffold" if "baseline_scaffold" in strategy_names else "baseline"
-
-    for strategy in sorted(strategy_names):
         run = _select_summary_eval_run(eval_runs, strategy)
         if run is None:
             continue
@@ -1048,7 +1034,6 @@ async def job_results(
         score_map[strategy] = _score_for_metric(run, primary_metric)
         malformed_map[strategy] = _as_float(getattr(run, "malformed_output_rate", None))
 
-    baseline_score = score_map.get(baseline_strategy)
     baseline_score = score_map.get(baseline_strategy)
     dbscan_score = score_map.get("dbscan")
     hdbscan_score = score_map.get("hdbscan")
@@ -1182,7 +1167,6 @@ async def job_results(
         metric_delta=metric_delta,
         golden_failures=golden_failures,
         malformed_output_rate=selected_malformed_output_rate,
-        prompt_token_count=selected_prompt_token_count,
         prompt_token_count=selected_prompt_token_count,
         fixed_count=fixed_count,
         broken_count=broken_count,
@@ -1371,11 +1355,6 @@ async def job_eval_report(
             "job_id": job_id,
             "primary_metric": primary_metric,
             "evaluation_split_warning": evaluation_split_warning,
-            "selected_strategy_id": selected_strategy_id,
-            "selected_strategy_family": selected_strategy_family,
-            "best_baseline_strategy_id": best_baseline_strategy_id,
-            "best_distilled_strategy_id": best_distilled_strategy_id,
-            "paired_summary": paired_summary,
             "selected_strategy_id": selected_strategy_id,
             "selected_strategy_family": selected_strategy_family,
             "best_baseline_strategy_id": best_baseline_strategy_id,

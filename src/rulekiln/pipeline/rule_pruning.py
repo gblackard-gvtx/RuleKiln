@@ -42,9 +42,10 @@ def _utility_per_token_score(
     utility_signals: dict[str, tuple[int, int]] | None,
 ) -> float:
     tokens = rule.estimated_token_count or 1
-    return _utility_score(
-        rule, regression_penalty=regression_penalty, utility_signals=utility_signals
-    ) / tokens
+    return (
+        _utility_score(rule, regression_penalty=regression_penalty, utility_signals=utility_signals)
+        / tokens
+    )
 
 
 class PruningRecord:

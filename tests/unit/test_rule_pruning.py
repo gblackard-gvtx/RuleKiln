@@ -143,11 +143,11 @@ def test_utility_mode_sorts_by_utility_signal() -> None:
 def test_utility_per_token_favors_high_value_small_rules() -> None:
     rules = [
         _rule("r1", support_count=3, estimated_token_count=200),  # big but mediocre utility
-        _rule("r2", support_count=3, estimated_token_count=50),   # small and high utility/token
+        _rule("r2", support_count=3, estimated_token_count=50),  # small and high utility/token
     ]
     utility_signals = {
         "r1": (10, 0),  # utility=10, per-token = 10/200 = 0.05
-        "r2": (8, 0),   # utility=8,  per-token = 8/50  = 0.16
+        "r2": (8, 0),  # utility=8,  per-token = 8/50  = 0.16
     }
     result = prune_rules(
         rules,
@@ -169,8 +169,8 @@ def test_utility_mode_applies_regression_penalty() -> None:
     ]
     # r1 has regressions that outweigh fixes under default penalty=2
     utility_signals = {
-        "r1": (3, 3),   # utility = 3 - 2*3 = -3
-        "r2": (5, 0),   # utility = 5 - 0 = 5
+        "r1": (3, 3),  # utility = 3 - 2*3 = -3
+        "r2": (5, 0),  # utility = 5 - 0 = 5
     }
     result = prune_rules(
         rules,

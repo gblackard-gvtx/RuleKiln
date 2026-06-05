@@ -98,9 +98,7 @@ class AppSettings(BaseSettings):
     worker_max_attempts: int = Field(default=2, ge=1, alias="WORKER_MAX_ATTEMPTS")
 
     # ── Batch API polling ────────────────────────────────────────────────────
-    batch_poll_interval_seconds: int = Field(
-        default=60, alias="BATCH_POLL_INTERVAL_SECONDS"
-    )
+    batch_poll_interval_seconds: int = Field(default=60, alias="BATCH_POLL_INTERVAL_SECONDS")
 
     # ── Provider rate limiting defaults ──────────────────────────────────────
     default_provider_max_concurrency: int = Field(

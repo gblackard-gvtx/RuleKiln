@@ -143,6 +143,7 @@ from rulekiln.pipeline.statistics import (
 )
 from rulekiln.pipeline.strategy_selection import build_strategy_comparison
 from rulekiln.providers.chat import get_chat_client
+from rulekiln.providers.contracts import BatchChatModelClient, ChatModelClient, ProviderConfig
 from rulekiln.providers.embedding import get_embedding_client
 from rulekiln.providers.resolver import resolve_provider_config
 from rulekiln.providers.tracking import (
@@ -407,9 +408,7 @@ async def _run(
 
     if run_compile_phase:
         # ── Stage: extracting_rules ───────────────────────────────────────
-        extraction_phase_cfg = (
-            tc.for_phase("instruction_extraction") if tc is not None else None
-        )
+        extraction_phase_cfg = tc.for_phase("instruction_extraction") if tc is not None else None
         _app_settings = get_settings()
         _extraction_profile = _app_settings.provider_profiles.get(
             extraction_teacher_config.profile_name
@@ -448,9 +447,7 @@ async def _run(
                     # Below threshold — fall back to sequential for this job.
                     _use_extraction_batch = False
                 else:
-                    batch_items = [
-                        build_extraction_batch_item(task, c) for c in pending_cases
-                    ]
+                    batch_items = [build_extraction_batch_item(task, c) for c in pending_cases]
                     assert isinstance(extraction_teacher_chat, BatchChatModelClient)  # noqa: S101
                     provider_batch_id = await extraction_teacher_chat.submit_batch(
                         batch_items, extraction_teacher_config
@@ -560,9 +557,7 @@ async def _run(
                         succeeded_count=batch_result.succeeded_count,
                         errored_count=batch_result.errored_count,
                     )
-                    await mark_stage_complete(
-                        session, job_id, PipelineStage.EXTRACTING_RULES
-                    )
+                    await mark_stage_complete(session, job_id, PipelineStage.EXTRACTING_RULES)
                     await mark_stage_complete(
                         session, job_id, PipelineStage.EXTRACTING_RULES_BATCH_COLLECTED
                     )
@@ -2069,9 +2064,7 @@ async def _run(
 
             # ── Rule ablation artifact ───────────────────────────────────
             if ablation_artifact is not None:
-                written_artifacts.append(
-                    write_rule_ablation_json(artifact_root, ablation_artifact)
-                )
+                written_artifacts.append(write_rule_ablation_json(artifact_root, ablation_artifact))
 
             # ── Rule provenance artifact ──────────────────────────────────
             if selected_strategy in DISTILLED_STRATEGIES:
@@ -2081,17 +2074,19 @@ async def _run(
                 )
                 prov_schemas = [_db_synth_to_schema(r) for r in prov_db_synth]
                 if prov_schemas:
-                    prov_failure_analysis = analyze_failures(
-                        baseline_scaffold_eval or baseline_eval,
-                        prov_selected_eval,
-                        prov_schemas,
-                    ) if prov_selected_eval else None
+                    prov_failure_analysis = (
+                        analyze_failures(
+                            baseline_scaffold_eval or baseline_eval,
+                            prov_selected_eval,
+                            prov_schemas,
+                        )
+                        if prov_selected_eval
+                        else None
+                    )
                     db_clusters = await get_rule_clusters_for_job(
                         session, job_id, selected_strategy
                     )
-                    cluster_pairs = [
-                        (c.id, list(c.rule_ids)) for c in db_clusters
-                    ]
+                    cluster_pairs = [(c.id, list(c.rule_ids)) for c in db_clusters]
                     cluster_id_map = build_cluster_id_by_micro_rule(cluster_pairs)
                     prov_artifact = build_provenance_records(
                         job_id=job_id,
@@ -2719,7 +2714,9 @@ async def _run_refinement_loop(
             except Exception as exc:
                 logger.warning(
                     "refinement_iter_artifact_load_failed",
-                    job_id=job_id, iteration=iteration, error=str(exc),
+                    job_id=job_id,
+                    iteration=iteration,
+                    error=str(exc),
                 )
             logger.info("refinement_iter_resumed", job_id=job_id, iteration=iteration)
             continue
@@ -2747,7 +2744,9 @@ async def _run_refinement_loop(
         except Exception as exc:
             logger.warning(
                 "refinement_teacher_failed",
-                job_id=job_id, iteration=iteration, error=str(exc),
+                job_id=job_id,
+                iteration=iteration,
+                error=str(exc),
             )
             break
 
@@ -2774,7 +2773,9 @@ async def _run_refinement_loop(
         except Exception as exc:
             logger.warning(
                 "refinement_compile_failed",
-                job_id=job_id, iteration=iteration, error=str(exc),
+                job_id=job_id,
+                iteration=iteration,
+                error=str(exc),
             )
             break
 
@@ -2799,7 +2800,9 @@ async def _run_refinement_loop(
         except Exception as exc:
             logger.warning(
                 "refinement_eval_failed",
-                job_id=job_id, iteration=iteration, error=str(exc),
+                job_id=job_id,
+                iteration=iteration,
+                error=str(exc),
             )
             break
 
@@ -2982,9 +2985,7 @@ async def _run_rule_ablation(
                 bootstrap_seed_offset=bootstrap_seed_offset,
             )
         except Exception as exc:
-            logger.warning(
-                "ablation_eval_failed", job_id=job_id, rule_id=rule.id, error=str(exc)
-            )
+            logger.warning("ablation_eval_failed", job_id=job_id, rule_id=rule.id, error=str(exc))
             records.append(
                 RuleAblationRecord(
                     rule_id=rule.id,
@@ -3135,9 +3136,7 @@ async def _run_two_pass_optimizer(
                     PruningModeRow(
                         mode=mode,  # type: ignore[arg-type]
                         strategy_id=mode_strategy_id,
-                        rule_count=len(
-                            [r for r in (prior.case_results or []) if True]
-                        ),
+                        rule_count=len([r for r in (prior.case_results or []) if True]),
                         prompt_tokens=prior_tokens,
                         primary_metric=primary_metric,
                         score=prior_score if prior_score else None,
@@ -3168,9 +3167,7 @@ async def _run_two_pass_optimizer(
         try:
             mode_prompt, _ = compile_prompt(task, pruned_result.selected, mode_strategy_id)
         except Exception as exc:
-            logger.warning(
-                "pruning_mode_compile_failed", job_id=job_id, mode=mode, error=str(exc)
-            )
+            logger.warning("pruning_mode_compile_failed", job_id=job_id, mode=mode, error=str(exc))
             await mark_stage_complete(session, job_id, mode_strategy_id)
             continue
 
@@ -3192,9 +3189,7 @@ async def _run_two_pass_optimizer(
                 bootstrap_seed_offset=bootstrap_seed_offset,
             )
         except Exception as exc:
-            logger.warning(
-                "pruning_mode_eval_failed", job_id=job_id, mode=mode, error=str(exc)
-            )
+            logger.warning("pruning_mode_eval_failed", job_id=job_id, mode=mode, error=str(exc))
             await mark_stage_complete(session, job_id, mode_strategy_id)
             continue
 
@@ -3229,7 +3224,7 @@ def _ablation_classify(
     delta: float,
     changed_cases: int,
     min_changed_cases: int,
-) -> Literal['helpful', 'harmful', 'neutral', 'inconclusive']:
+) -> Literal["helpful", "harmful", "neutral", "inconclusive"]:
     """Classify a leave-one-rule-out ablation result."""
     if changed_cases < min_changed_cases:
         return "inconclusive"

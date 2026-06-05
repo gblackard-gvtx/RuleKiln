@@ -85,9 +85,7 @@ class FailureAnalysisResult:
     def unattributed_fraction(self) -> float:
         """Fraction of non-fixed failures with no real rule attribution."""
         non_fixed = [
-            f
-            for f in self.structured_failures
-            if f.failure_class in ("broken", "unchanged_wrong")
+            f for f in self.structured_failures if f.failure_class in ("broken", "unchanged_wrong")
         ]
         if not non_fixed:
             return 0.0

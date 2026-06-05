@@ -131,9 +131,7 @@ def main() -> None:
         mode="a",
     )
 
-    (generated_dir / "labels.json").write_text(
-        json.dumps(label_names, indent=2) + "\n"
-    )
+    (generated_dir / "labels.json").write_text(json.dumps(label_names, indent=2) + "\n")
 
     print(f"Train: {min(len(train_rows), TRAIN_LIMIT)} cases")
     print(f"Validation: {min(len(val_rows), VAL_LIMIT)} cases")

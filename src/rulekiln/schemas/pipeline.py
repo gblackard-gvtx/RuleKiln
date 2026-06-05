@@ -96,6 +96,7 @@ class PruningModeComparison(BaseModel):
     selected_mode: Literal["support_count", "utility", "utility_per_token"]
     rows: list[PruningModeRow] = Field(default_factory=list)
 
+
 # ── Rule extraction ──────────────────────────────────────────────────────────
 
 
@@ -186,94 +187,6 @@ class RuleClusterSchema(BaseModel):
     algorithm: str
     rule_ids: list[str]
     cluster_metadata: dict[str, str | int | float] = Field(default_factory=dict)
-
-
-class MetricConfidenceInterval(BaseModel):
-    """Deterministic confidence interval descriptor for one metric."""
-
-    low: float
-    high: float
-    method: Literal["bootstrap"] = "bootstrap"
-    iterations: int
-    seed: int
-
-
-class PerLabelMetricsRow(BaseModel):
-    """Per-label classification metrics row for CSV/JSON artifacts."""
-
-    label: str
-    support: int
-    true_positive: int
-    false_positive: int
-    false_negative: int
-    precision: float
-    recall: float
-    f1: float
-
-
-class TopConfusionRow(BaseModel):
-    """Top non-diagonal confusion entry with deterministic example IDs."""
-
-    actual_label: str
-    predicted_label: str
-    count: int
-    example_case_ids: list[str] = Field(default_factory=list)
-
-
-class RegressedLabelRow(BaseModel):
-    """Label-level regression diagnostics between baseline and candidate strategies."""
-
-    label: str
-    support: int
-    baseline_recall: float
-    candidate_recall: float
-    recall_delta: float
-    baseline_f1: float
-    candidate_f1: float
-    f1_delta: float
-    new_false_negatives: int
-    top_predicted_wrong_labels: list[str] = Field(default_factory=list)
-    example_case_ids: list[str] = Field(default_factory=list)
-
-
-class PairedComparisonExample(BaseModel):
-    """One baseline-vs-candidate paired comparison example row."""
-
-    schema_version: Literal["rulekiln.paired_comparison_example.v1"] = (
-        "rulekiln.paired_comparison_example.v1"
-    )
-    case_id: str
-    change_class: Literal["fixed", "broken", "unchanged"]
-    unchanged_status: Literal["both_correct", "both_wrong"] | None = None
-    baseline_strategy_id: str
-    candidate_strategy_id: str
-    expected_label: str
-    baseline_prediction: str
-    candidate_prediction: str
-    baseline_correct: bool
-    candidate_correct: bool
-    input_text: str
-    notes: list[str] = Field(default_factory=list)
-
-
-class PairedComparisonSummary(BaseModel):
-    """Aggregate baseline-vs-candidate paired comparison summary."""
-
-    schema_version: Literal["rulekiln.paired_comparison_summary.v1"] = (
-        "rulekiln.paired_comparison_summary.v1"
-    )
-    baseline_strategy_id: str
-    candidate_strategy_id: str
-    fixed_count: int
-    broken_count: int
-    unchanged_correct_count: int
-    unchanged_wrong_count: int
-    total_cases: int
-    net_fix_rate: float | None = None
-    net_fix_rate_status: Literal["ok", "no_changed_outcomes"]
-    overall_net_fix_rate: float
-
-
 class MetricConfidenceInterval(BaseModel):
     """Deterministic confidence interval descriptor for one metric."""
 
@@ -425,16 +338,13 @@ class CaseEvaluationFailure(BaseModel):
     failed_assertion_types: list[str] = Field(default_factory=list)
     explanation: str | None = None
 
-
 # ── Refinement iteration artifact ────────────────────────────────────────────
 
 
 class RefinementIterationArtifact(BaseModel):
     """Per-iteration artifact emitted by the closed-loop conflict resolution controller."""
 
-    schema_version: Literal["rulekiln.refinement_iteration.v1"] = (
-        "rulekiln.refinement_iteration.v1"
-    )
+    schema_version: Literal["rulekiln.refinement_iteration.v1"] = "rulekiln.refinement_iteration.v1"
     job_id: str
     iteration: int
     strategy_id: str
@@ -465,59 +375,7 @@ class RefinementAblationRow(BaseModel):
 class RefinementAblationArtifact(BaseModel):
     """Comparison artifact: loop ON vs loop OFF over the same seed and split."""
 
-    schema_version: Literal["rulekiln.refinement_ablation.v1"] = (
-        "rulekiln.refinement_ablation.v1"
-    )
-    benchmark_name: str
-    dataset: str
-    seed: int
-    rows: list[RefinementAblationRow] = Field(default_factory=list)
-    loop_helped: bool | None = None
-    delta_macro_f1: float | None = None
-
-
-# ── Refinement iteration artifact ────────────────────────────────────────────
-
-
-class RefinementIterationArtifact(BaseModel):
-    """Per-iteration artifact emitted by the closed-loop conflict resolution controller."""
-
-    schema_version: Literal["rulekiln.refinement_iteration.v1"] = (
-        "rulekiln.refinement_iteration.v1"
-    )
-    job_id: str
-    iteration: int
-    strategy_id: str
-    prior_metric: float
-    new_metric: float
-    improvement: float
-    revised_rule_ids: list[str] = Field(default_factory=list)
-    stop_reason: str | None = None
-
-
-# ── Refinement ablation artifact (loop ON vs OFF) ─────────────────────────────
-
-
-class RefinementAblationRow(BaseModel):
-    """One arm of the refinement loop ablation (loop_on or loop_off)."""
-
-    arm: Literal["loop_on", "loop_off"]
-    strategy_id: str | None = None
-    macro_f1: float | None = None
-    macro_f1_ci_low: float | None = None
-    macro_f1_ci_high: float | None = None
-    regression_rate: float | None = None
-    prompt_token_count: int | None = None
-    teacher_cost_usd: float | None = None
-    iterations_run: int = 0
-
-
-class RefinementAblationArtifact(BaseModel):
-    """Comparison artifact: loop ON vs loop OFF over the same seed and split."""
-
-    schema_version: Literal["rulekiln.refinement_ablation.v1"] = (
-        "rulekiln.refinement_ablation.v1"
-    )
+    schema_version: Literal["rulekiln.refinement_ablation.v1"] = "rulekiln.refinement_ablation.v1"
     benchmark_name: str
     dataset: str
     seed: int

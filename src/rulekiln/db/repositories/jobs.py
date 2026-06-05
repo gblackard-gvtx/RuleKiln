@@ -150,18 +150,6 @@ async def bulk_insert_rule_clusters(session: AsyncSession, clusters: list[RuleCl
     await session.commit()
 
 
-async def get_rule_clusters_for_job(
-    session: AsyncSession, job_id: str, strategy: str
-) -> list[RuleCluster]:
-    """Return all rule clusters for a job+strategy (for provenance cluster_id lookup)."""
-    result = await session.execute(
-        select(RuleCluster).where(
-            RuleCluster.job_id == job_id,
-            RuleCluster.strategy == strategy,
-        )
-    )
-    return list(result.scalars().all())
-
 
 async def get_rule_clusters_for_job(
     session: AsyncSession, job_id: str, strategy: str
@@ -609,7 +597,5 @@ async def update_batch_job(
         values["completed_at"] = completed_at
     if not values:
         return
-    await session.execute(
-        update(BatchJob).where(BatchJob.id == batch_job_id).values(**values)
-    )
+    await session.execute(update(BatchJob).where(BatchJob.id == batch_job_id).values(**values))
     await session.flush()

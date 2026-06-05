@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from pathlib import Path
 
 import pytest
 from sqlalchemy import select
@@ -36,10 +37,10 @@ async def db_factory():
 
 
 @pytest.fixture()
-def fake_settings() -> AppSettings:
+def fake_settings(tmp_path: Path) -> AppSettings:
     return AppSettings(
         DATABASE_URL=_IN_MEMORY_URL,
-        MLFLOW_TRACKING_URI="file:///tmp/mlflow-dbos-stage-test",
+        MLFLOW_TRACKING_URI=f"file://{tmp_path / 'mlflow-dbos-stage-test'}",
         provider_profiles={
             "fake": ProviderProfile(
                 provider="fake",

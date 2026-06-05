@@ -172,9 +172,7 @@ def test_schema_version_is_set() -> None:
         ("prompt_version", "v1", "v2"),
     ],
 )
-def test_property_change_produces_different_key(
-    field: str, value_a: str, value_b: str
-) -> None:
+def test_property_change_produces_different_key(field: str, value_a: str, value_b: str) -> None:
     k1 = _key(**{field: value_a})  # type: ignore[arg-type]
     k2 = _key(**{field: value_b})  # type: ignore[arg-type]
     assert k1.cache_key() != k2.cache_key()

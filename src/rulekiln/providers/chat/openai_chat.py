@@ -29,9 +29,7 @@ from rulekiln.schemas.batch import (
 from rulekiln.schemas.usage import ChatCompletionResult, ModelUsage
 
 # Batch statuses that indicate the job is still in flight.
-_OPENAI_PROCESSING_STATUSES: frozenset[str] = frozenset(
-    {"validating", "in_progress", "finalizing"}
-)
+_OPENAI_PROCESSING_STATUSES: frozenset[str] = frozenset({"validating", "in_progress", "finalizing"})
 
 
 def _extract_response_text(response_body: dict[str, object]) -> str | None:
@@ -214,9 +212,7 @@ class OpenAIChatClient(BatchChatModelClient):
         batch = await client.batches.retrieve(batch_id)
 
         if batch.status in _OPENAI_PROCESSING_STATUSES:
-            raise ValueError(
-                f"Batch {batch_id!r} is not yet complete (status={batch.status!r})."
-            )
+            raise ValueError(f"Batch {batch_id!r} is not yet complete (status={batch.status!r}).")
 
         schema_cls = get_schema_class(output_schema_class_name)
         items: list[BatchItemResult] = []

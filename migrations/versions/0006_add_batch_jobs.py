@@ -1,3 +1,6 @@
+import sqlalchemy as sa
+from alembic import op
+
 """Add batch_jobs table for durable batch API submission state.
 
 Revision ID intentionally kept <= 32 chars for alembic_version.version_num compatibility.
@@ -8,8 +11,7 @@ down_revision = "0005_eval_case_results"
 branch_labels = None
 depends_on = None
 
-import sqlalchemy as sa
-from alembic import op
+
 
 
 def upgrade() -> None:

@@ -76,9 +76,7 @@ def write_rulekiln_cases(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate RuleKiln cases for MultiNLI"
-    )
+    parser = argparse.ArgumentParser(description="Generate RuleKiln cases for MultiNLI")
     parser.add_argument(
         "--discover-labels",
         action="store_true",
@@ -137,9 +135,7 @@ def main() -> None:
         mode="a",
     )
 
-    (generated_dir / "labels.json").write_text(
-        json.dumps(LABEL_NAMES, indent=2) + "\n"
-    )
+    (generated_dir / "labels.json").write_text(json.dumps(LABEL_NAMES, indent=2) + "\n")
 
     print(f"Train: up to {TRAIN_LIMIT} cases")
     print(f"Validation: up to {VAL_LIMIT} cases (validation_matched split)")
