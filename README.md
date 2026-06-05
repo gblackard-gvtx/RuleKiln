@@ -400,7 +400,6 @@ http://localhost:8000/ui/jobs/new
 
 2. Preview — validate files, review split counts, estimated API calls, and provider routes before committing.
 
-   ![Job preview](docs/assets/screenshots/operator-ui/job-preview.png)
 
 3. Run Pipeline — submit the validated job; execution is delegated by `EXECUTION_BACKEND` (`dbos` queue + worker).
 
@@ -410,11 +409,10 @@ http://localhost:8000/ui/jobs/new
 
 5. Review results — navigate to Results, Prompt, Rules, Eval Report, Failures, or Artifacts from the detail page.
 
-   ![Results view](docs/assets/screenshots/operator-ui/results.png)
+
 
 6. Retry failed jobs — use Retry Pipeline on the job detail page to requeue and resume from persisted progress.
 
-   ![Retry pipeline action](docs/assets/screenshots/operator-ui/retry-pipeline.png)
 
 ### Environment variables for the UI
 
