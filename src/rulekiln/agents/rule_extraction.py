@@ -1,6 +1,7 @@
 """Pydantic AI rule extraction agent wrapper."""
 
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
+from rulekiln.schemas.batch import BatchItem
 from rulekiln.schemas.pipeline import ExtractionOutput
 from rulekiln.schemas.task_case import RuleKilnCase, RuleKilnTask
 
@@ -31,6 +32,24 @@ def _build_extraction_prompt(task: RuleKilnTask, case: RuleKilnCase) -> str:
         f"Input:\n{case.input}\n\n"
         f"Expected output:\n{case.expected}\n\n"
         "Extract the rules."
+    )
+
+
+def build_extraction_batch_item(
+    task: RuleKilnTask,
+    case: RuleKilnCase,
+) -> BatchItem:
+    """Build a BatchItem for a single extraction case without calling the model.
+
+    Uses the same system/user prompts as ``extract_rules_for_case`` so that
+    batch and sequential paths produce equivalent requests.
+    """
+    return BatchItem(
+        custom_id=case.id,
+        system_prompt=_EXTRACTION_SYSTEM_PROMPT,
+        user_prompt=_build_extraction_prompt(task, case),
+        output_schema_json=ExtractionOutput.model_json_schema(),
+        output_schema_class_name=ExtractionOutput.__name__,
     )
 
 

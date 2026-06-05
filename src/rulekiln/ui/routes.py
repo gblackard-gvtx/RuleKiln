@@ -7,6 +7,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Annotated, cast
+from typing import Annotated, cast
 
 import yaml
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
@@ -47,6 +48,7 @@ from rulekiln.pipeline.evaluator import get_primary_metric
 from rulekiln.pipeline.split_policy import resolve_split_policy
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask, TaskMode
+from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask, TaskMode
 from rulekiln.ui.forms import NewJobForm
 from rulekiln.ui.view_models import (
     ArtifactFileView,
@@ -68,6 +70,7 @@ logger = get_logger(__name__)
 _ALLOWED_EXTENSIONS: frozenset[str] = frozenset({".yaml", ".yml", ".jsonl"})
 _CONTENT_TYPE_MAP: dict[str, str] = {
     ".csv": "text/csv",
+    ".csv": "text/csv",
     ".md": "text/markdown",
     ".json": "application/json",
     ".jsonl": "application/x-ndjson",
@@ -82,6 +85,8 @@ _KNOWN_ARTIFACT_PATTERNS: list[str] = [
     "outputs/distilled_prompt_hdbscan.md",
     "outputs/baseline_scaffold_prompt.md",
     "outputs/baseline_scaffold_eval.json",
+    "outputs/baseline_scaffold_prompt.md",
+    "outputs/baseline_scaffold_eval.json",
     "outputs/selected_distilled_prompt.md",
     "outputs/rules_dbscan.jsonl",
     "outputs/rules_hdbscan.jsonl",
@@ -94,8 +99,18 @@ _KNOWN_ARTIFACT_PATTERNS: list[str] = [
     "outputs/paired_comparison/broken.jsonl",
     "outputs/paired_comparison/unchanged.jsonl",
     "outputs/paired_comparison/summary.json",
+    "outputs/confusion_matrix.csv",
+    "outputs/per_label_metrics.csv",
+    "outputs/top_confusions.md",
+    "outputs/paired_comparison/fixed.jsonl",
+    "outputs/paired_comparison/broken.jsonl",
+    "outputs/paired_comparison/unchanged.jsonl",
+    "outputs/paired_comparison/summary.json",
     "outputs/failures_fixed.jsonl",
     "outputs/failures_broken.jsonl",
+    "outputs/rule_provenance.json",
+    "outputs/rule_provenance.md",
+    "outputs/rule_ablation.json",
     "outputs/rule_provenance.json",
     "outputs/rule_provenance.md",
     "outputs/rule_ablation.json",
@@ -158,6 +173,19 @@ def _resolve_primary_metric(job: DistillationJob) -> str:
         if isinstance(metric_override, str) and metric_override.strip():
             return metric_override.strip()
 
+    valid_task_modes = {
+        "classification",
+        "summarization",
+        "extraction",
+        "rubric_review",
+        "routing",
+        "tool_use",
+        "freeform_generation",
+        "agent_behavior",
+    }
+    if job.task_mode in valid_task_modes:
+        return get_primary_metric(cast(TaskMode, job.task_mode))
+    return "weighted_case_score"
     valid_task_modes = {
         "classification",
         "summarization",
@@ -236,6 +264,12 @@ def _as_int(value: object) -> int | None:
 def _as_bool(value: object) -> bool | None:
     if isinstance(value, bool):
         return value
+    return None
+
+
+def _as_non_empty_str(value: object) -> str | None:
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
 
 
@@ -541,22 +575,28 @@ async def preview_job(
     # ── Validate per-phase teacher overrides ──
     errors.extend(form.validate_phase_overrides())
 
+    # ── Validate per-phase teacher overrides ──
+    errors.extend(form.validate_phase_overrides())
+
     # ── Build DistillationRequest & cross-validate ──
     judge: ModelRoute | None = None
     if form.judge_profile and form.judge_model:
         judge = ModelRoute(provider_profile=form.judge_profile, model=form.judge_model)
 
     teacher_config = form.build_teacher_config()
+    classroom_config = form.build_classroom_config()
+    anchor = classroom_config.anchor_student
 
     distillation_request = DistillationRequest(
         task=task,
         cases=cases,
         teacher=ModelRoute(provider_profile=form.teacher_profile, model=form.teacher_model),
-        student=ModelRoute(provider_profile=form.student_profile, model=form.student_model),
+        student=ModelRoute(provider_profile=anchor.provider, model=anchor.model),
         embedding=ModelRoute(provider_profile=form.embedding_profile, model=form.embedding_model),
         judge=judge,
         baseline_prompt=form.baseline_prompt or None,
         teacher_config=teacher_config,
+        classroom_config=classroom_config if len(classroom_config.students) > 1 else None,
     )
     try:
         validate_distillation_request(distillation_request, settings)
@@ -580,9 +620,13 @@ async def preview_job(
         warnings.append(split_policy.fallback_warning)
 
     # ── Provider routes for display ──
+    student_specs = [
+        (f"student_{i}" if i > 0 else "student", s.provider, s.model)
+        for i, s in enumerate(classroom_config.students)
+    ]
     route_specs: list[tuple[str, str, str]] = [
         ("teacher", form.teacher_profile, form.teacher_model),
-        ("student", form.student_profile, form.student_model),
+        *student_specs,
         ("embedding", form.embedding_profile, form.embedding_model),
     ]
     if form.judge_profile and form.judge_model:
@@ -622,6 +666,7 @@ async def preview_job(
         estimated_embedding_calls=train_count * 5,
         warnings=warnings,
         errors=errors,
+        teacher_routing=form.build_teacher_routing_view(),
         teacher_routing=form.build_teacher_routing_view(),
     )
 
@@ -986,6 +1031,16 @@ async def job_results(
     baseline_strategy = "baseline_scaffold" if "baseline_scaffold" in strategy_names else "baseline"
 
     for strategy in sorted(strategy_names):
+
+    strategy_names = {
+        str(getattr(run, "strategy", ""))
+        for run in eval_runs
+        if isinstance(getattr(run, "strategy", None), str)
+        and str(getattr(run, "strategy", "")).strip()
+    }
+    baseline_strategy = "baseline_scaffold" if "baseline_scaffold" in strategy_names else "baseline"
+
+    for strategy in sorted(strategy_names):
         run = _select_summary_eval_run(eval_runs, strategy)
         if run is None:
             continue
@@ -993,6 +1048,7 @@ async def job_results(
         score_map[strategy] = _score_for_metric(run, primary_metric)
         malformed_map[strategy] = _as_float(getattr(run, "malformed_output_rate", None))
 
+    baseline_score = score_map.get(baseline_strategy)
     baseline_score = score_map.get(baseline_strategy)
     dbscan_score = score_map.get("dbscan")
     hdbscan_score = score_map.get("hdbscan")
@@ -1017,6 +1073,7 @@ async def job_results(
             )
             best_strategy, best_run = ranked_runs[0]
 
+    baseline_run = run_map.get(baseline_strategy)
     baseline_run = run_map.get(baseline_strategy)
     baseline_macro_f1 = _as_float(getattr(baseline_run, "macro_f1", None)) if baseline_run else None
     best_macro_f1 = _as_float(getattr(best_run, "macro_f1", None)) if best_run else None
@@ -1051,6 +1108,17 @@ async def job_results(
             gate_key = f"{selected_strategy}_gate"
             gate_payload = comparison_payload.get(gate_key)
 
+    selected_prompt_token_count: int | None = None
+    if comparison_payload is not None and selected_strategy:
+        gate_payload: object | None = None
+        strategy_gates_payload = comparison_payload.get("strategy_gates")
+        if isinstance(strategy_gates_payload, dict):
+            gate_payload = strategy_gates_payload.get(selected_strategy)
+
+        if gate_payload is None:
+            gate_key = f"{selected_strategy}_gate"
+            gate_payload = comparison_payload.get(gate_key)
+
         if isinstance(gate_payload, dict):
             quality_gates_passed = _as_bool(gate_payload.get("passed"))
             golden_failures = _as_int(gate_payload.get("golden_failures"))
@@ -1058,6 +1126,10 @@ async def job_results(
                 selected_malformed_output_rate = _as_float(
                     gate_payload.get("malformed_output_rate")
                 )
+
+        prompt_tokens_payload = comparison_payload.get("strategy_prompt_tokens")
+        if isinstance(prompt_tokens_payload, dict):
+            selected_prompt_token_count = _as_int(prompt_tokens_payload.get(selected_strategy))
 
         prompt_tokens_payload = comparison_payload.get("strategy_prompt_tokens")
         if isinstance(prompt_tokens_payload, dict):
@@ -1110,6 +1182,7 @@ async def job_results(
         metric_delta=metric_delta,
         golden_failures=golden_failures,
         malformed_output_rate=selected_malformed_output_rate,
+        prompt_token_count=selected_prompt_token_count,
         prompt_token_count=selected_prompt_token_count,
         fixed_count=fixed_count,
         broken_count=broken_count,
@@ -1202,8 +1275,53 @@ async def job_eval_report(
     best_baseline_strategy_id: str | None = None
     best_distilled_strategy_id: str | None = None
     paired_summary: dict[str, float | int | str | None] | None = None
+    selected_strategy_id: str | None = None
+    selected_strategy_family: str | None = None
+    best_baseline_strategy_id: str | None = None
+    best_distilled_strategy_id: str | None = None
+    paired_summary: dict[str, float | int | str | None] | None = None
     if comparison_payload is not None:
         warning_value = comparison_payload.get("evaluation_split_warning")
+        evaluation_split_warning = _as_non_empty_str(warning_value)
+
+        selected_strategy_id = _as_non_empty_str(
+            comparison_payload.get("selected_strategy_id")
+        ) or _as_non_empty_str(comparison_payload.get("selected_strategy"))
+        selected_strategy_family = _as_non_empty_str(
+            comparison_payload.get("selected_strategy_family")
+        )
+        best_baseline_strategy_id = _as_non_empty_str(
+            comparison_payload.get("best_baseline_strategy_id")
+        )
+        best_distilled_strategy_id = _as_non_empty_str(
+            comparison_payload.get("best_distilled_strategy_id")
+        )
+
+        best_by_family_payload = comparison_payload.get("best_by_family")
+        if isinstance(best_by_family_payload, dict):
+            best_baseline_strategy_id = best_baseline_strategy_id or _as_non_empty_str(
+                best_by_family_payload.get("baseline")
+            )
+            best_distilled_strategy_id = best_distilled_strategy_id or _as_non_empty_str(
+                best_by_family_payload.get("distilled")
+            )
+
+        paired_payload = comparison_payload.get("paired_comparison")
+        if isinstance(paired_payload, dict):
+            paired_summary = {
+                "fixed_count": _as_int(paired_payload.get("fixed_count")),
+                "broken_count": _as_int(paired_payload.get("broken_count")),
+                "unchanged_correct_count": _as_int(paired_payload.get("unchanged_correct_count")),
+                "unchanged_wrong_count": _as_int(paired_payload.get("unchanged_wrong_count")),
+                "net_fix_rate": _as_float(paired_payload.get("net_fix_rate")),
+                "net_fix_rate_status": _as_non_empty_str(paired_payload.get("net_fix_rate_status")),
+                "overall_net_fix_rate": _as_float(paired_payload.get("overall_net_fix_rate")),
+            }
+
+    if selected_strategy_family is None and selected_strategy_id is not None:
+        selected_strategy_family = (
+            "distilled" if selected_strategy_id in {"dbscan", "hdbscan"} else "baseline"
+        )
         evaluation_split_warning = _as_non_empty_str(warning_value)
 
         selected_strategy_id = _as_non_empty_str(
@@ -1253,6 +1371,11 @@ async def job_eval_report(
             "job_id": job_id,
             "primary_metric": primary_metric,
             "evaluation_split_warning": evaluation_split_warning,
+            "selected_strategy_id": selected_strategy_id,
+            "selected_strategy_family": selected_strategy_family,
+            "best_baseline_strategy_id": best_baseline_strategy_id,
+            "best_distilled_strategy_id": best_distilled_strategy_id,
+            "paired_summary": paired_summary,
             "selected_strategy_id": selected_strategy_id,
             "selected_strategy_family": selected_strategy_family,
             "best_baseline_strategy_id": best_baseline_strategy_id,

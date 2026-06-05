@@ -76,6 +76,8 @@ class ModelCallRecord(BaseModel):
     status: Literal["success", "failed"]
     error_type: str | None = None
     idempotency_key: str | None = None
+    is_batch: bool = False
+    batch_id: str | None = None
 
 
 class ChatCompletionResult(BaseModel):

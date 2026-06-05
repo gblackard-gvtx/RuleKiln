@@ -6,6 +6,7 @@ from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rulekiln.db.models import (
+    BatchJob,
     Case,
     DistillationJob,
     EvalRun,
@@ -147,6 +148,19 @@ async def get_micro_rules_for_job(session: AsyncSession, job_id: str) -> list[Mi
 async def bulk_insert_rule_clusters(session: AsyncSession, clusters: list[RuleCluster]) -> None:
     session.add_all(clusters)
     await session.commit()
+
+
+async def get_rule_clusters_for_job(
+    session: AsyncSession, job_id: str, strategy: str
+) -> list[RuleCluster]:
+    """Return all rule clusters for a job+strategy (for provenance cluster_id lookup)."""
+    result = await session.execute(
+        select(RuleCluster).where(
+            RuleCluster.job_id == job_id,
+            RuleCluster.strategy == strategy,
+        )
+    )
+    return list(result.scalars().all())
 
 
 async def get_rule_clusters_for_job(
@@ -537,3 +551,65 @@ async def recover_expired_leases(
     retried_count = int(getattr(retried, "rowcount", 0) or 0)
     failed_count = int(getattr(failed, "rowcount", 0) or 0)
     return (retried_count, failed_count)
+
+
+# ── Batch job CRUD ────────────────────────────────────────────────────────────
+
+
+async def insert_batch_job(session: AsyncSession, batch_job: BatchJob) -> None:
+    """Persist a new BatchJob record and flush to obtain the DB-assigned updated_at."""
+    session.add(batch_job)
+    await session.flush()
+
+
+async def get_batch_job_by_stage(
+    session: AsyncSession,
+    job_id: str,
+    stage: str,
+    strategy: str | None,
+) -> BatchJob | None:
+    """Return the most-recently submitted BatchJob for a given stage/strategy, or None."""
+    result = await session.execute(
+        select(BatchJob)
+        .where(
+            BatchJob.job_id == job_id,
+            BatchJob.stage == stage,
+            BatchJob.strategy == strategy,
+        )
+        .order_by(BatchJob.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def update_batch_job(
+    session: AsyncSession,
+    batch_job_id: str,
+    *,
+    status: str | None = None,
+    succeeded_count: int | None = None,
+    errored_count: int | None = None,
+    output_file_id: str | None = None,
+    error_file_id: str | None = None,
+    completed_at: datetime | None = None,
+) -> None:
+    """Patch mutable fields on an existing BatchJob."""
+    values: dict[str, object] = {}
+    if status is not None:
+        values["status"] = status
+    if succeeded_count is not None:
+        values["succeeded_count"] = succeeded_count
+    if errored_count is not None:
+        values["errored_count"] = errored_count
+    if output_file_id is not None:
+        values["output_file_id"] = output_file_id
+    if error_file_id is not None:
+        values["error_file_id"] = error_file_id
+    if completed_at is not None:
+        values["completed_at"] = completed_at
+    if not values:
+        return
+    await session.execute(
+        update(BatchJob).where(BatchJob.id == batch_job_id).values(**values)
+    )
+    await session.flush()

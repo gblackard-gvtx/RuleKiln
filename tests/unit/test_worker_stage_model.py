@@ -8,6 +8,8 @@ def test_all_required_stages_present() -> None:
         "created",
         "validating_project",
         "extracting_rules",
+        "extracting_rules_batch_submitted",
+        "extracting_rules_batch_collected",
         "embedding_rules",
         "clustering_rules",
         "synthesizing_rules",
@@ -18,6 +20,9 @@ def test_all_required_stages_present() -> None:
         "evaluating_distilled",
         "selecting_strategy",
         "analyzing_failures",
+        "refining_rules",
+        "ablating_rules",
+        "optimizing_pruning",
         "refining_rules",
         "ablating_rules",
         "optimizing_pruning",
@@ -32,7 +37,7 @@ def test_all_required_stages_present() -> None:
 
 
 def test_stage_count() -> None:
-    assert len(PipelineStage) == 21
+    assert len(PipelineStage) == 23
 
 
 def test_terminal_stages() -> None:

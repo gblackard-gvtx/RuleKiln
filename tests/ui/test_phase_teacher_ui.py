@@ -34,10 +34,11 @@ class TestNewJobFormPhaseTeacher:
         assert "synthesis_teacher_profile" in response.text
         assert "conflict_resolution_teacher_profile" in response.text
 
-    async def test_classroom_api_only_note_present(self, client: AsyncClient) -> None:
+    async def test_multi_student_ui_present(self, client: AsyncClient) -> None:
         response = await client.get("/ui/jobs/new")
-        assert "API" in response.text
-        assert "multi-student" in response.text or "Classroom" in response.text
+        assert "Add another student" in response.text
+        assert "student_profile" in response.text
+        assert "student_model" in response.text
 
     async def test_inherit_copy_present(self, client: AsyncClient) -> None:
         response = await client.get("/ui/jobs/new")

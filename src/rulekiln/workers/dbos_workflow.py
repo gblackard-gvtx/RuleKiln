@@ -1,5 +1,14 @@
 """DBOS stage-level workflow orchestration for RuleKiln.
 
+Batch extraction adds three new DBOS steps that bracket the durable poll loop:
+
+  submit_extraction_batch_step   — calls run_pipeline_phase("extraction_batch_submit")
+  poll_extraction_batch_step     — returns True when the provider batch is complete
+  collect_extraction_batch_step  — calls run_pipeline_phase("extraction_batch_collect")
+
+The poll loop lives in the workflow function (not a step) and uses DBOS.sleep for
+durable sleep when the DBOS runtime is present, falling back to asyncio.sleep otherwise.
+
 This module defines a deterministic workflow with explicit stage steps:
 
 - validate_project
@@ -15,14 +24,24 @@ as idempotency guards during incremental migration.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import cast
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rulekiln.db.repositories.jobs import update_job_status
+from rulekiln.config.settings import get_settings
+from rulekiln.db.repositories.jobs import (
+    get_batch_job_by_stage,
+    update_job_status,
+)
 from rulekiln.db.session import get_session_factory
+from rulekiln.providers.chat import get_chat_client
+from rulekiln.providers.contracts import BatchChatModelClient
+from rulekiln.providers.resolver import resolve_provider_config
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.workers.distillation_worker import PipelineStage, run_pipeline_phase
 
@@ -34,26 +53,44 @@ except Exception:  # pragma: no cover - DBOS is optional in some local test envs
 
 
 type WorkflowFunc = Callable[[str, dict[str, object]], Coroutine[object, object, None]]
+type WorkflowFuncBool = Callable[[str, dict[str, object]], Coroutine[object, object, bool]]
 
 
 def _workflow_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
     if DBOS is None:
 
         def _noop(func: WorkflowFunc) -> WorkflowFunc:
+        def _noop(func: WorkflowFunc) -> WorkflowFunc:
             return func
 
         return _noop
     return cast(Callable[[WorkflowFunc], WorkflowFunc], DBOS.workflow(name=name))
+    return cast(Callable[[WorkflowFunc], WorkflowFunc], DBOS.workflow(name=name))
 
 
 def _step_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
+def _step_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
     if DBOS is None:
 
+        def _noop(func: WorkflowFunc) -> WorkflowFunc:
         def _noop(func: WorkflowFunc) -> WorkflowFunc:
             return func
 
         return _noop
     return cast(Callable[[WorkflowFunc], WorkflowFunc], DBOS.step(name=name, retries_allowed=False))
+
+
+def _step_decorator_bool(name: str) -> Callable[[WorkflowFuncBool], WorkflowFuncBool]:
+    if DBOS is None:
+
+        def _noop_bool(func: WorkflowFuncBool) -> WorkflowFuncBool:
+            return func
+
+        return _noop_bool
+    return cast(
+        Callable[[WorkflowFuncBool], WorkflowFuncBool],
+        DBOS.step(name=name, retries_allowed=False),
+    )
 
 
 async def _await_if_needed[T](value: T | Awaitable[T]) -> T:
@@ -64,6 +101,88 @@ async def _await_if_needed[T](value: T | Awaitable[T]) -> T:
 
 def _payload_from_json(payload_json: dict[str, object]) -> DistillationRequest:
     return DistillationRequest.model_validate(payload_json)
+
+
+def _extraction_batch_enabled(payload_json: dict[str, object]) -> bool:
+    """Return True if the payload config requests batch extraction.
+
+    This is a pure config read with no side effects, safe to call inside a
+    DBOS workflow function (deterministic for the same payload).
+    """
+    try:
+        payload = _payload_from_json(payload_json)
+        tc = payload.teacher_config
+        if tc is None:
+            return False
+        phase_cfg = tc.for_phase("instruction_extraction")
+        if not phase_cfg.batch_enabled:
+            return False
+        settings = get_settings()
+        profile = settings.provider_profiles.get(phase_cfg.provider)
+        if profile is None or not profile.batch_enabled:
+            return False
+        config = resolve_provider_config(
+            phase_cfg.provider,
+            phase_cfg.model,
+            role="teacher",
+            settings=get_settings(),
+        )
+        client = get_chat_client(config)
+        return isinstance(client, BatchChatModelClient)
+    except Exception:
+        return False
+
+
+async def _run_extraction_batch_submit_phase(
+    job_id: str, payload_json: dict[str, object]
+) -> None:
+    payload = _payload_from_json(payload_json)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        await run_pipeline_phase(session, job_id, payload, phase="extraction_batch_submit")
+
+
+async def _run_extraction_batch_collect_phase(
+    job_id: str, payload_json: dict[str, object]
+) -> None:
+    payload = _payload_from_json(payload_json)
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        await run_pipeline_phase(session, job_id, payload, phase="extraction_batch_collect")
+
+
+async def _poll_extraction_batch_once(
+    job_id: str, payload_json: dict[str, object]
+) -> bool:
+    """Return True if the extraction batch is complete; False if still processing."""
+    try:
+        payload = _payload_from_json(payload_json)
+        tc = payload.teacher_config
+        if tc is None:
+            return True
+        phase_cfg = tc.for_phase("instruction_extraction")
+        config = resolve_provider_config(
+            phase_cfg.provider,
+            phase_cfg.model,
+            role="teacher",
+            settings=get_settings(),
+        )
+        client = get_chat_client(config)
+        if not isinstance(client, BatchChatModelClient):
+            return True
+
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            batch_job = await get_batch_job_by_stage(
+                session, job_id, PipelineStage.EXTRACTING_RULES, strategy=None
+            )
+        if batch_job is None:
+            return True
+
+        poll_status = await client.poll_batch(batch_job.provider_batch_id, config)
+        return not poll_status.processing
+    except Exception:
+        return True  # treat errors as "done" so the workflow advances to collect
 
 
 async def _run_validate_project_phase(job_id: str, payload_json: dict[str, object]) -> None:
@@ -108,6 +227,27 @@ async def _run_aggregate_phase(job_id: str, payload_json: dict[str, object]) -> 
         await run_pipeline_phase(session, job_id, payload, phase="aggregate_evaluation_report")
 
 
+@_step_decorator("submit_extraction_batch")
+async def _submit_extraction_batch_step(
+    job_id: str, payload_json: dict[str, object]
+) -> None:
+    await _run_extraction_batch_submit_phase(job_id, payload_json)
+
+
+@_step_decorator_bool("poll_extraction_batch")
+async def _poll_extraction_batch_step(
+    job_id: str, payload_json: dict[str, object]
+) -> bool:
+    return await _poll_extraction_batch_once(job_id, payload_json)
+
+
+@_step_decorator("collect_extraction_batch")
+async def _collect_extraction_batch_step(
+    job_id: str, payload_json: dict[str, object]
+) -> None:
+    await _run_extraction_batch_collect_phase(job_id, payload_json)
+
+
 @_step_decorator("validate_project")
 async def _validate_project_step(job_id: str, payload_json: dict[str, object]) -> None:
     await _run_validate_project_phase(job_id, payload_json)
@@ -140,7 +280,25 @@ async def _aggregate_evaluation_report_step(job_id: str, payload_json: dict[str,
 
 async def _run_stage_sequence(job_id: str, payload_json: dict[str, object]) -> None:
     await _validate_project_step(job_id, payload_json)
-    await _compile_prompts_step(job_id, payload_json)
+
+    if _extraction_batch_enabled(payload_json):
+        # Submit, durably poll, then collect before continuing the compile chain.
+        await _submit_extraction_batch_step(job_id, payload_json)
+
+        poll_interval = get_settings().batch_poll_interval_seconds
+        while True:
+            if DBOS is not None:
+                await _await_if_needed(DBOS.sleep(poll_interval))
+            else:
+                await asyncio.sleep(poll_interval)
+            done = await _poll_extraction_batch_step(job_id, payload_json)
+            if done:
+                break
+
+        await _collect_extraction_batch_step(job_id, payload_json)
+    else:
+        await _compile_prompts_step(job_id, payload_json)
+
     await _evaluate_baseline_step(job_id, payload_json)
     await _evaluate_dbscan_step(job_id, payload_json)
     await _evaluate_hdbscan_step(job_id, payload_json)

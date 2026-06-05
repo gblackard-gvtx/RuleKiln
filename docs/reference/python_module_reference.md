@@ -110,6 +110,20 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 
 
+## `migrations/versions/0006_add_batch_jobs.py`
+
+- **Module purpose:** Alembic revision that creates the `batch_jobs` table for durable batch API submission state (provider batch ID, lifecycle status, file IDs, item counts, and per-batch metadata).
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `upgrade()`: Creates the `batch_jobs` table with unique constraint on `(job_id, stage, strategy, provider_batch_id)` and a lookup index on `(job_id, stage, strategy, status)`.
+
+  - `downgrade()`: Drops the `batch_jobs` table and its indexes.
+
+
+
 ## `src/rulekiln/__init__.py`
 
 - **Module purpose:** Package marker module.
@@ -133,20 +147,23 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 ## `src/rulekiln/agents/rule_conflict_review.py`
 
 - **Module purpose:** Static rule review agent — checks each synthesized rule for internal linguistic contradictions before evaluation. This is a pre-evaluation hygiene pass, not the paper's Phase 3 closed-loop conflict resolution.
+- **Module purpose:** Static rule review agent — checks each synthesized rule for internal linguistic contradictions before evaluation. This is a pre-evaluation hygiene pass, not the paper's Phase 3 closed-loop conflict resolution.
 
 - **Models / classes:** none.
 
 - **Functions:**
 
   - `_build_conflict_review_prompt()`: Builds the static review prompt template used for model calls.
+  - `_build_conflict_review_prompt()`: Builds the static review prompt template used for model calls.
 
+  - `async review_rule_for_conflicts()`: Static rule review: call the teacher to check a synthesized rule for linguistic conflicts. Performs no student inference and does not inspect case outcomes.
   - `async review_rule_for_conflicts()`: Static rule review: call the teacher to check a synthesized rule for linguistic conflicts. Performs no student inference and does not inspect case outcomes.
 
 
 
 ## `src/rulekiln/agents/rule_extraction.py`
 
-- **Module purpose:** Rule-extraction agent logic that derives micro-rules from individual labeled cases.
+- **Module purpose:** Rule-extraction agent logic that derives micro-rules from individual labeled cases. Supports both per-call (sequential) and batch paths.
 
 - **Models / classes:** none.
 
@@ -154,7 +171,9 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
   - `_build_extraction_prompt()`: Builds the extraction prompt template used for model calls.
 
-  - `async extract_rules_for_case()`: Call the teacher model to extract micro-rules for a single case.
+  - `build_extraction_batch_item()`: Builds a `BatchItem` for one extraction case without calling the model. Uses the same system/user prompts as `extract_rules_for_case` so the batch and sequential paths produce equivalent requests.
+
+  - `async extract_rules_for_case()`: Call the teacher model to extract micro-rules for a single case (sequential path).
 
 
 
@@ -169,6 +188,38 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
   - `_build_synthesis_prompt()`: Builds the synthesis prompt template used for model calls.
 
   - `async synthesize_cluster()`: Call the teacher model to synthesize a cluster of micro-rules into one rule.
+
+
+
+## `src/rulekiln/benchmarks/cli.py`
+
+- **Module purpose:** CLI entrypoint (`rulekiln-benchmark`) for reproducible benchmark workflows.
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `main()`: CLI main entrypoint. Subcommands: `banking77` (BANKING77 benchmark) and `refinement-ablation` (loop ON vs OFF comparison).
+
+  - `_run_ablation_subcommand()`: Runs the `refinement-ablation` subcommand: reads eval artifacts from two pipeline runs and writes `refinement_ablation.json`.
+
+  - `_count_refinement_iterations()`: Count completed refinement iteration artifacts for a given run directory.
+
+
+
+## `src/rulekiln/benchmarks/refinement_ablation.py`
+
+- **Module purpose:** Builds and writes `RefinementAblationArtifact` by comparing two pipeline eval results (loop ON vs loop OFF).
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `build_refinement_ablation()`: Construct a `RefinementAblationArtifact` from two `EvalResult` objects and metadata.
+
+  - `write_refinement_ablation_json()`: Write a `RefinementAblationArtifact` to disk.
+
+  - `load_eval_result_from_artifact()`: Load an `EvalResult` from a strategy eval JSON artifact directory.
 
 
 
@@ -402,11 +453,11 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 - **Models / classes:**
 
-  - `ProviderProfile` (model) _(bases: BaseModel)_: Configuration for a named provider profile.
+  - `ProviderProfile` (model) _(bases: BaseModel)_: Configuration for a named provider profile. Includes `batch_enabled: bool = False` — must be `True` for batch API calls to activate for this profile.
 
   - `QualityGateDefaults` (model) _(bases: BaseModel)_: Default quality gate thresholds; may be overridden per task.
 
-  - `AppSettings` (class) _(bases: BaseSettings)_: Application-wide settings loaded from environment / .env file.
+  - `AppSettings` (class) _(bases: BaseSettings)_: Application-wide settings loaded from environment / .env file. Includes `batch_poll_interval_seconds: int = 60` — interval between batch status polls (used by both the DBOS durable sleep loop and the asyncio fallback).
 
 - **Functions:**
 
@@ -451,6 +502,8 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
   - `StageMarker` (model) _(bases: Base)_: Durable stage completion marker for idempotent resume semantics.
 
   - `ModelCallEvent` (model) _(bases: Base)_: Persisted model API event row including usage, cost, and idempotency metadata.
+
+  - `BatchJob` (model) _(bases: Base)_: Durable state for one provider batch submission. Created before the provider batch ID is returned so crash/resume workflows can recover `provider_batch_id` without re-submitting. Tracks lifecycle `status` (`submitted` | `polling` | `completed` | `failed` | `expired`), item/success/error counts, OpenAI file IDs (`input_file_id`, `output_file_id`, `error_file_id`), and a `metadata_json` blob (stores `output_schema_class_name` for registry lookup at collection time).
 
 - **Functions:**
 
@@ -549,6 +602,12 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
   - `async apply_job_failure_policy()`: Apply retry classification and transition to waiting-for-retry or terminal-failure states.
 
   - `async recover_expired_leases()`: Reset expired-lease jobs back to pending or fail them if max_attempts exceeded.
+
+  - `async insert_batch_job()`: Persist a new `BatchJob` record and flush to obtain the DB-assigned `updated_at`.
+
+  - `async get_batch_job_by_stage()`: Return the most-recently submitted `BatchJob` for a given `(job_id, stage, strategy)` tuple, or `None`.
+
+  - `async update_batch_job()`: Patch mutable fields on an existing `BatchJob` (status, counts, file IDs, `completed_at`).
 
 
 
@@ -733,15 +792,21 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 ## `src/rulekiln/pipeline/failure_analysis.py`
 
 - **Module purpose:** Failure-analysis stage that classifies per-case outcome changes and maps failures to rule IDs via outcome_conditions. Produces structured failure records used by the closed-loop refinement controller and provenance builder.
+- **Module purpose:** Failure-analysis stage that classifies per-case outcome changes and maps failures to rule IDs via outcome_conditions. Produces structured failure records used by the closed-loop refinement controller and provenance builder.
 
 - **Models / classes:**
 
+  - `FailureAnalysisResult` (class): Holds categorized case lists and structured failure records. Key methods: `violated_rule_summary()`, `build_utility_signals()`, `unattributed_fraction()`.
   - `FailureAnalysisResult` (class): Holds categorized case lists and structured failure records. Key methods: `violated_rule_summary()`, `build_utility_signals()`, `unattributed_fraction()`.
 
 - **Functions:**
 
   - `analyze_failures()`: Compare baseline vs distilled per-case results; maps failed assertion_i keys to violated rule IDs via case assertion definitions and outcome_conditions. Accepts optional `cases` for real attribution.
+  - `analyze_failures()`: Compare baseline vs distilled per-case results; maps failed assertion_i keys to violated rule IDs via case assertion definitions and outcome_conditions. Accepts optional `cases` for real attribution.
 
+  - `_build_outcome_to_rule_ids()`: Build outcome_label → [rule_id] index from rule.outcome_conditions.
+
+  - `_add_structured_failure()`: Build a CaseEvaluationFailure with violated_rule_ids, matched_rule_ids, failed_assertion_types, and UNATTRIBUTED_RULE_ID sentinel.
   - `_build_outcome_to_rule_ids()`: Build outcome_label → [rule_id] index from rule.outcome_conditions.
 
   - `_add_structured_failure()`: Build a CaseEvaluationFailure with violated_rule_ids, matched_rule_ids, failed_assertion_types, and UNATTRIBUTED_RULE_ID sentinel.
@@ -816,6 +881,26 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 
 
+## `src/rulekiln/pipeline/rule_refinement.py`
+
+- **Module purpose:** Closed-loop conflict resolution (paper Phase 3, §3.3) — empirical teacher interaction that revises rules based on observed failures and successes. Distinct from the static `review_rule_for_conflicts` check: this module runs after evaluation and uses case outcomes.
+
+- **Models / classes:**
+
+  - `RevisedRuleEntry` (model) _(bases: BaseModel)_: A revised rule with its replacement rule ID and rationale.
+
+  - `RefinementResult` (model) _(bases: BaseModel)_: Output from one refinement teacher call. Contains `revised_rules` list and `schema_version = "rulekiln.refinement_result.v1"`.
+
+- **Functions:**
+
+  - `_build_refinement_prompt()`: Builds the teacher prompt containing implicated rules, failure cases, and success cases.
+
+  - `async refine_rules_with_teacher()`: Call the teacher to diagnose root causes and emit revised rules. Accepts failure/success cases from a FailureAnalysisResult; deterministic given seed. Works offline with FakeChatClient.
+
+  - `apply_refinements()`: Replace rules by ID with revised versions; preserve rule IDs; leave unaffected rules unchanged.
+
+
+
 ## `src/rulekiln/pipeline/strategy_selection.py`
 
 - **Module purpose:** Strategy-selection stage that compares candidate strategies and picks the final winner.
@@ -832,6 +917,22 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 
 
+## `src/rulekiln/providers/batch_schema_registry.py`
+
+- **Module purpose:** A module-level registry that maps Pydantic model class names to their `type[BaseModel]` instances for batch result parsing. Required because batch results arrive in a separate process execution from submission; Python object references cannot cross that boundary, so the class must be looked up by name.
+
+- **Models / classes:**
+
+  - `BatchSchemaRegistryError` _(bases: LookupError)_: Raised when `get_schema_class` is called with an unregistered class name.
+
+- **Functions:**
+
+  - `register_schema()`: Decorator (or direct call) that registers a Pydantic model class by its `__name__`. Apply to any model used as `output_schema` in a batch-eligible stage.
+
+  - `get_schema_class()`: Look up a registered schema class by name. Raises `BatchSchemaRegistryError` if not found. Called by `collect_batch` in provider adapters to reconstruct typed output from raw response text.
+
+
+
 ## `src/rulekiln/providers/__init__.py`
 
 - **Module purpose:** Package marker module.
@@ -844,15 +945,17 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 ## `src/rulekiln/providers/chat/__init__.py`
 
-- **Module purpose:** Chat client resolver and optional rate-limited wrapper for configured provider profiles.
+- **Module purpose:** Chat client factory and rate-limited wrappers. Returns the correct `ChatModelClient` (or `BatchChatModelClient`) for a given `ProviderConfig`, preserving the batch-capability interface through the rate-limiting layer.
 
 - **Models / classes:**
 
-  - `_RateLimitedChatClient` (class) _(bases: ChatModelClient)_: Internal wrapper that adds provider rate limiting around any ChatModelClient implementation.
+  - `_RateLimitedChatClient` (class) _(bases: ChatModelClient)_: Wraps any `ChatModelClient` with rate limiting via the global `ProviderRateLimiter`. Used for providers that do not support batch.
+
+  - `_RateLimitedBatchChatClient` (class) _(bases: BatchChatModelClient)_: Wraps a `BatchChatModelClient`, rate-limiting `complete_structured` while delegating `submit_batch`, `poll_batch`, and `collect_batch` directly to the inner client. Ensures `isinstance(client, BatchChatModelClient)` returns `True` through the wrapper layer.
 
 - **Functions:**
 
-  - `get_chat_client()`: Return the ChatModelClient implementation for the given provider config.
+  - `get_chat_client()`: Return the appropriate client for the given provider config. Returns a `_RateLimitedBatchChatClient` if the inner client is a `BatchChatModelClient`; otherwise returns a `_RateLimitedChatClient`.
 
 
 
@@ -894,13 +997,24 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 ## `src/rulekiln/providers/chat/openai_chat.py`
 
-- **Module purpose:** OpenAI chat adapter implementation.
+- **Module purpose:** OpenAI chat provider adapter. The per-call path uses pydantic-ai for structured output and retries; the batch path uses the OpenAI SDK directly against the `/v1/responses` endpoint.
 
 - **Models / classes:**
 
-  - `OpenAIChatClient` (class) _(bases: ChatModelClient)_: Chat adapter for OpenAI models via pydantic-ai.
+  - `OpenAIChatClient` (class) _(bases: BatchChatModelClient)_: Chat adapter for OpenAI models implementing both sequential and batch interfaces.
 
-- **Functions:** none.
+    - `complete_structured()` — per-call path via pydantic-ai `Agent`.
+    - `submit_batch()` — serialises `BatchItem` objects to JSONL in-memory, uploads to the OpenAI Files API (`purpose="batch"`), creates a batch job at `/v1/responses`, and returns the provider batch ID.
+    - `poll_batch()` — retrieves batch status, maps processing statuses (`validating`, `in_progress`, `finalizing`) to `processing=True`.
+    - `collect_batch()` — downloads the output and error JSONL files, extracts structured text via `_extract_response_text()`, validates against the schema class from the registry, and returns a `BatchResult`.
+
+- **Functions:**
+
+  - `_extract_response_text()`: Defensively traverse a `/v1/responses` response body to find the first `output_text` content block. Returns `None` if the expected structure is absent.
+
+  - `_parse_usage()`: Extract `ModelUsage` token counts from a `/v1/responses` response body.
+
+  - `_build_batch_jsonl()`: Serialise a list of `BatchItem` objects to JSONL bytes for the `/v1/responses` Batch API endpoint.
 
 
 
@@ -944,7 +1058,9 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
   - `ProviderNotConfiguredError` (class) _(bases: ValueError)_: Raised when a provider is configured but missing required runtime credentials.
 
-  - `ChatModelClient` (class) _(bases: ABC)_: Abstract base for chat / completion providers.
+  - `ChatModelClient` (class) _(bases: ABC)_: Abstract base for chat / completion providers. Single abstract method: `complete_structured()`.
+
+  - `BatchChatModelClient` (class) _(bases: ChatModelClient, ABC)_: Abstract base for providers that also support the async batch API. Extends `ChatModelClient` with three additional abstract methods: `submit_batch()`, `poll_batch()`, and `collect_batch()`. Providers that do not support batch remain plain `ChatModelClient` subclasses. Worker code checks `isinstance(client, BatchChatModelClient)` before entering the batch path.
 
   - `EmbeddingClient` (class) _(bases: ABC)_: Abstract base for text embedding providers.
 
@@ -1074,6 +1190,64 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 
 
+## `src/rulekiln/schemas/classroom.py`
+
+- **Module purpose:** Per-phase teacher routing config and multi-student classroom schemas for the distillation pipeline.
+
+- **Models / classes:**
+
+  - `PhaseTeacherConfig` (model) _(bases: BaseModel)_: Model configuration for one pipeline phase (`instruction_extraction`, `cluster_consolidation`, or `conflict_resolution`). Fields include `provider`, `model`, `extra_params`, `batch_enabled: bool = False` (opt-in to the batch API for this phase), and `batch_min_items: int = 10` (minimum pending item count before batch is used; jobs below threshold fall back to sequential).
+
+  - `TeacherConfig` (model) _(bases: BaseModel)_: Per-phase teacher routing config. Exposes `for_phase()` to retrieve the `PhaseTeacherConfig` for a named phase.
+
+  - `StudentConfig` (model) _(bases: BaseModel)_: Per-student configuration including `id`, `provider`, `model`, and `is_anchor`.
+
+  - `ClassroomConfig` (model) _(bases: BaseModel)_: Multi-student classroom container with a required `anchor_student_id`. Validated to ensure the anchor ID references a known student.
+
+- **Functions:** none (config resolution is via model properties).
+
+
+
+## `src/rulekiln/schemas/batch.py`
+
+- **Module purpose:** Pydantic schemas that describe the full lifecycle of a provider batch API submission: per-item requests, poll status, per-item results, and an aggregate result.
+
+- **Models / classes:**
+
+  - `BatchItem` — A single item in a batch submission. Carries `custom_id`, `system_prompt`, `user_prompt`, `output_schema_json` (the JSON Schema for structured output), and `output_schema_class_name` (for registry lookup at collection time). Must be self-contained because it is submitted across a process boundary.
+
+  - `BatchPollStatus` — Current status of an in-flight batch. Includes `processing: bool` and per-state counts. Returned by `BatchChatModelClient.poll_batch`.
+
+  - `BatchItemResult` — Result for a single collected item. `status` is one of `"succeeded"`, `"errored"`, or `"expired"`. Holds the parsed `ChatCompletionResult` on success and an `error_message` on failure.
+
+  - `BatchResult` — Aggregate result for a completed batch. Holds the full `items` list, counts, aggregate token totals, and the estimated cost (Decimal USD).
+
+- **Functions:** none.
+
+
+
+## `src/rulekiln/schemas/usage.py`
+
+- **Module purpose:** Domain schemas for model call usage, cost, telemetry context, and structured completion results.
+
+- **Models / classes:**
+
+  - `ModelUsage` (model): Token counts (`input_tokens`, `output_tokens`, `total_tokens`) for a single model call.
+
+  - `ModelCallCost` (model): Estimated USD cost breakdown (`input_cost_usd`, `output_cost_usd`, `total_cost_usd`) with `pricing_source` and `estimated` flag.
+
+  - `ModelCallContext` (model): Tracking context injected via `ContextVar` for per-call attribution (`job_id`, `stage`, `role`, `provider_profile`, `student_id`, etc.).
+
+  - `ModelCallRecord` (model): Persisted record of one model API call, including `usage`, `cost`, `latency_ms`, `status`, `error_type`, `idempotency_key`, `is_batch: bool = False`, and `batch_id: str | None`. The `is_batch` and `batch_id` fields are set on records emitted by the batch collection path so that cost reporting can distinguish batch-discounted calls.
+
+  - `ChatCompletionResult` (model): Structured result returned by any `ChatModelClient.complete_structured()` call. Holds `content` (raw text), `parsed` (Pydantic model), `usage`, `raw_model`, and `provider_response_id`.
+
+  - `EmbeddingResult` (model): Result returned by `EmbeddingClient.embed_texts()`. Holds `embeddings`, `usage`, `raw_model`, and `provider_response_id`.
+
+- **Functions:** none.
+
+
+
 ## `src/rulekiln/schemas/job.py`
 
 - **Module purpose:** API-facing job request/response schemas for distillation job creation and status reporting.
@@ -1095,6 +1269,7 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 ## `src/rulekiln/schemas/pipeline.py`
 
 - **Module purpose:** Pipeline data schemas for rules, clusters, evaluation results, failures, strategy comparison, refinement artifacts, and ablation artifacts.
+- **Module purpose:** Pipeline data schemas for rules, clusters, evaluation results, failures, strategy comparison, refinement artifacts, and ablation artifacts.
 
 - **Models / classes:**
 
@@ -1103,24 +1278,35 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
   - `ExtractionOutput` (model) _(bases: BaseModel)_: Structured output from the rule-extraction agent.
 
   - `OutcomeCondition` (model) _(bases: BaseModel)_: A single outcome condition within a synthesized rule; `outcome` holds the expected label string.
+  - `OutcomeCondition` (model) _(bases: BaseModel)_: A single outcome condition within a synthesized rule; `outcome` holds the expected label string.
 
+  - `SynthesizedRuleSchema` (model) _(bases: BaseModel)_: A synthesized rule derived from a cluster of micro-rules. `outcome_conditions: dict[str, OutcomeCondition]` keys on outcome label.
   - `SynthesizedRuleSchema` (model) _(bases: BaseModel)_: A synthesized rule derived from a cluster of micro-rules. `outcome_conditions: dict[str, OutcomeCondition]` keys on outcome label.
 
   - `SynthesisOutput` (model) _(bases: BaseModel)_: Structured output from the rule-synthesis agent.
 
   - `RuleConflictReview` (model) _(bases: BaseModel)_: Static conflict review result for a single synthesized rule.
+  - `RuleConflictReview` (model) _(bases: BaseModel)_: Static conflict review result for a single synthesized rule.
 
   - `RuleClusterSchema` (model) _(bases: BaseModel)_: A cluster of micro-rule IDs produced by a clustering algorithm.
 
+  - `CaseEvalResult` (model) _(bases: BaseModel)_: Evaluation result for a single case. `assertion_scores` keys are `assertion_{i}` (0-based evaluator index).
   - `CaseEvalResult` (model) _(bases: BaseModel)_: Evaluation result for a single case. `assertion_scores` keys are `assertion_{i}` (0-based evaluator index).
 
   - `EvalResult` (model) _(bases: BaseModel)_: Aggregate evaluation result for a prompt version on a split.
 
   - `CaseEvaluationFailure` (model) _(bases: BaseModel)_: Granular failure record with `violated_rule_ids`, `matched_rule_ids`, `failed_assertion_types`, and `failed_assertion_paths`.
+  - `CaseEvaluationFailure` (model) _(bases: BaseModel)_: Granular failure record with `violated_rule_ids`, `matched_rule_ids`, `failed_assertion_types`, and `failed_assertion_paths`.
 
   - `QualityGateResult` (model) _(bases: BaseModel)_: Result of a quality gate check for one strategy.
 
   - `StrategyComparison` (model) _(bases: BaseModel)_: Full comparison across strategies after evaluation and gate checks.
+
+  - `RefinementIterationArtifact` (model) _(bases: BaseModel)_: Per-iteration artifact from the closed-loop refinement controller. `schema_version = "rulekiln.refinement_iteration.v1"`. Written to `outputs/refinement_iter_{n}.json`.
+
+  - `RefinementAblationRow` (model) _(bases: BaseModel)_: One arm of the refinement ablation (loop_on or loop_off) with macro_f1, regression rate, token count, teacher cost.
+
+  - `RefinementAblationArtifact` (model) _(bases: BaseModel)_: Loop ON vs OFF comparison artifact. `schema_version = "rulekiln.refinement_ablation.v1"`. Written to `refinement_ablation.json`.
 
   - `RefinementIterationArtifact` (model) _(bases: BaseModel)_: Per-iteration artifact from the closed-loop refinement controller. `schema_version = "rulekiln.refinement_iteration.v1"`. Written to `outputs/refinement_iter_{n}.json`.
 
@@ -1140,6 +1326,7 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
   - `ModelRoute` (model) _(bases: BaseModel)_: A provider profile + model pair for a specific role.
 
+  - `RuleKilnTask` (model) _(bases: BaseModel)_: Reusable task definition. Includes rule pruning config (`rule_pruning_mode`, `max_rules`, …), ablation config (`enable_rule_ablation`, …), and closed-loop refinement config (`enable_refinement_loop`, `refinement_max_iterations`, `refinement_epsilon`, `refinement_seed`, `refinement_max_failure_cases`, `refinement_max_success_cases`).
   - `RuleKilnTask` (model) _(bases: BaseModel)_: Reusable task definition. Includes rule pruning config (`rule_pruning_mode`, `max_rules`, …), ablation config (`enable_rule_ablation`, …), and closed-loop refinement config (`enable_refinement_loop`, `refinement_max_iterations`, `refinement_epsilon`, `refinement_seed`, `refinement_max_failure_cases`, `refinement_max_success_cases`).
 
   - `EvaluationAssertion` (model) _(bases: BaseModel)_: Pydantic model that structures validated data exchanged in this module.
@@ -1244,6 +1431,26 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 
 
+## `src/rulekiln/usage/pricing.py`
+
+- **Module purpose:** Calculates estimated USD cost from token usage and a YAML pricing configuration file (`config/model_pricing.yaml`). Supports both synchronous (per-call) and batch pricing paths.
+
+- **Models / classes:**
+
+  - `PricingService` (class): Loads and caches the YAML pricing config. Exposes `calculate()` for standard per-call cost and `calculate_batch()` for batch-discounted cost.
+
+- **Functions:**
+
+  - `_load_pricing_config()`: Load and parse the YAML pricing file.
+
+  - `PricingService.calculate()`: Calculate estimated cost for a standard (synchronous) model call. Returns a `ModelCallCost`.
+
+  - `PricingService.calculate_batch()`: Calculate estimated cost for a batch API call. Reads the `batch_discount` fraction from the YAML entry (e.g. `"0.50"` = 50 % off) and applies `cost × (1 − discount)`. Returns a `ModelCallCost` with `pricing_source` suffixed with `:batch`.
+
+  - `PricingService._lookup_entry()`: Return the raw YAML dict for a provider/model pair, or `{}` if not found. Used internally by both `calculate()` and `calculate_batch()`.
+
+
+
 ## `src/rulekiln/workers/__init__.py`
 
 - **Module purpose:** Package marker module.
@@ -1256,31 +1463,27 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 ## `src/rulekiln/workers/distillation_worker.py`
 
-- **Module purpose:** End-to-end distillation pipeline worker orchestration across all processing stages. Implements 21 `PipelineStage` values with idempotent resume semantics.
+- **Module purpose:** End-to-end distillation pipeline worker orchestration across all processing stages. Implements 23 `PipelineStage` values with idempotent resume semantics. Supports both sequential and batch extraction paths for `EXTRACTING_RULES`.
 
 - **Models / classes:**
 
-  - `PipelineStage` (class) _(bases: StrEnum)_: String enum for all 21 pipeline stages including `refining_rules` (closed-loop conflict resolution).
+  - `PipelineStage` (class) _(bases: StrEnum)_: String enum for all 23 pipeline stages. Includes two batch-specific stages added for OpenAI batch extraction support:
+    - `extracting_rules_batch_submitted` — set once the batch has been submitted to the provider and a `BatchJob` record persisted.
+    - `extracting_rules_batch_collected` — set once batch results have been downloaded, parsed, and written as micro-rules.
+  
+  - `PipelinePhase` (type alias): `Literal` of valid phase names for `run_pipeline_phase()`. Includes `"extraction_batch_submit"` and `"extraction_batch_collect"` for the batch extraction sub-phases used by the DBOS workflow.
 
 - **Functions:**
 
+  - `async run_pipeline_phase()`: Run one named phase of the pipeline. Phases used by the batch path: `"extraction_batch_submit"` (submits the batch and returns early) and `"extraction_batch_collect"` (collects results, writes micro-rules, then continues to embedding/clustering/compile).
+
   - `async run_distillation_pipeline()`: Top-level full pipeline runner used by the DBOS execution path.
 
-  - `async _run()`: Internal helper function supporting the module implementation.
+  - `async _run()`: Internal orchestrator. For `EXTRACTING_RULES`, checks batch eligibility (`ProviderProfile.batch_enabled`, `PhaseTeacherConfig.batch_enabled`, `isinstance(client, BatchChatModelClient)`, `batch_min_items`) and routes to either the batch or sequential extraction path.
 
-  - `async _run_refinement_loop()`: Closed-loop conflict resolution controller. Iterates analyze → refine → re-prune → compile → evaluate until convergence. Emits `outputs/refinement_iter_{n}.json` per iteration; rolls back on regression; returns `(None, None)` if no improvement.
+  - `async _run_refinement_loop()`: Closed-loop conflict resolution controller. Iterates analyze → refine → re-prune → compile → evaluate until convergence. **Not batch-eligible** (each iteration depends on the previous result).
 
-  - `async _set_stage()`: Internal helper function supporting the module implementation.
-
-  - `_to_db_case()`: Internal helper function supporting the module implementation.
-
-  - `_to_db_cluster()`: Internal helper function supporting the module implementation.
-
-  - `_synth_to_db()`: Internal helper function supporting the module implementation.
-
-  - `_db_synth_to_schema()`: Internal helper function supporting the module implementation.
-
-  - `_eval_to_db()`: Internal helper function supporting the module implementation.
+  - `async _set_stage()`, `_to_db_case()`, `_to_db_cluster()`, `_synth_to_db()`, `_db_synth_to_schema()`, `_eval_to_db()`: Internal helpers.
 
 
 
@@ -1300,25 +1503,25 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
 ## `src/rulekiln/workers/dbos_workflow.py`
 
-- **Module purpose:** DBOS spike workflow implementation with durable step boundaries and case-level resume semantics.
+- **Module purpose:** DBOS stage-level workflow orchestration. Defines the durable step sequence for the full distillation pipeline with crash-safe resume semantics. The batch extraction path adds a submit → durable-poll-loop → collect branch around the standard compile step.
 
 - **Models / classes:** none.
 
 - **Functions:**
 
-  - `async run_dbos_spike_workflow()`: Execute the DBOS spike sequence (`validating_project`, `compiling_prompts`, `evaluating_baseline`) for one job.
+  - `async run_dbos_stage_workflow()`: Start or resume the DBOS workflow for one job. Branches on `_extraction_batch_enabled()` to choose the batch or sequential extraction path.
 
-  - `async _validate_project_step()`: Durable step to stage and persist source cases.
+  - `async run_dbos_spike_workflow()`: Backward-compatible spike runner kept for older tests. Executes the first-pass stage sequence directly without the DBOS runtime.
 
-  - `async _compile_prompts_step()`: Durable step to compile or reuse the baseline prompt.
+  - `_extraction_batch_enabled()`: Pure config read (no side effects, safe inside a DBOS workflow). Returns `True` if the payload's teacher config requests batch extraction and the resolved provider client is a `BatchChatModelClient`.
 
-  - `async _evaluate_baseline_step()`: Durable step to evaluate baseline prompt with per-case upsert persistence.
+  - `async _submit_extraction_batch_step()`: `@DBOS.step` — calls `run_pipeline_phase("extraction_batch_submit")` to build `BatchItem` objects, submit the batch to the provider, persist the `BatchJob`, and mark `EXTRACTING_RULES_BATCH_SUBMITTED`.
 
-  - `_eval_case_record_to_schema()`: Convert persisted case-eval rows into runtime evaluator schema.
+  - `async _poll_extraction_batch_step()`: `@DBOS.step` returning `bool` — calls `poll_batch()` on the provider client and returns `True` when processing is complete. Called in a loop from `_run_stage_sequence` with `DBOS.sleep` (or `asyncio.sleep` in non-DBOS environments) between iterations.
 
-  - `_build_eval_case_upsert_payload()`: Build a validated upsert payload for durable per-case evaluation writes.
+  - `async _collect_extraction_batch_step()`: `@DBOS.step` — calls `run_pipeline_phase("extraction_batch_collect")` to download batch results, write micro-rules, mark per-case stage markers, and continue with embedding/clustering/compile.
 
-  - `async _set_stage()`: Internal helper to set running status/stage for workflow progress.
+  - `async _validate_project_step()`, `async _compile_prompts_step()`, `async _evaluate_baseline_step()`, `async _evaluate_dbscan_step()`, `async _evaluate_hdbscan_step()`, `async _aggregate_evaluation_report_step()`: `@DBOS.step`-decorated functions for the standard pipeline phases.
 
 
 

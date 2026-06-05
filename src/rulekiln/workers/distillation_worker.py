@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import Sequence
@@ -14,7 +15,10 @@ from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from rulekiln.agents.rule_conflict_review import review_rule_for_conflicts
-from rulekiln.agents.rule_extraction import extract_rules_for_case
+from rulekiln.agents.rule_extraction import (
+    build_extraction_batch_item,
+    extract_rules_for_case,
+)
 from rulekiln.agents.rule_synthesis import synthesize_cluster
 from rulekiln.artifacts.settings_snapshot import write_settings_snapshot
 from rulekiln.artifacts.writer import (
@@ -40,6 +44,7 @@ from rulekiln.artifacts.writer import (
     write_top_confusions_markdown,
 )
 from rulekiln.config.settings import get_settings
+from rulekiln.db.models import BatchJob as BatchJobModel
 from rulekiln.db.models import (
     Case,
     EvalCaseResultRecord,
@@ -58,17 +63,20 @@ from rulekiln.db.repositories.jobs import (
     bulk_insert_cases,
     bulk_insert_micro_rules,
     bulk_insert_rule_clusters,
+    get_batch_job_by_stage,
     get_eval_runs_for_job,
     get_micro_rules_for_job,
     get_rule_clusters_for_job,
     get_selected_synthesized_rules_for_job,
     get_synthesized_rules_for_job,
+    insert_batch_job,
     insert_eval_run,
     insert_prompt_version,
     is_stage_complete,
     mark_prompt_version_selected,
     mark_stage_complete,
     set_mlflow_run_id,
+    update_batch_job,
     update_job_status,
     update_synthesized_rule_pruning,
 )
@@ -135,7 +143,6 @@ from rulekiln.pipeline.statistics import (
 )
 from rulekiln.pipeline.strategy_selection import build_strategy_comparison
 from rulekiln.providers.chat import get_chat_client
-from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.providers.embedding import get_embedding_client
 from rulekiln.providers.resolver import resolve_provider_config
 from rulekiln.providers.tracking import (
@@ -149,6 +156,7 @@ from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.pipeline import (
     CaseEvalResult,
     EvalResult,
+    ExtractionOutput,
     MicroRuleSchema,
     OutcomeCondition,
     PruningModeComparison,
@@ -187,6 +195,8 @@ class PipelineStage(StrEnum):
     CREATED = "created"
     VALIDATING_PROJECT = "validating_project"
     EXTRACTING_RULES = "extracting_rules"
+    EXTRACTING_RULES_BATCH_SUBMITTED = "extracting_rules_batch_submitted"
+    EXTRACTING_RULES_BATCH_COLLECTED = "extracting_rules_batch_collected"
     EMBEDDING_RULES = "embedding_rules"
     CLUSTERING_RULES = "clustering_rules"
     SYNTHESIZING_RULES = "synthesizing_rules"
@@ -211,6 +221,8 @@ PipelinePhase = Literal[
     "full",
     "validate_project",
     "compile_prompts",
+    "extraction_batch_submit",
+    "extraction_batch_collect",
     "evaluate_baseline",
     "evaluate_dbscan",
     "evaluate_hdbscan",
@@ -289,7 +301,17 @@ async def _run(
         )
 
     run_validate = phase in {"full", "validate_project", "compile_prompts"}
-    run_compile_phase = phase in {"full", "compile_prompts"}
+    run_compile_phase = phase in {
+        "full",
+        "compile_prompts",
+        "extraction_batch_submit",
+        "extraction_batch_collect",
+    }
+    run_post_extraction = phase in {
+        "full",
+        "compile_prompts",
+        "extraction_batch_collect",
+    }
     run_baseline_eval = phase in {"full", "evaluate_baseline"}
     run_aggregate = phase in {"full", "aggregate_evaluation_report"}
 
@@ -385,7 +407,176 @@ async def _run(
 
     if run_compile_phase:
         # ── Stage: extracting_rules ───────────────────────────────────────
-        if not await is_stage_complete(session, job_id, PipelineStage.EXTRACTING_RULES):
+        extraction_phase_cfg = (
+            tc.for_phase("instruction_extraction") if tc is not None else None
+        )
+        _app_settings = get_settings()
+        _extraction_profile = _app_settings.provider_profiles.get(
+            extraction_teacher_config.profile_name
+        )
+        _use_extraction_batch = (
+            extraction_phase_cfg is not None
+            and extraction_phase_cfg.batch_enabled
+            and isinstance(extraction_teacher_chat, BatchChatModelClient)
+            and _extraction_profile is not None
+            and _extraction_profile.batch_enabled
+        )
+
+        if _use_extraction_batch:
+            # ── Batch extraction submit path ──────────────────────────────
+            if not await is_stage_complete(
+                session, job_id, PipelineStage.EXTRACTING_RULES_BATCH_SUBMITTED
+            ):
+                existing_micro_rules = await get_micro_rules_for_job(session, job_id)
+                extracted_case_ids_batch: set[str] = {
+                    _payload_case_id_from_db_case_id(job_id, r.case_id)
+                    for r in existing_micro_rules
+                }
+                pending_cases = [
+                    c
+                    for c in extraction_cases
+                    if c.id not in extracted_case_ids_batch
+                    and not await is_stage_complete(
+                        session,
+                        job_id,
+                        PipelineStage.EXTRACTING_RULES,
+                        artifact_type=_extracting_case_marker(c.id),
+                    )
+                ]
+                min_items = extraction_phase_cfg.batch_min_items  # type: ignore[union-attr]
+                if len(pending_cases) < min_items:
+                    # Below threshold — fall back to sequential for this job.
+                    _use_extraction_batch = False
+                else:
+                    batch_items = [
+                        build_extraction_batch_item(task, c) for c in pending_cases
+                    ]
+                    assert isinstance(extraction_teacher_chat, BatchChatModelClient)  # noqa: S101
+                    provider_batch_id = await extraction_teacher_chat.submit_batch(
+                        batch_items, extraction_teacher_config
+                    )
+                    db_batch_job = BatchJobModel(
+                        job_id=job_id,
+                        stage=PipelineStage.EXTRACTING_RULES,
+                        provider=extraction_teacher_config.provider,
+                        provider_batch_id=provider_batch_id,
+                        item_count=len(batch_items),
+                        metadata_json={
+                            "output_schema_class_name": "ExtractionOutput",
+                        },
+                    )
+                    await insert_batch_job(session, db_batch_job)
+                    await mark_stage_complete(
+                        session, job_id, PipelineStage.EXTRACTING_RULES_BATCH_SUBMITTED
+                    )
+                    logger.info(
+                        "extraction_batch_submitted",
+                        job_id=job_id,
+                        provider_batch_id=provider_batch_id,
+                        item_count=len(batch_items),
+                    )
+
+            if _use_extraction_batch and phase == "extraction_batch_submit":
+                # DBOS workflow will poll then call extraction_batch_collect.
+                return
+
+            # ── Batch extraction collect path ─────────────────────────────
+            if _use_extraction_batch and not await is_stage_complete(
+                session, job_id, PipelineStage.EXTRACTING_RULES_BATCH_COLLECTED
+            ):
+                batch_job_rec = await get_batch_job_by_stage(
+                    session, job_id, PipelineStage.EXTRACTING_RULES, strategy=None
+                )
+                if batch_job_rec is not None:
+                    assert isinstance(extraction_teacher_chat, BatchChatModelClient)  # noqa: S101
+                    # Poll until complete (asyncio path; DBOS workflow uses DBOS.sleep).
+                    poll_interval = _app_settings.batch_poll_interval_seconds
+                    while True:
+                        poll_status = await extraction_teacher_chat.poll_batch(
+                            batch_job_rec.provider_batch_id, extraction_teacher_config
+                        )
+                        if not poll_status.processing:
+                            break
+                        await asyncio.sleep(poll_interval)
+
+                    schema_name: str = (batch_job_rec.metadata_json or {}).get(
+                        "output_schema_class_name", "ExtractionOutput"
+                    )  # type: ignore[assignment]
+                    batch_result = await extraction_teacher_chat.collect_batch(
+                        batch_job_rec.provider_batch_id,
+                        extraction_teacher_config,
+                        output_schema_class_name=schema_name,
+                    )
+
+                    # Write per-case results
+                    inserted_batch_count = 0
+                    failed_batch_count = 0
+                    for item_result in batch_result.items:
+                        if (
+                            item_result.status == "succeeded"
+                            and item_result.result is not None
+                            and isinstance(item_result.result.parsed, ExtractionOutput)
+                        ):
+                            extraction = cast(ExtractionOutput, item_result.result.parsed)
+                            case_micro_rules_batch: list[MicroRule] = [
+                                MicroRule(
+                                    id=str(uuid.uuid4()),
+                                    job_id=job_id,
+                                    case_id=_db_case_id(job_id, item_result.custom_id),
+                                    topic=rule.topic,
+                                    condition=rule.condition,
+                                    expected_outcome=rule.expected_outcome,
+                                    output_path=rule.output_path,
+                                    rationale_summary=rule.rationale_summary,
+                                    rule_type=rule.rule_type,
+                                    positive_cues=rule.positive_cues,
+                                    negative_cues=rule.negative_cues,
+                                )
+                                for rule in extraction.rules  # type: ignore[union-attr]
+                            ]
+                            if case_micro_rules_batch:
+                                await bulk_insert_micro_rules(session, case_micro_rules_batch)
+                                inserted_batch_count += len(case_micro_rules_batch)
+                            await mark_stage_complete(
+                                session,
+                                job_id,
+                                PipelineStage.EXTRACTING_RULES,
+                                artifact_type=_extracting_case_marker(item_result.custom_id),
+                            )
+                        else:
+                            failed_batch_count += 1
+                            logger.warning(
+                                "extraction_batch_item_failed",
+                                job_id=job_id,
+                                custom_id=item_result.custom_id,
+                                status=item_result.status,
+                                error=item_result.error_message,
+                            )
+
+                    await update_batch_job(
+                        session,
+                        batch_job_rec.id,
+                        status=batch_result.status,
+                        succeeded_count=batch_result.succeeded_count,
+                        errored_count=batch_result.errored_count,
+                    )
+                    await mark_stage_complete(
+                        session, job_id, PipelineStage.EXTRACTING_RULES
+                    )
+                    await mark_stage_complete(
+                        session, job_id, PipelineStage.EXTRACTING_RULES_BATCH_COLLECTED
+                    )
+                    logger.info(
+                        "extraction_batch_collected",
+                        job_id=job_id,
+                        inserted_rules=inserted_batch_count,
+                        failed_items=failed_batch_count,
+                    )
+
+        if not _use_extraction_batch and not await is_stage_complete(
+            session, job_id, PipelineStage.EXTRACTING_RULES
+        ):
+            # ── Sequential extraction path (unchanged) ────────────────────
             await _set_stage(session, job_id, PipelineStage.EXTRACTING_RULES)
             existing_micro_rules = await get_micro_rules_for_job(session, job_id)
             extracted_case_ids: set[str] = {
@@ -421,7 +612,7 @@ async def _run(
                     task, case, extraction_teacher_chat, extraction_teacher_config
                 )
                 case_micro_rules: list[MicroRule] = []
-                for rule in extraction.rules:
+                for rule in extraction.rules:  # type: ignore[union-attr]
                     case_micro_rules.append(
                         MicroRule(
                             id=str(uuid.uuid4()),
@@ -456,6 +647,9 @@ async def _run(
                 count=inserted_rule_count,
                 skipped_cases=skipped_case_count,
             )
+
+        if not run_post_extraction:
+            return
 
         db_micro_rules = await get_micro_rules_for_job(session, job_id)
         rule_ids = [r.id for r in db_micro_rules]

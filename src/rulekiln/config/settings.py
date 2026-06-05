@@ -35,6 +35,9 @@ class ProviderProfile(BaseModel):
     rate_limit_tpm: int | None = None
     max_concurrency: int = 3
 
+    # Batch API opt-in (requires provider to also implement BatchChatModelClient)
+    batch_enabled: bool = False
+
     # Provider-specific optional metadata
     aws_assume_role_arn: str | None = None
     azure_deployment: str | None = None
@@ -93,6 +96,11 @@ class AppSettings(BaseSettings):
     worker_lease_seconds: int = Field(default=1800, alias="WORKER_LEASE_SECONDS")
     worker_retry_backoff_seconds: int = Field(default=30, alias="WORKER_RETRY_BACKOFF_SECONDS")
     worker_max_attempts: int = Field(default=2, ge=1, alias="WORKER_MAX_ATTEMPTS")
+
+    # ── Batch API polling ────────────────────────────────────────────────────
+    batch_poll_interval_seconds: int = Field(
+        default=60, alias="BATCH_POLL_INTERVAL_SECONDS"
+    )
 
     # ── Provider rate limiting defaults ──────────────────────────────────────
     default_provider_max_concurrency: int = Field(
