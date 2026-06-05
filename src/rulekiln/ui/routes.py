@@ -45,6 +45,7 @@ from rulekiln.db.session import get_db_session
 from rulekiln.observability.logging import get_logger
 from rulekiln.pipeline.evaluator import get_primary_metric
 from rulekiln.pipeline.split_policy import resolve_split_policy
+from rulekiln.schemas.classroom import PhaseTeacherConfig, TeacherConfig
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask, TaskMode
 from rulekiln.ui.forms import NewJobForm
@@ -152,6 +153,38 @@ def _ext_ok(filename: str | None) -> bool:
     if not filename:
         return False
     return Path(filename).suffix.lower() in _ALLOWED_EXTENSIONS
+
+
+def _auto_enable_extraction_batch(
+    teacher_config: TeacherConfig | None,
+    teacher_profile: str,
+    teacher_model: str,
+    settings: AppSettings,
+) -> TeacherConfig | None:
+    """Auto-enable extraction batch when the selected profile supports it."""
+    provider_profile = settings.provider_profiles.get(teacher_profile)
+    if provider_profile is None or not provider_profile.batch_enabled:
+        return teacher_config
+
+    if teacher_config is None:
+        return TeacherConfig(
+            default=PhaseTeacherConfig(provider=teacher_profile, model=teacher_model),
+            instruction_extraction=PhaseTeacherConfig(
+                provider=teacher_profile,
+                model=teacher_model,
+                batch_enabled=True,
+            ),
+        )
+
+    if teacher_config.instruction_extraction is not None:
+        return teacher_config
+
+    teacher_config.instruction_extraction = PhaseTeacherConfig(
+        provider=teacher_config.default.provider,
+        model=teacher_config.default.model,
+        batch_enabled=True,
+    )
+    return teacher_config
 
 
 def _resolve_primary_metric(job: DistillationJob) -> str:
@@ -581,6 +614,12 @@ async def preview_job(
         judge = ModelRoute(provider_profile=form.judge_profile, model=form.judge_model)
 
     teacher_config = form.build_teacher_config()
+    teacher_config = _auto_enable_extraction_batch(
+        teacher_config,
+        form.teacher_profile,
+        form.teacher_model,
+        settings,
+    )
     classroom_config = form.build_classroom_config()
     anchor = classroom_config.anchor_student
 

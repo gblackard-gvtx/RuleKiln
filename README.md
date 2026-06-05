@@ -4,6 +4,9 @@
 
 # RuleKiln
 
+[![CI](https://github.com/gblackard-gvtx/RuleKiln/actions/workflows/ci.yml/badge.svg)](https://github.com/gblackard-gvtx/RuleKiln/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/gblackard-gvtx/RuleKiln/branch/main/graph/badge.svg)](https://codecov.io/gh/gblackard-gvtx/RuleKiln)
+
 > **Stable Alpha** — RuleKiln has reached a stable alpha milestone. Core pipeline and Operator UI workflows are stable for internal pilots and evaluation. APIs, configuration, and behaviour may still evolve before beta. Not recommended for production use.
 
 A prompt compiler that turns labelled cases into tested, versioned, auditable system prompts.

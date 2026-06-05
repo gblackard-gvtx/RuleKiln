@@ -187,6 +187,8 @@ class RuleClusterSchema(BaseModel):
     algorithm: str
     rule_ids: list[str]
     cluster_metadata: dict[str, str | int | float] = Field(default_factory=dict)
+
+
 class MetricConfidenceInterval(BaseModel):
     """Deterministic confidence interval descriptor for one metric."""
 
@@ -337,6 +339,7 @@ class CaseEvaluationFailure(BaseModel):
     failed_assertion_paths: list[str] = Field(default_factory=list)
     failed_assertion_types: list[str] = Field(default_factory=list)
     explanation: str | None = None
+
 
 # ── Refinement iteration artifact ────────────────────────────────────────────
 

@@ -150,7 +150,6 @@ async def bulk_insert_rule_clusters(session: AsyncSession, clusters: list[RuleCl
     await session.commit()
 
 
-
 async def get_rule_clusters_for_job(
     session: AsyncSession, job_id: str, strategy: str
 ) -> list[RuleCluster]:
