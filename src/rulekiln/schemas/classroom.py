@@ -18,6 +18,8 @@ class PhaseTeacherConfig(BaseModel):
     provider: str  # provider_profile name (e.g. "fake", "openai_default")
     model: str
     extra_params: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    batch_enabled: bool = False
+    batch_min_items: int = 10
 
 
 _TeacherPhase = Literal["instruction_extraction", "cluster_consolidation", "conflict_resolution"]

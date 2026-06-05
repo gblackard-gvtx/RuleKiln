@@ -4,7 +4,12 @@ from typing import Annotated
 
 from fastapi import File, Form, UploadFile
 
-from rulekiln.schemas.classroom import PhaseTeacherConfig, TeacherConfig
+from rulekiln.schemas.classroom import (
+    ClassroomConfig,
+    PhaseTeacherConfig,
+    StudentConfig,
+    TeacherConfig,
+)
 from rulekiln.ui.view_models import TeacherPhaseView, TeacherRoutingView
 
 # Human-readable label for each phase, in display order.
@@ -24,8 +29,8 @@ class NewJobForm:
         cases_file: Annotated[UploadFile, File(description="cases.jsonl")],
         teacher_profile: Annotated[str, Form()],
         teacher_model: Annotated[str, Form()],
-        student_profile: Annotated[str, Form()],
-        student_model: Annotated[str, Form()],
+        student_profile: Annotated[list[str], Form()],
+        student_model: Annotated[list[str], Form()],
         embedding_profile: Annotated[str, Form()],
         embedding_model: Annotated[str, Form()],
         judge_profile: Annotated[str | None, Form()] = None,
@@ -182,3 +187,24 @@ class NewJobForm:
             phases=phase_views,
             has_any_override=has_any_override,
         )
+
+    def build_classroom_config(self) -> ClassroomConfig:
+        """Build a ClassroomConfig from the submitted student list.
+
+        The first student is always the anchor.  Returns a single-element
+        ClassroomConfig when only one student is submitted (no-op for the
+        existing single-student pipeline path).
+        """
+        students: list[StudentConfig] = []
+        for i, (profile, model) in enumerate(
+            zip(self.student_profile, self.student_model, strict=True)
+        ):
+            students.append(
+                StudentConfig(
+                    id=f"student_{i}" if i > 0 else "default",
+                    provider=profile,
+                    model=model,
+                    is_anchor=(i == 0),
+                )
+            )
+        return ClassroomConfig(students=students, anchor_student_id="default")

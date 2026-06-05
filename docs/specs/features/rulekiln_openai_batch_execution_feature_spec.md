@@ -43,9 +43,40 @@ Therefore RuleKiln should use Batch only for stages that can tolerate waiting.
 
 ## 3. Current State
 
-RuleKiln currently uses synchronous provider calls.
+> **Implementation status (as of 2026-06-04):** OpenAI batch extraction has shipped as Phase 1/2 of the plan described in `docs/specs/SPEC_Batch_API_Support.md`. The `EXTRACTING_RULES` stage can now use the OpenAI Batch API end-to-end. See §3.1 for what is now implemented; §3.2 describes the remaining sequencing.
 
-Current behavior:
+### 3.1 Implemented
+
+- `BatchChatModelClient(ChatModelClient, ABC)` abstract interface with `submit_batch`, `poll_batch`, `collect_batch`.
+- `OpenAIChatClient` now subclasses `BatchChatModelClient`. Per-call path unchanged (pydantic-ai). Batch path uses the OpenAI SDK directly against `/v1/responses`.
+- `schemas/batch.py` — `BatchItem`, `BatchPollStatus`, `BatchItemResult`, `BatchResult`.
+- `providers/batch_schema_registry.py` — schema registry for cross-boundary class lookup.
+- `db/models.py` — `BatchJob` SQLAlchemy model; migration `0006_add_batch_jobs.py`.
+- `config/settings.py` — `ProviderProfile.batch_enabled`, `AppSettings.batch_poll_interval_seconds`.
+- `schemas/classroom.py` — `PhaseTeacherConfig.batch_enabled`, `batch_min_items`.
+- `usage/pricing.py` — `PricingService.calculate_batch()` reads `batch_discount` from YAML.
+- `workers/distillation_worker.py` — batch submit/collect path for `EXTRACTING_RULES` with `batch_min_items` threshold and sequential fallback; two new `PipelineStage` values.
+- `workers/dbos_workflow.py` — three `@DBOS.step` functions (submit, poll, collect) with `DBOS.sleep` durable poll loop.
+
+The actual implementation differs from §8–§9 of this spec in the following ways:
+- `ProviderProfile.batch_enabled` replaces the proposed `supports_batch` / `default_execution_mode` fields.
+- `PhaseTeacherConfig.batch_enabled` replaces `ModelRoute.execution_mode`; there is no `"auto"` mode — only explicit opt-in.
+- The DB table is `batch_jobs` (not `provider_batch_jobs`); fields differ from §11 — see migration `0006` for the actual schema.
+- The Batch API endpoint used is `/v1/responses` (not `/v1/chat/completions`).
+- The `custom_id` is the case ID directly (not `{stage}:{job_id}:{case_id}`).
+
+### 3.2 Planned next phases
+
+```text
+Phase 3 — EVALUATING_BASELINE + EVALUATING_DISTILLED (student eval batching)
+Phase 4 — SYNTHESIZING_RULES + REVIEWING_RULE_CONFLICTS (low volume, batch_min_items gated)
+Phase 5 — Anthropic batch provider (AnthropicChatClient subclasses BatchChatModelClient)
+Phase 6 — Bedrock (deferred pending deployment requirement)
+```
+
+### 3.3 Pre-batch baseline (historical)
+
+RuleKiln previously used synchronous provider calls only:
 
 ```text
 for each case:
@@ -54,13 +85,7 @@ for each case:
   continue pipeline
 ```
 
-This is simple, but expensive for large teacher workloads.
-
-Known gap:
-
-```text
-Teacher extraction with OpenAI GPT-5.5 across hundreds or thousands of cases can create large synchronous token spend.
-```
+This was simple but expensive for large teacher workloads.
 
 ---
 

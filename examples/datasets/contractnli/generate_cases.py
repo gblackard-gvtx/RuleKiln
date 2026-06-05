@@ -92,11 +92,22 @@ def main() -> None:
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        # datasets 3+ dropped support for dataset scripts; load from the Hub's
+        # auto-converted Parquet files instead.
         ds = load_dataset(
-            "kiddothe2b/contract-nli", "contractnli_a", trust_remote_code=False
+            "parquet",
+            data_files={
+                split: f"hf://datasets/kiddothe2b/contract-nli@refs/convert/parquet/contractnli_a/{split}/*.parquet"
+                for split in ["train", "validation", "test"]
+            },
         )
 
-    label_names: list[str] = ds["train"].features["label"].names  # type: ignore[index]
+    label_feature = ds["train"].features.get("label")  # type: ignore[index]
+    label_names: list[str] = (
+        label_feature.names  # type: ignore[union-attr]
+        if hasattr(label_feature, "names")
+        else LABEL_NAMES
+    )
 
     if args.discover_labels:
         for name in label_names:

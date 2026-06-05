@@ -547,16 +547,19 @@ async def preview_job(
         judge = ModelRoute(provider_profile=form.judge_profile, model=form.judge_model)
 
     teacher_config = form.build_teacher_config()
+    classroom_config = form.build_classroom_config()
+    anchor = classroom_config.anchor_student
 
     distillation_request = DistillationRequest(
         task=task,
         cases=cases,
         teacher=ModelRoute(provider_profile=form.teacher_profile, model=form.teacher_model),
-        student=ModelRoute(provider_profile=form.student_profile, model=form.student_model),
+        student=ModelRoute(provider_profile=anchor.provider, model=anchor.model),
         embedding=ModelRoute(provider_profile=form.embedding_profile, model=form.embedding_model),
         judge=judge,
         baseline_prompt=form.baseline_prompt or None,
         teacher_config=teacher_config,
+        classroom_config=classroom_config if len(classroom_config.students) > 1 else None,
     )
     try:
         validate_distillation_request(distillation_request, settings)
@@ -580,9 +583,13 @@ async def preview_job(
         warnings.append(split_policy.fallback_warning)
 
     # ── Provider routes for display ──
+    student_specs = [
+        (f"student_{i}" if i > 0 else "student", s.provider, s.model)
+        for i, s in enumerate(classroom_config.students)
+    ]
     route_specs: list[tuple[str, str, str]] = [
         ("teacher", form.teacher_profile, form.teacher_model),
-        ("student", form.student_profile, form.student_model),
+        *student_specs,
         ("embedding", form.embedding_profile, form.embedding_model),
     ]
     if form.judge_profile and form.judge_model:

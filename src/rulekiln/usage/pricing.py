@@ -34,17 +34,18 @@ class PricingService:
     def __init__(self, config_path: Path = _PRICING_CONFIG_PATH) -> None:
         self._pricing: dict[str, dict[str, dict[str, str]]] = _load_pricing_config(config_path)
 
+    def _lookup_entry(self, provider: str, model: str) -> dict[str, str]:
+        """Return the raw YAML entry for a provider/model pair, or an empty dict."""
+        provider_pricing = self._pricing.get(provider, {})
+        entry = provider_pricing.get(model)
+        if entry is None:
+            entry = provider_pricing.get("default")
+        return entry or {}
+
     def _lookup(self, provider: str, model: str) -> tuple[Decimal, Decimal, str]:
         """Return (input_per_1m, output_per_1m, pricing_source) for a provider/model pair."""
-        provider_pricing = self._pricing.get(provider, {})
-
-        # Try exact model match first
-        model_entry = provider_pricing.get(model)
-        if model_entry is None:
-            # Fall back to default entry for the provider
-            model_entry = provider_pricing.get("default")
-
-        if model_entry is None:
+        model_entry = self._lookup_entry(provider, model)
+        if not model_entry:
             return _ZERO, _ZERO, "missing_pricing_config"
 
         input_rate = Decimal(model_entry.get("input_per_1m_tokens_usd", "0"))
@@ -78,5 +79,43 @@ class PricingService:
             output_cost_usd=output_cost,
             total_cost_usd=total_cost,
             pricing_source=pricing_source,
+            estimated=True,
+        )
+
+    def calculate_batch(
+        self,
+        *,
+        provider: str,
+        model: str,
+        usage: ModelUsage,
+    ) -> ModelCallCost:
+        """Calculate estimated cost for a batch API call, applying the batch discount.
+
+        The discount is read from ``batch_discount`` in model_pricing.yaml (expressed
+        as a fraction, e.g. ``"0.50"`` means 50 % off).  Falls back to the
+        non-discounted rate when no entry is found.
+        """
+        input_rate, output_rate, pricing_source = self._lookup(provider, model)
+
+        entry = self._lookup_entry(provider, model)
+        discount = Decimal(entry.get("batch_discount", "0"))
+        multiplier = (Decimal("1") - discount).max(_ZERO)
+
+        input_tokens = Decimal(usage.input_tokens or 0)
+        output_tokens = Decimal(usage.output_tokens or 0)
+
+        input_cost = (input_tokens / _M * input_rate * multiplier).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
+        output_cost = (output_tokens / _M * output_rate * multiplier).quantize(
+            Decimal("0.000001"), rounding=ROUND_HALF_UP
+        )
+        total_cost = input_cost + output_cost
+
+        return ModelCallCost(
+            input_cost_usd=input_cost,
+            output_cost_usd=output_cost,
+            total_cost_usd=total_cost,
+            pricing_source=f"{pricing_source}:batch",
             estimated=True,
         )

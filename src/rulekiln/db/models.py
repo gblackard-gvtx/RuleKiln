@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     Double,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -359,4 +360,65 @@ class ModelCallEvent(Base):
 
     job: Mapped[DistillationJob] = relationship(
         "DistillationJob", back_populates="model_call_events"
+    )
+
+
+class BatchJob(Base):
+    """Durable state for one provider batch submission.
+
+    Created by the submit step before the provider batch ID is returned, so that
+    crash/resume workflows can recover the provider_batch_id without re-submitting.
+    """
+
+    __tablename__ = "batch_jobs"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id",
+            "stage",
+            "strategy",
+            "provider_batch_id",
+            name="uq_batch_jobs_identity",
+        ),
+        Index("ix_batch_jobs_lookup", "job_id", "stage", "strategy", "status"),
+    )
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
+    job_id: Mapped[str] = mapped_column(
+        String, ForeignKey("distillation_jobs.id"), nullable=False
+    )
+    stage: Mapped[str] = mapped_column(String, nullable=False)
+    strategy: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    provider_batch_id: Mapped[str] = mapped_column(String, nullable=False)
+
+    # Lifecycle status: submitted | polling | completed | failed | expired
+    status: Mapped[str] = mapped_column(String, nullable=False, default="submitted")
+
+    submitted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    succeeded_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    errored_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # File IDs relevant for OpenAI batch lifecycle
+    input_file_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    output_file_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    error_file_id: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # Flexible metadata (e.g. {"output_schema_class_name": "ExtractionOutput"})
+    metadata_json: Mapped[dict[str, object] | None] = mapped_column(JSON, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )

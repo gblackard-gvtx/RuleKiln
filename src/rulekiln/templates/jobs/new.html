@@ -47,8 +47,7 @@
       </legend>
 
       {% for role, label in [
-          ("teacher",   "Teacher (rule extraction)"),
-          ("student",   "Student (evaluation)"),
+          ("teacher",   "Teacher — default"),
           ("embedding", "Embedding"),
       ] %}
       <div class="grid grid-cols-2 gap-3">
@@ -74,6 +73,46 @@
         </div>
       </div>
       {% endfor %}
+
+      {# Multi-student classroom ────────────────────────────── #}
+      <div x-data="{ students: [{ id: 0 }], nextId: 1 }">
+        <template x-for="(s, idx) in students" :key="s.id">
+          <div class="border border-gray-200 rounded-md p-3 space-y-2 mt-2">
+            <div class="flex items-center justify-between">
+              <p class="text-sm font-medium text-gray-700">
+                <span x-text="idx === 0 ? 'Student (evaluation) — anchor' : 'Student ' + (idx + 1)"></span>
+              </p>
+              <button type="button" x-show="idx > 0"
+                      @click="students.splice(idx, 1)"
+                      class="text-xs text-red-500 hover:underline">Remove</button>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Profile</label>
+                <select name="student_profile" required
+                        class="w-full rounded border border-gray-300 text-sm px-2.5 py-1.5
+                               focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+                  <option value="" disabled selected>Select profile…</option>
+                  {% for p in profile_names %}
+                  <option value="{{ p }}">{{ p }}</option>
+                  {% endfor %}
+                </select>
+              </div>
+              <div>
+                <label class="block text-xs text-gray-500 mb-1">Model ID</label>
+                <input name="student_model" type="text" required
+                       placeholder="e.g. qwen2.5-7b-instruct"
+                       class="w-full rounded border border-gray-300 text-sm px-2.5 py-1.5
+                              focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500" />
+              </div>
+            </div>
+          </div>
+        </template>
+        <button type="button" @click="students.push({ id: nextId++ })"
+                class="mt-2 text-sm text-indigo-600 hover:underline">
+          + Add another student
+        </button>
+      </div>
 
       {# Optional judge ─────────────────────────────────────── #}
       <div x-data="{ showJudge: false }">
@@ -122,9 +161,8 @@
 
       <div x-show="showTeacherPhases" class="mt-4 space-y-4">
         <p class="text-xs text-gray-500">
-          Use different teacher models for different pipeline phases.
-          Leave blank to inherit the default teacher model.
-          Classroom / multi-student evaluation is available through the API, not this form.
+          Per-phase overrides. Leave blank to use the <strong>Teacher — default</strong> above.
+          All three phases always fall back to that default if no override is set.
         </p>
 
         {% for field_prefix, label in [

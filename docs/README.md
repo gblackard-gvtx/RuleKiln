@@ -13,6 +13,8 @@ Use this index to find the right document quickly.
 
 - Spec directory: [specs/](specs/)
 - Feature specs: [specs/features/](specs/features/)
+- Batch API support spec: [specs/SPEC_Batch_API_Support.md](specs/SPEC_Batch_API_Support.md)
+- OpenAI batch execution feature spec: [specs/features/rulekiln_openai_batch_execution_feature_spec.md](specs/features/rulekiln_openai_batch_execution_feature_spec.md)
 
 ## Execution Task Lists
 

@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from rulekiln.providers.batch_schema_registry import register_schema
+
 # ── Rule provenance ──────────────────────────────────────────────────────────
 
 
@@ -110,6 +112,7 @@ class MicroRuleSchema(BaseModel):
     negative_cues: list[str] = Field(default_factory=list)
 
 
+@register_schema
 class ExtractionOutput(BaseModel):
     """Structured output from the rule-extraction agent."""
 
