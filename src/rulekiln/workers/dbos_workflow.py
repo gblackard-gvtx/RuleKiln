@@ -28,6 +28,8 @@ import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import cast
+from collections.abc import Awaitable, Callable, Coroutine
+from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -58,15 +60,19 @@ def _workflow_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
     if DBOS is None:
 
         def _noop(func: WorkflowFunc) -> WorkflowFunc:
+        def _noop(func: WorkflowFunc) -> WorkflowFunc:
             return func
 
         return _noop
     return cast(Callable[[WorkflowFunc], WorkflowFunc], DBOS.workflow(name=name))
+    return cast(Callable[[WorkflowFunc], WorkflowFunc], DBOS.workflow(name=name))
 
 
 def _step_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
+def _step_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
     if DBOS is None:
 
+        def _noop(func: WorkflowFunc) -> WorkflowFunc:
         def _noop(func: WorkflowFunc) -> WorkflowFunc:
             return func
 

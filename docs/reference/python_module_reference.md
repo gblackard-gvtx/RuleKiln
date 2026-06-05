@@ -147,13 +147,16 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 ## `src/rulekiln/agents/rule_conflict_review.py`
 
 - **Module purpose:** Static rule review agent — checks each synthesized rule for internal linguistic contradictions before evaluation. This is a pre-evaluation hygiene pass, not the paper's Phase 3 closed-loop conflict resolution.
+- **Module purpose:** Static rule review agent — checks each synthesized rule for internal linguistic contradictions before evaluation. This is a pre-evaluation hygiene pass, not the paper's Phase 3 closed-loop conflict resolution.
 
 - **Models / classes:** none.
 
 - **Functions:**
 
   - `_build_conflict_review_prompt()`: Builds the static review prompt template used for model calls.
+  - `_build_conflict_review_prompt()`: Builds the static review prompt template used for model calls.
 
+  - `async review_rule_for_conflicts()`: Static rule review: call the teacher to check a synthesized rule for linguistic conflicts. Performs no student inference and does not inspect case outcomes.
   - `async review_rule_for_conflicts()`: Static rule review: call the teacher to check a synthesized rule for linguistic conflicts. Performs no student inference and does not inspect case outcomes.
 
 
@@ -185,6 +188,38 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
   - `_build_synthesis_prompt()`: Builds the synthesis prompt template used for model calls.
 
   - `async synthesize_cluster()`: Call the teacher model to synthesize a cluster of micro-rules into one rule.
+
+
+
+## `src/rulekiln/benchmarks/cli.py`
+
+- **Module purpose:** CLI entrypoint (`rulekiln-benchmark`) for reproducible benchmark workflows.
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `main()`: CLI main entrypoint. Subcommands: `banking77` (BANKING77 benchmark) and `refinement-ablation` (loop ON vs OFF comparison).
+
+  - `_run_ablation_subcommand()`: Runs the `refinement-ablation` subcommand: reads eval artifacts from two pipeline runs and writes `refinement_ablation.json`.
+
+  - `_count_refinement_iterations()`: Count completed refinement iteration artifacts for a given run directory.
+
+
+
+## `src/rulekiln/benchmarks/refinement_ablation.py`
+
+- **Module purpose:** Builds and writes `RefinementAblationArtifact` by comparing two pipeline eval results (loop ON vs loop OFF).
+
+- **Models / classes:** none.
+
+- **Functions:**
+
+  - `build_refinement_ablation()`: Construct a `RefinementAblationArtifact` from two `EvalResult` objects and metadata.
+
+  - `write_refinement_ablation_json()`: Write a `RefinementAblationArtifact` to disk.
+
+  - `load_eval_result_from_artifact()`: Load an `EvalResult` from a strategy eval JSON artifact directory.
 
 
 
@@ -757,15 +792,21 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 ## `src/rulekiln/pipeline/failure_analysis.py`
 
 - **Module purpose:** Failure-analysis stage that classifies per-case outcome changes and maps failures to rule IDs via outcome_conditions. Produces structured failure records used by the closed-loop refinement controller and provenance builder.
+- **Module purpose:** Failure-analysis stage that classifies per-case outcome changes and maps failures to rule IDs via outcome_conditions. Produces structured failure records used by the closed-loop refinement controller and provenance builder.
 
 - **Models / classes:**
 
+  - `FailureAnalysisResult` (class): Holds categorized case lists and structured failure records. Key methods: `violated_rule_summary()`, `build_utility_signals()`, `unattributed_fraction()`.
   - `FailureAnalysisResult` (class): Holds categorized case lists and structured failure records. Key methods: `violated_rule_summary()`, `build_utility_signals()`, `unattributed_fraction()`.
 
 - **Functions:**
 
   - `analyze_failures()`: Compare baseline vs distilled per-case results; maps failed assertion_i keys to violated rule IDs via case assertion definitions and outcome_conditions. Accepts optional `cases` for real attribution.
+  - `analyze_failures()`: Compare baseline vs distilled per-case results; maps failed assertion_i keys to violated rule IDs via case assertion definitions and outcome_conditions. Accepts optional `cases` for real attribution.
 
+  - `_build_outcome_to_rule_ids()`: Build outcome_label → [rule_id] index from rule.outcome_conditions.
+
+  - `_add_structured_failure()`: Build a CaseEvaluationFailure with violated_rule_ids, matched_rule_ids, failed_assertion_types, and UNATTRIBUTED_RULE_ID sentinel.
   - `_build_outcome_to_rule_ids()`: Build outcome_label → [rule_id] index from rule.outcome_conditions.
 
   - `_add_structured_failure()`: Build a CaseEvaluationFailure with violated_rule_ids, matched_rule_ids, failed_assertion_types, and UNATTRIBUTED_RULE_ID sentinel.
@@ -817,6 +858,26 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 - **Functions:**
 
   - `prune_rules()`: Apply the full pruning pipeline to a list of synthesized rules.
+
+
+
+## `src/rulekiln/pipeline/rule_refinement.py`
+
+- **Module purpose:** Closed-loop conflict resolution (paper Phase 3, §3.3) — empirical teacher interaction that revises rules based on observed failures and successes. Distinct from the static `review_rule_for_conflicts` check: this module runs after evaluation and uses case outcomes.
+
+- **Models / classes:**
+
+  - `RevisedRuleEntry` (model) _(bases: BaseModel)_: A revised rule with its replacement rule ID and rationale.
+
+  - `RefinementResult` (model) _(bases: BaseModel)_: Output from one refinement teacher call. Contains `revised_rules` list and `schema_version = "rulekiln.refinement_result.v1"`.
+
+- **Functions:**
+
+  - `_build_refinement_prompt()`: Builds the teacher prompt containing implicated rules, failure cases, and success cases.
+
+  - `async refine_rules_with_teacher()`: Call the teacher to diagnose root causes and emit revised rules. Accepts failure/success cases from a FailureAnalysisResult; deterministic given seed. Works offline with FakeChatClient.
+
+  - `apply_refinements()`: Replace rules by ID with revised versions; preserve rule IDs; leave unaffected rules unchanged.
 
 
 
@@ -1208,6 +1269,7 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 ## `src/rulekiln/schemas/pipeline.py`
 
 - **Module purpose:** Pipeline data schemas for rules, clusters, evaluation results, failures, strategy comparison, refinement artifacts, and ablation artifacts.
+- **Module purpose:** Pipeline data schemas for rules, clusters, evaluation results, failures, strategy comparison, refinement artifacts, and ablation artifacts.
 
 - **Models / classes:**
 
@@ -1216,24 +1278,35 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
   - `ExtractionOutput` (model) _(bases: BaseModel)_: Structured output from the rule-extraction agent.
 
   - `OutcomeCondition` (model) _(bases: BaseModel)_: A single outcome condition within a synthesized rule; `outcome` holds the expected label string.
+  - `OutcomeCondition` (model) _(bases: BaseModel)_: A single outcome condition within a synthesized rule; `outcome` holds the expected label string.
 
+  - `SynthesizedRuleSchema` (model) _(bases: BaseModel)_: A synthesized rule derived from a cluster of micro-rules. `outcome_conditions: dict[str, OutcomeCondition]` keys on outcome label.
   - `SynthesizedRuleSchema` (model) _(bases: BaseModel)_: A synthesized rule derived from a cluster of micro-rules. `outcome_conditions: dict[str, OutcomeCondition]` keys on outcome label.
 
   - `SynthesisOutput` (model) _(bases: BaseModel)_: Structured output from the rule-synthesis agent.
 
   - `RuleConflictReview` (model) _(bases: BaseModel)_: Static conflict review result for a single synthesized rule.
+  - `RuleConflictReview` (model) _(bases: BaseModel)_: Static conflict review result for a single synthesized rule.
 
   - `RuleClusterSchema` (model) _(bases: BaseModel)_: A cluster of micro-rule IDs produced by a clustering algorithm.
 
+  - `CaseEvalResult` (model) _(bases: BaseModel)_: Evaluation result for a single case. `assertion_scores` keys are `assertion_{i}` (0-based evaluator index).
   - `CaseEvalResult` (model) _(bases: BaseModel)_: Evaluation result for a single case. `assertion_scores` keys are `assertion_{i}` (0-based evaluator index).
 
   - `EvalResult` (model) _(bases: BaseModel)_: Aggregate evaluation result for a prompt version on a split.
 
   - `CaseEvaluationFailure` (model) _(bases: BaseModel)_: Granular failure record with `violated_rule_ids`, `matched_rule_ids`, `failed_assertion_types`, and `failed_assertion_paths`.
+  - `CaseEvaluationFailure` (model) _(bases: BaseModel)_: Granular failure record with `violated_rule_ids`, `matched_rule_ids`, `failed_assertion_types`, and `failed_assertion_paths`.
 
   - `QualityGateResult` (model) _(bases: BaseModel)_: Result of a quality gate check for one strategy.
 
   - `StrategyComparison` (model) _(bases: BaseModel)_: Full comparison across strategies after evaluation and gate checks.
+
+  - `RefinementIterationArtifact` (model) _(bases: BaseModel)_: Per-iteration artifact from the closed-loop refinement controller. `schema_version = "rulekiln.refinement_iteration.v1"`. Written to `outputs/refinement_iter_{n}.json`.
+
+  - `RefinementAblationRow` (model) _(bases: BaseModel)_: One arm of the refinement ablation (loop_on or loop_off) with macro_f1, regression rate, token count, teacher cost.
+
+  - `RefinementAblationArtifact` (model) _(bases: BaseModel)_: Loop ON vs OFF comparison artifact. `schema_version = "rulekiln.refinement_ablation.v1"`. Written to `refinement_ablation.json`.
 
   - `RefinementIterationArtifact` (model) _(bases: BaseModel)_: Per-iteration artifact from the closed-loop refinement controller. `schema_version = "rulekiln.refinement_iteration.v1"`. Written to `outputs/refinement_iter_{n}.json`.
 
@@ -1253,6 +1326,7 @@ Scope covered: `src/rulekiln/**`, `main.py`, and `migrations/**` (tests excluded
 
   - `ModelRoute` (model) _(bases: BaseModel)_: A provider profile + model pair for a specific role.
 
+  - `RuleKilnTask` (model) _(bases: BaseModel)_: Reusable task definition. Includes rule pruning config (`rule_pruning_mode`, `max_rules`, …), ablation config (`enable_rule_ablation`, …), and closed-loop refinement config (`enable_refinement_loop`, `refinement_max_iterations`, `refinement_epsilon`, `refinement_seed`, `refinement_max_failure_cases`, `refinement_max_success_cases`).
   - `RuleKilnTask` (model) _(bases: BaseModel)_: Reusable task definition. Includes rule pruning config (`rule_pruning_mode`, `max_rules`, …), ablation config (`enable_rule_ablation`, …), and closed-loop refinement config (`enable_refinement_loop`, `refinement_max_iterations`, `refinement_epsilon`, `refinement_seed`, `refinement_max_failure_cases`, `refinement_max_success_cases`).
 
   - `EvaluationAssertion` (model) _(bases: BaseModel)_: Pydantic model that structures validated data exchanged in this module.

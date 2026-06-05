@@ -29,6 +29,7 @@ class _RateLimitedChatClient(ChatModelClient):
         output_schema: type[BaseModel],
         config: ProviderConfig,
     ) -> ChatCompletionResult:
+    ) -> ChatCompletionResult:
         limiter = get_rate_limiter()
         await limiter.acquire(config)
         try:

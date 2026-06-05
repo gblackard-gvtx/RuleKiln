@@ -43,6 +43,13 @@ class NewJobForm:
         synthesis_teacher_model: Annotated[str | None, Form()] = None,
         conflict_resolution_teacher_profile: Annotated[str | None, Form()] = None,
         conflict_resolution_teacher_model: Annotated[str | None, Form()] = None,
+        # ── Optional per-phase teacher overrides ─────────────────────────
+        extraction_teacher_profile: Annotated[str | None, Form()] = None,
+        extraction_teacher_model: Annotated[str | None, Form()] = None,
+        synthesis_teacher_profile: Annotated[str | None, Form()] = None,
+        synthesis_teacher_model: Annotated[str | None, Form()] = None,
+        conflict_resolution_teacher_profile: Annotated[str | None, Form()] = None,
+        conflict_resolution_teacher_model: Annotated[str | None, Form()] = None,
     ) -> None:
         self.task_file = task_file
         self.cases_file = cases_file

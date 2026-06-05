@@ -143,7 +143,6 @@ from rulekiln.pipeline.statistics import (
 )
 from rulekiln.pipeline.strategy_selection import build_strategy_comparison
 from rulekiln.providers.chat import get_chat_client
-from rulekiln.providers.contracts import BatchChatModelClient, ChatModelClient, ProviderConfig
 from rulekiln.providers.embedding import get_embedding_client
 from rulekiln.providers.resolver import resolve_provider_config
 from rulekiln.providers.tracking import (

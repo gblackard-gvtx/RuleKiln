@@ -163,6 +163,19 @@ async def get_rule_clusters_for_job(
     return list(result.scalars().all())
 
 
+async def get_rule_clusters_for_job(
+    session: AsyncSession, job_id: str, strategy: str
+) -> list[RuleCluster]:
+    """Return all rule clusters for a job+strategy (for provenance cluster_id lookup)."""
+    result = await session.execute(
+        select(RuleCluster).where(
+            RuleCluster.job_id == job_id,
+            RuleCluster.strategy == strategy,
+        )
+    )
+    return list(result.scalars().all())
+
+
 # ── Synthesized rules ─────────────────────────────────────────
 
 
