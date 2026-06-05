@@ -47,10 +47,10 @@ async def db_factory():
 
 
 @pytest.fixture()
-def fake_settings() -> AppSettings:
+def fake_settings(tmp_path: Path) -> AppSettings:
     return AppSettings(
         DATABASE_URL=_IN_MEMORY_URL,
-        MLFLOW_TRACKING_URI="file:///tmp/mlflow-split-policy-test",
+        MLFLOW_TRACKING_URI=f"file://{tmp_path / 'mlflow-split-policy-test'}",
         provider_profiles={
             "fake": ProviderProfile(
                 provider="fake",

@@ -28,8 +28,6 @@ import asyncio
 import inspect
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import cast
-from collections.abc import Awaitable, Callable, Coroutine
-from typing import cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -60,19 +58,15 @@ def _workflow_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
     if DBOS is None:
 
         def _noop(func: WorkflowFunc) -> WorkflowFunc:
-        def _noop(func: WorkflowFunc) -> WorkflowFunc:
             return func
 
         return _noop
     return cast(Callable[[WorkflowFunc], WorkflowFunc], DBOS.workflow(name=name))
-    return cast(Callable[[WorkflowFunc], WorkflowFunc], DBOS.workflow(name=name))
 
 
-def _step_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
 def _step_decorator(name: str) -> Callable[[WorkflowFunc], WorkflowFunc]:
     if DBOS is None:
 
-        def _noop(func: WorkflowFunc) -> WorkflowFunc:
         def _noop(func: WorkflowFunc) -> WorkflowFunc:
             return func
 
@@ -133,27 +127,21 @@ def _extraction_batch_enabled(payload_json: dict[str, object]) -> bool:
         return False
 
 
-async def _run_extraction_batch_submit_phase(
-    job_id: str, payload_json: dict[str, object]
-) -> None:
+async def _run_extraction_batch_submit_phase(job_id: str, payload_json: dict[str, object]) -> None:
     payload = _payload_from_json(payload_json)
     session_factory = get_session_factory()
     async with session_factory() as session:
         await run_pipeline_phase(session, job_id, payload, phase="extraction_batch_submit")
 
 
-async def _run_extraction_batch_collect_phase(
-    job_id: str, payload_json: dict[str, object]
-) -> None:
+async def _run_extraction_batch_collect_phase(job_id: str, payload_json: dict[str, object]) -> None:
     payload = _payload_from_json(payload_json)
     session_factory = get_session_factory()
     async with session_factory() as session:
         await run_pipeline_phase(session, job_id, payload, phase="extraction_batch_collect")
 
 
-async def _poll_extraction_batch_once(
-    job_id: str, payload_json: dict[str, object]
-) -> bool:
+async def _poll_extraction_batch_once(job_id: str, payload_json: dict[str, object]) -> bool:
     """Return True if the extraction batch is complete; False if still processing."""
     try:
         payload = _payload_from_json(payload_json)
@@ -228,23 +216,17 @@ async def _run_aggregate_phase(job_id: str, payload_json: dict[str, object]) -> 
 
 
 @_step_decorator("submit_extraction_batch")
-async def _submit_extraction_batch_step(
-    job_id: str, payload_json: dict[str, object]
-) -> None:
+async def _submit_extraction_batch_step(job_id: str, payload_json: dict[str, object]) -> None:
     await _run_extraction_batch_submit_phase(job_id, payload_json)
 
 
 @_step_decorator_bool("poll_extraction_batch")
-async def _poll_extraction_batch_step(
-    job_id: str, payload_json: dict[str, object]
-) -> bool:
+async def _poll_extraction_batch_step(job_id: str, payload_json: dict[str, object]) -> bool:
     return await _poll_extraction_batch_once(job_id, payload_json)
 
 
 @_step_decorator("collect_extraction_batch")
-async def _collect_extraction_batch_step(
-    job_id: str, payload_json: dict[str, object]
-) -> None:
+async def _collect_extraction_batch_step(job_id: str, payload_json: dict[str, object]) -> None:
     await _run_extraction_batch_collect_phase(job_id, payload_json)
 
 

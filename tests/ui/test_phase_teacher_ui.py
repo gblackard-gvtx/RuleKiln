@@ -61,9 +61,7 @@ class TestPreviewPhaseTeacher:
         assert "Synthesis" in response.text
         assert "Conflict resolution" in response.text
 
-    async def test_no_overrides_all_phases_show_inherits(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_no_overrides_all_phases_show_inherits(self, client: AsyncClient) -> None:
         response = await client.post(
             "/ui/jobs/preview",
             files=_files(),
@@ -72,9 +70,7 @@ class TestPreviewPhaseTeacher:
         assert response.status_code == 200
         assert "inherits default" in response.text
 
-    async def test_single_phase_override_shown_as_override(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_single_phase_override_shown_as_override(self, client: AsyncClient) -> None:
         data = {
             **_base_form(),
             "extraction_teacher_profile": "fake_chat",
@@ -89,9 +85,7 @@ class TestPreviewPhaseTeacher:
         assert "override" in response.text
         assert "model-cheap" in response.text
 
-    async def test_all_three_overrides_all_shown_as_override(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_all_three_overrides_all_shown_as_override(self, client: AsyncClient) -> None:
         data = {
             **_base_form(),
             "extraction_teacher_profile": "fake_chat",
@@ -112,9 +106,7 @@ class TestPreviewPhaseTeacher:
         assert "model-synth" in response.text
         assert "model-cr" in response.text
 
-    async def test_partial_override_profile_only_returns_error(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_partial_override_profile_only_returns_error(self, client: AsyncClient) -> None:
         """Profile without model → validation error."""
         data = {
             **_base_form(),
@@ -129,9 +121,7 @@ class TestPreviewPhaseTeacher:
         assert response.status_code == 422
         assert "model" in response.text.lower()
 
-    async def test_partial_override_model_only_returns_error(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_partial_override_model_only_returns_error(self, client: AsyncClient) -> None:
         """Model without profile → validation error."""
         data = {
             **_base_form(),
@@ -146,9 +136,7 @@ class TestPreviewPhaseTeacher:
         assert response.status_code == 422
         assert "profile" in response.text.lower()
 
-    async def test_existing_single_teacher_path_unchanged(
-        self, client: AsyncClient
-    ) -> None:
+    async def test_existing_single_teacher_path_unchanged(self, client: AsyncClient) -> None:
         """Submitting with no phase overrides creates the same request as before."""
         response = await client.post(
             "/ui/jobs/preview",

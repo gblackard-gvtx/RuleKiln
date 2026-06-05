@@ -12,9 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 class PhaseTeacherConfig(BaseModel):
     """Model config for one pipeline phase."""
 
-    schema_version: Literal["rulekiln.phase_teacher_config.v1"] = (
-        "rulekiln.phase_teacher_config.v1"
-    )
+    schema_version: Literal["rulekiln.phase_teacher_config.v1"] = "rulekiln.phase_teacher_config.v1"
     provider: str  # provider_profile name (e.g. "fake", "openai_default")
     model: str
     extra_params: dict[str, str | int | float | bool] = Field(default_factory=dict)
@@ -42,9 +40,7 @@ class TeacherConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_flat_config(
-        cls, data: dict[str, object]
-    ) -> dict[str, object]:
+    def _migrate_flat_config(cls, data: dict[str, object]) -> dict[str, object]:
         """Accept flat {provider, model} and wrap it as TeacherConfig.default."""
         if isinstance(data, dict) and "provider" in data and "default" not in data:
             return {"default": data}
@@ -95,9 +91,7 @@ class ClassroomConfig(BaseModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _migrate_flat_student(
-        cls, data: dict[str, object]
-    ) -> dict[str, object]:
+    def _migrate_flat_student(cls, data: dict[str, object]) -> dict[str, object]:
         """Accept flat {provider, model} and wrap as a single 'default' student."""
         if isinstance(data, dict) and "provider" in data and "students" not in data:
             return {

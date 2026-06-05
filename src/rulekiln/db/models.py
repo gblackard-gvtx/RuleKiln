@@ -383,9 +383,7 @@ class BatchJob(Base):
     )
 
     id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid)
-    job_id: Mapped[str] = mapped_column(
-        String, ForeignKey("distillation_jobs.id"), nullable=False
-    )
+    job_id: Mapped[str] = mapped_column(String, ForeignKey("distillation_jobs.id"), nullable=False)
     stage: Mapped[str] = mapped_column(String, nullable=False)
     strategy: Mapped[str | None] = mapped_column(String, nullable=True)
     provider: Mapped[str] = mapped_column(String, nullable=False)
@@ -397,9 +395,7 @@ class BatchJob(Base):
     submitted_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     item_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     succeeded_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from types import ModuleType
 from typing import TYPE_CHECKING
+from urllib.parse import urlparse
 
 from rulekiln.observability.logging import get_logger
 
@@ -12,6 +14,20 @@ if TYPE_CHECKING:
     from rulekiln.schemas.job import DistillationRequest
 
 logger = get_logger(__name__)
+
+
+def _tracking_uri_is_file_store(tracking_uri: str) -> bool:
+    parsed = urlparse(tracking_uri)
+    if parsed.scheme == "file":
+        return True
+    if parsed.scheme == "":
+        return Path(tracking_uri).is_absolute()
+    return False
+
+
+def _allow_file_store_if_needed(tracking_uri: str) -> None:
+    if _tracking_uri_is_file_store(tracking_uri):
+        os.environ.setdefault("MLFLOW_ALLOW_FILE_STORE", "true")
 
 
 def _get_mlflow() -> ModuleType:  # pyright: ignore[reportReturnType]
@@ -34,6 +50,7 @@ def create_run(
     task_name: str,
 ) -> str:
     """Create an MLflow run and return its run_id."""
+    _allow_file_store_if_needed(tracking_uri)
     mlflow = _get_mlflow()
     mlflow.set_tracking_uri(tracking_uri)
     mlflow.set_experiment(experiment_name)
@@ -53,6 +70,7 @@ def create_run(
 
 def log_params(tracking_uri: str, run_id: str, params: dict[str, str]) -> None:
     """Log key-value params to an existing run (batched)."""
+    _allow_file_store_if_needed(tracking_uri)
     mlflow = _get_mlflow()
     mlflow.set_tracking_uri(tracking_uri)
     with mlflow.start_run(run_id=run_id):
@@ -62,6 +80,7 @@ def log_params(tracking_uri: str, run_id: str, params: dict[str, str]) -> None:
 
 def log_metrics(tracking_uri: str, run_id: str, metrics: dict[str, float]) -> None:
     """Log numeric metrics to an existing run."""
+    _allow_file_store_if_needed(tracking_uri)
     mlflow = _get_mlflow()
     mlflow.set_tracking_uri(tracking_uri)
     with mlflow.start_run(run_id=run_id):
@@ -70,6 +89,7 @@ def log_metrics(tracking_uri: str, run_id: str, metrics: dict[str, float]) -> No
 
 def log_artifacts_dir(tracking_uri: str, run_id: str, local_dir: Path) -> None:
     """Upload an entire local directory to the MLflow run's artifact store."""
+    _allow_file_store_if_needed(tracking_uri)
     mlflow = _get_mlflow()
     mlflow.set_tracking_uri(tracking_uri)
     with mlflow.start_run(run_id=run_id):
@@ -87,6 +107,7 @@ def log_prompt_to_registry(
 
     Returns the registered model URI, or None if the registry feature is unavailable.
     """
+    _allow_file_store_if_needed(tracking_uri)
     mlflow = _get_mlflow()
     mlflow.set_tracking_uri(tracking_uri)
 

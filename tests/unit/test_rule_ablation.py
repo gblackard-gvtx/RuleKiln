@@ -26,9 +26,7 @@ from rulekiln.workers.distillation_worker import _ablation_classify
         (-0.02, 3, 5, "inconclusive"),
     ],
 )
-def test_ablation_classify(
-    delta: float, changed: int, min_changed: int, expected: str
-) -> None:
+def test_ablation_classify(delta: float, changed: int, min_changed: int, expected: str) -> None:
     result = _ablation_classify(delta, changed, min_changed)
     assert result == expected
 

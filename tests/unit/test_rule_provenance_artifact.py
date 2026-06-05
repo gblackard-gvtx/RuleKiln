@@ -128,9 +128,7 @@ def test_cluster_id_lookup() -> None:
 
 
 def test_build_cluster_id_by_micro_rule_basic() -> None:
-    mapping = build_cluster_id_by_micro_rule(
-        [("c1", ["m1", "m2"]), ("c2", ["m3"])]
-    )
+    mapping = build_cluster_id_by_micro_rule([("c1", ["m1", "m2"]), ("c2", ["m3"])])
     assert mapping["m1"] == "c1"
     assert mapping["m2"] == "c1"
     assert mapping["m3"] == "c2"

@@ -26,9 +26,7 @@ class BenchmarkProfileConfig(BaseModel):
 class StudentEvalSummary(BaseModel):
     """Per-student evaluation summary for a single strategy."""
 
-    schema_version: Literal["rulekiln.student_eval_summary.v1"] = (
-        "rulekiln.student_eval_summary.v1"
-    )
+    schema_version: Literal["rulekiln.student_eval_summary.v1"] = "rulekiln.student_eval_summary.v1"
     student_id: str
     macro_f1: float | None = None
     macro_f1_ci_95: tuple[float, float] | None = None
@@ -85,9 +83,7 @@ class CostSummary(BaseModel):
 class BenchmarkManifest(BaseModel):
     """Provenance manifest for a benchmark run."""
 
-    schema_version: Literal["rulekiln.benchmark_manifest.v2"] = (
-        "rulekiln.benchmark_manifest.v2"
-    )
+    schema_version: Literal["rulekiln.benchmark_manifest.v2"] = "rulekiln.benchmark_manifest.v2"
     benchmark_name: str
     run_id: str
     created_at: datetime = Field(
@@ -132,9 +128,7 @@ class DatasetManifest(BaseModel):
 class BenchmarkStrategyComparison(BaseModel):
     """Baseline vs RuleKiln benchmark comparison."""
 
-    schema_version: Literal["rulekiln.strategy_comparison.v2"] = (
-        "rulekiln.strategy_comparison.v2"
-    )
+    schema_version: Literal["rulekiln.strategy_comparison.v2"] = "rulekiln.strategy_comparison.v2"
     primary_metric: str
     baseline_eval: EvalResult
     rulekiln_eval: EvalResult

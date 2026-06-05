@@ -74,9 +74,7 @@ def write_rulekiln_cases(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Generate RuleKiln cases for ContractNLI"
-    )
+    parser = argparse.ArgumentParser(description="Generate RuleKiln cases for ContractNLI")
     parser.add_argument(
         "--discover-labels",
         action="store_true",
@@ -150,9 +148,7 @@ def main() -> None:
         mode="a",
     )
 
-    (generated_dir / "labels.json").write_text(
-        json.dumps(label_names, indent=2) + "\n"
-    )
+    (generated_dir / "labels.json").write_text(json.dumps(label_names, indent=2) + "\n")
 
     print(f"Train: {min(len(train_rows), TRAIN_LIMIT)} cases")
     print(f"Validation: {min(len(val_rows), VAL_LIMIT)} cases")

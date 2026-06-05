@@ -43,13 +43,6 @@ class NewJobForm:
         synthesis_teacher_model: Annotated[str | None, Form()] = None,
         conflict_resolution_teacher_profile: Annotated[str | None, Form()] = None,
         conflict_resolution_teacher_model: Annotated[str | None, Form()] = None,
-        # ── Optional per-phase teacher overrides ─────────────────────────
-        extraction_teacher_profile: Annotated[str | None, Form()] = None,
-        extraction_teacher_model: Annotated[str | None, Form()] = None,
-        synthesis_teacher_profile: Annotated[str | None, Form()] = None,
-        synthesis_teacher_model: Annotated[str | None, Form()] = None,
-        conflict_resolution_teacher_profile: Annotated[str | None, Form()] = None,
-        conflict_resolution_teacher_model: Annotated[str | None, Form()] = None,
     ) -> None:
         self.task_file = task_file
         self.cases_file = cases_file
@@ -67,9 +60,7 @@ class NewJobForm:
         self.extraction_teacher_model = extraction_teacher_model or None
         self.synthesis_teacher_profile = synthesis_teacher_profile or None
         self.synthesis_teacher_model = synthesis_teacher_model or None
-        self.conflict_resolution_teacher_profile = (
-            conflict_resolution_teacher_profile or None
-        )
+        self.conflict_resolution_teacher_profile = conflict_resolution_teacher_profile or None
         self.conflict_resolution_teacher_model = conflict_resolution_teacher_model or None
 
     # ── Per-phase override helpers ────────────────────────────────────────

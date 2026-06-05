@@ -152,9 +152,7 @@ async def refine_rules_with_teacher(
     ]
 
     success_sfs = [
-        sf
-        for sf in failure_analysis_result.structured_failures
-        if sf.failure_class == "fixed"
+        sf for sf in failure_analysis_result.structured_failures if sf.failure_class == "fixed"
     ]
     sampled_success_sfs = rng.sample(success_sfs, min(max_success_cases, len(success_sfs)))
     success_pairs: list[tuple[CaseEvaluationFailure | None, RuleKilnCase | None]] = [
