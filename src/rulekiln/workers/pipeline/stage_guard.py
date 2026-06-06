@@ -36,9 +36,7 @@ class StageGuard:
         strategy: str | None = None,
         artifact_type: str | None = None,
     ) -> bool:
-        return await is_stage_complete(
-            self._session, self._job_id, stage, strategy, artifact_type
-        )
+        return await is_stage_complete(self._session, self._job_id, stage, strategy, artifact_type)
 
     async def start(self, stage: str) -> None:
         await update_job_status(self._session, self._job_id, status="running", stage=stage)
@@ -51,9 +49,7 @@ class StageGuard:
         strategy: str | None = None,
         artifact_type: str | None = None,
     ) -> None:
-        await mark_stage_complete(
-            self._session, self._job_id, stage, strategy, artifact_type
-        )
+        await mark_stage_complete(self._session, self._job_id, stage, strategy, artifact_type)
 
     async def run_once(
         self,

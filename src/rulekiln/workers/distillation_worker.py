@@ -6,7 +6,6 @@ import asyncio
 import json
 import random
 import uuid
-from collections.abc import Sequence
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
@@ -51,16 +50,11 @@ from rulekiln.benchmarks.reporting import (
 from rulekiln.config.settings import get_settings
 from rulekiln.db.models import BatchJob as BatchJobModel
 from rulekiln.db.models import (
-    Case,
-    EvalCaseResultRecord,
-    EvalRun,
     MicroRule,
     PromptVersion,
-    RuleCluster,
     SynthesizedRule,
 )
 from rulekiln.db.repositories.eval_case_results import (
-    EvalCaseResultUpsert,
     get_eval_case_results,
     upsert_eval_case_result,
 )
@@ -115,7 +109,6 @@ from rulekiln.pipeline.baseline_strategies import (
     expected_label,
     predict_with_centroids,
     predict_with_knn,
-    resolve_distance_metric,
     select_deterministic_few_shot_examples,
     select_retrieval_examples,
 )
@@ -125,7 +118,6 @@ from rulekiln.pipeline.evaluator import (
     build_case_result_from_label_prediction,
     build_eval_result_from_case_results,
     evaluate_prompt,
-    get_primary_metric,
 )
 from rulekiln.pipeline.failure_analysis import FailureAnalysisResult, analyze_failures
 from rulekiln.pipeline.prompt_compiler import (
@@ -143,9 +135,6 @@ from rulekiln.pipeline.rule_refinement import apply_refinements, refine_rules_wi
 from rulekiln.pipeline.split_policy import resolve_split_policy
 from rulekiln.pipeline.statistics import (
     PairedComparisonArtifacts,
-    compute_classification_statistics,
-    compute_paired_comparison,
-    compute_regressed_labels,
 )
 from rulekiln.pipeline.strategy_selection import build_strategy_comparison
 from rulekiln.providers.chat import get_chat_client
@@ -165,26 +154,63 @@ from rulekiln.schemas.pipeline import (
     EvalResult,
     ExtractionOutput,
     MicroRuleSchema,
-    OutcomeCondition,
     PruningModeComparison,
     PruningModeRow,
     QualityGateResult,
     RefinementIterationArtifact,
-    RegressedLabelRow,
     RuleAblationArtifact,
     RuleAblationRecord,
-    RuleClusterSchema,
     StudentEvalSummary,
     SynthesizedRuleSchema,
 )
-from rulekiln.schemas.task_case import RuleKilnCase, RuleKilnTask, TaskMode
+from rulekiln.schemas.task_case import RuleKilnCase, RuleKilnTask
 from rulekiln.workers.error_classification import format_worker_error_message
+
+from rulekiln.workers.pipeline.classification_metrics import (
+    _build_runtime_paired_comparison,
+    _is_classification_task_mode,
+    _refresh_eval_classification_statistics,
+    _resolve_distance_metric_from_task,
+    _resolve_training_cases,
+)
+from rulekiln.workers.pipeline.db_mappers import (
+    _build_eval_case_upsert_payload,
+    _db_case_id,
+    _db_synth_to_schema,
+    _eval_case_record_to_schema,
+    _eval_to_db,
+    _payload_case_id_from_db_case_id,
+    _synth_to_db,
+    _to_db_case,
+    _to_db_cluster,
+)
+from rulekiln.workers.pipeline.evaluation_persistence import (
+    _insert_eval_run_if_missing,
+    _load_eval_result_from_db,
+    _persist_case_results,
+    _persist_collector_records,
+)
+from rulekiln.workers.pipeline.paths import (
+    _artifact_root,
+    _build_manifest_entries,
+    _conflict_review_rule_marker,
+    _extracting_case_marker,
+    _synthesis_cluster_marker,
+)
+from rulekiln.workers.pipeline.seeding import _evaluation_bootstrap_seed
+from rulekiln.workers.pipeline.strategy_utils import (
+    DISTILLED_STRATEGIES,
+    _best_strategy_for_family,
+    _build_dataset_identifier,
+    _delta_vs_baseline,
+    _primary_score_for_metric,
+    _resolve_primary_metric,
+    _strategy_family,
+)
 
 logger = get_logger(__name__)
 
-_CASE_ID_DELIMITER = "::"
 BASELINE_STRATEGY = "baseline"
-DISTILLED_STRATEGIES: tuple[str, str] = ("dbscan", "hdbscan")
 BASELINE_FEW_SHOT_STRATEGIES: tuple[str, ...] = tuple(BASELINE_FEW_SHOT_STRATEGY_TO_K.keys())
 EMBEDDING_KNN_STRATEGIES: tuple[str, ...] = tuple(EMBEDDING_KNN_STRATEGY_TO_K.keys())
 EMBEDDING_BASELINE_STRATEGIES: tuple[str, ...] = (
@@ -2362,482 +2388,80 @@ async def _run(
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
 
-async def _persist_collector_records(
-    session: AsyncSession,
-    job_id: str,
-    collector: ModelCallCollector,
-) -> None:
-    if not collector.records:
-        return
-    await bulk_insert_model_call_events(session, job_id, collector.records)
-    await session.commit()
+async def _set_stage(session: AsyncSession, job_id: str, stage: PipelineStage) -> None:
+    await update_job_status(session, job_id, status="running", stage=stage)
+    logger.info("stage_started", job_id=job_id, stage=stage)
 
 
-async def _load_eval_result_from_db(
+async def _evaluate_prompt_strategy(
     session: AsyncSession,
     *,
     job_id: str,
-    student_id: str,
     strategy: str,
     split: str,
-) -> EvalResult | None:
-    eval_runs = await get_eval_runs_for_job(session, job_id)
-    run = next((row for row in eval_runs if row.strategy == strategy and row.split == split), None)
-    if run is None:
-        return None
-
-    case_rows = await get_eval_case_results(
+    student_id: str,
+    system_prompt: str,
+    cases: list[RuleKilnCase],
+    task: RuleKilnTask,
+    case_by_id: dict[str, RuleKilnCase],
+    chat_client: ChatModelClient,
+    config: ProviderConfig,
+    bootstrap_enabled: bool,
+    bootstrap_iterations: int,
+    bootstrap_seed_offset: int,
+) -> EvalResult:
+    existing_rows = await get_eval_case_results(
         session,
         job_id=job_id,
         student_id=student_id,
         strategy=strategy,
         split=split,
     )
-    case_results = [_eval_case_record_to_schema(row) for row in case_rows]
-
-    confusion_matrix_raw = run.confusion_matrix or {}
-    confusion_matrix: dict[str, dict[str, int]] = {
-        str(expected): {str(actual): int(count) for actual, count in actuals.items()}
-        for expected, actuals in confusion_matrix_raw.items()
+    completed_case_results = {
+        row.case_id: _eval_case_record_to_schema(row) for row in existing_rows
     }
 
-    return EvalResult(
-        strategy=run.strategy,
-        model=run.model,
-        split=run.split,
-        accuracy=run.accuracy,
-        macro_f1=run.macro_f1,
-        weighted_case_score=run.weighted_case_score,
-        malformed_output_rate=run.malformed_output_rate or 0.0,
-        per_outcome_precision=dict(run.per_outcome_precision or {}),
-        per_outcome_recall=dict(run.per_outcome_recall or {}),
-        confusion_matrix=confusion_matrix,
-        case_results=case_results,
-    )
+    async def _persist_strategy_case(case_result: CaseEvalResult) -> None:
+        case = case_by_id.get(case_result.case_id)
+        if case is None:
+            return
+        payload_row = _build_eval_case_upsert_payload(
+            job_id=job_id,
+            student_id=student_id,
+            strategy=strategy,
+            split=split,
+            case=case,
+            result=case_result,
+        )
+        await upsert_eval_case_result(session, payload_row)
 
-
-async def _set_stage(session: AsyncSession, job_id: str, stage: PipelineStage) -> None:
-    await update_job_status(session, job_id, status="running", stage=stage)
-    logger.info("stage_started", job_id=job_id, stage=stage)
-
-
-def _to_db_case(job_id: str, case: RuleKilnCase) -> Case:
-    expected_json: dict | None = None  # pyright: ignore[reportMissingTypeArgument]
-    expected_text: str | None = None
-    if isinstance(case.expected, dict):
-        expected_json = case.expected
-    elif case.expected is not None:
-        expected_text = str(case.expected)
-    return Case(
-        id=_db_case_id(job_id, case.id),
-        job_id=job_id,
-        task_mode=case.task_mode,
-        split=case.split,
-        input_json=case.input,
-        expected_json=expected_json,
-        expected_text=expected_text,
-        evaluation_json=case.evaluation.model_dump(),
-        metadata_json=case.metadata,
-        weight=case.weight,
-    )
-
-
-def _db_case_id(job_id: str, payload_case_id: str) -> str:
-    return f"{job_id}{_CASE_ID_DELIMITER}{payload_case_id}"
-
-
-def _extracting_case_marker(payload_case_id: str) -> str:
-    return f"extracting_case:{payload_case_id}"
-
-
-def _synthesis_cluster_marker(strategy: str, rule_ids: list[str]) -> str:
-    cluster_key = ",".join(sorted(rule_ids))
-    digest = sha256(cluster_key.encode("utf-8")).hexdigest()[:16]
-    return f"synth_cluster:{strategy}:{digest}"
-
-
-def _conflict_review_rule_marker(strategy: str, synthesized_rule_id: str) -> str:
-    return f"conflict_rule:{strategy}:{synthesized_rule_id}"
-
-
-def _payload_case_id_from_db_case_id(job_id: str, db_case_id: str) -> str:
-    prefix = f"{job_id}{_CASE_ID_DELIMITER}"
-    if db_case_id.startswith(prefix):
-        return db_case_id[len(prefix) :]
-    return db_case_id
-
-
-def _to_db_cluster(job_id: str, c: RuleClusterSchema) -> RuleCluster:
-    return RuleCluster(
-        id=str(uuid.uuid4()),
-        job_id=job_id,
-        strategy=c.strategy,
-        topic=c.topic,
-        algorithm=c.algorithm,
-        rule_ids=c.rule_ids,
-        cluster_metadata=c.cluster_metadata,
-    )
-
-
-def _synth_to_db(job_id: str, strategy: str, rule: SynthesizedRuleSchema) -> SynthesizedRule:
-    return SynthesizedRule(
-        id=str(uuid.uuid4()),
-        job_id=job_id,
-        strategy=strategy,
-        rule_type=rule.rule_type,
-        topic=rule.topic,
-        applies_when=rule.applies_when,
-        outcome_conditions={k: v.model_dump() for k, v in rule.outcome_conditions.items()},
-        tie_breakers=rule.tie_breakers,
-        priority=rule.priority,
-        source_case_ids=rule.source_case_ids,
-        source_micro_rule_ids=rule.source_micro_rule_ids,
-        has_conflicts=rule.has_conflicts,
-        conflict_summary=rule.conflict_summary,
-        conflicting_micro_rule_ids=rule.conflicting_micro_rule_ids,
-        support_count=rule.support_count,
-        support_ratio=rule.support_ratio,
-        golden_case_backed=rule.golden_case_backed,
-        estimated_token_count=rule.estimated_token_count,
-    )
-
-
-def _db_synth_to_schema(r: SynthesizedRule) -> SynthesizedRuleSchema:
-    oc = {k: OutcomeCondition.model_validate(v) for k, v in (r.outcome_conditions or {}).items()}
-    return SynthesizedRuleSchema(
-        id=r.id,
-        rule_type=r.rule_type,
-        topic=r.topic,
-        applies_when=list(r.applies_when or []),
-        outcome_conditions=oc,
-        tie_breakers=list(r.tie_breakers or []),
-        priority=r.priority,
-        source_case_ids=list(r.source_case_ids or []),
-        source_micro_rule_ids=list(r.source_micro_rule_ids or []),
-        has_conflicts=r.has_conflicts,
-        conflict_summary=r.conflict_summary,
-        conflicting_micro_rule_ids=list(r.conflicting_micro_rule_ids or []),
-        support_count=r.support_count,
-        support_ratio=r.support_ratio,
-        golden_case_backed=r.golden_case_backed,
-        estimated_token_count=r.estimated_token_count,
-    )
-
-
-def _eval_to_db(job_id: str, prompt_version_id: str | None, result: EvalResult) -> EvalRun:
-    return EvalRun(
-        id=str(uuid.uuid4()),
-        job_id=job_id,
-        prompt_version_id=prompt_version_id,
-        strategy=result.strategy,
-        model=result.model,
-        split=result.split,
-        accuracy=result.accuracy,
-        macro_f1=result.macro_f1,
-        weighted_case_score=result.weighted_case_score,
-        per_outcome_precision=result.per_outcome_precision,
-        per_outcome_recall=result.per_outcome_recall,
-        malformed_output_rate=result.malformed_output_rate,
-        confusion_matrix={k: dict(v) for k, v in result.confusion_matrix.items()},
-    )
-
-
-def _eval_case_record_to_schema(row: EvalCaseResultRecord) -> CaseEvalResult:
-    actual_output = row.actual_json
-    if actual_output is None and row.raw_output is not None:
-        actual_output = row.raw_output
-
-    return CaseEvalResult(
-        case_id=row.case_id,
-        score=row.case_score,
-        passed=row.passed,
-        malformed=row.malformed,
-        assertion_scores=dict(row.assertion_scores or {}),
-        actual_output=actual_output,
-        error=row.error_message,
-    )
-
-
-def _build_eval_case_upsert_payload(
-    *,
-    job_id: str,
-    student_id: str,
-    strategy: str,
-    split: str,
-    case: RuleKilnCase,
-    result: CaseEvalResult,
-) -> EvalCaseResultUpsert:
-    expected_json: dict[str, object] | str | None = (
-        case.expected if isinstance(case.expected, (dict, str)) else None
-    )
-
-    actual_json = result.actual_output
-    raw_output = _actual_output_to_raw_text(result.actual_output)
-    invalid_label = _is_invalid_label(case, result.actual_output)
-
-    return EvalCaseResultUpsert(
-        job_id=job_id,
-        student_id=student_id,
+    result = await evaluate_prompt(
+        system_prompt,
+        cases,
+        task,
+        chat_client,
+        config,
         strategy=strategy,
         split=split,
-        case_id=result.case_id,
-        expected_json=expected_json,
-        actual_json=actual_json,
-        raw_output=raw_output,
-        assertion_scores=result.assertion_scores,
-        passed=result.passed,
-        case_score=result.score,
-        malformed=result.malformed,
-        invalid_label=invalid_label,
-        error_type="MalformedOutput" if result.malformed else None,
-        error_message=result.error,
-    )
-
-
-def _actual_output_to_raw_text(
-    actual_output: dict[str, str | int | float | bool | None] | str | None,
-) -> str | None:
-    if actual_output is None:
-        return None
-    if isinstance(actual_output, str):
-        return actual_output
-    return json.dumps(actual_output, ensure_ascii=False)
-
-
-def _is_invalid_label(
-    case: RuleKilnCase,
-    actual_output: dict[str, str | int | float | bool | None] | str | None,
-) -> bool:
-    if case.task_mode not in {"classification", "routing"}:
-        return False
-
-    if actual_output is None:
-        return True
-
-    if isinstance(actual_output, dict):
-        label = actual_output.get("label")
-        return not isinstance(label, str) or label.strip() == ""
-
-    return actual_output.strip() == ""
-
-
-def _is_classification_task_mode(task_mode: str) -> bool:
-    return task_mode in {"classification", "routing"}
-
-
-def _prediction_label_from_case_result(case_result: CaseEvalResult | None) -> str:
-    if case_result is None or case_result.actual_output is None:
-        return ""
-    if isinstance(case_result.actual_output, dict):
-        label_value = case_result.actual_output.get("label")
-        if isinstance(label_value, str):
-            return label_value.strip()
-        return ""
-    return case_result.actual_output.strip()
-
-
-def _case_input_text(case: RuleKilnCase) -> str:
-    utterance = case.input.get("utterance")
-    if isinstance(utterance, str):
-        return utterance
-
-    text_value = case.input.get("text")
-    if isinstance(text_value, str):
-        return text_value
-
-    return json.dumps(case.input, sort_keys=True, ensure_ascii=False)
-
-
-def _aligned_classification_columns(
-    *,
-    eval_cases: list[RuleKilnCase],
-    eval_result: EvalResult,
-) -> tuple[list[str], list[str], list[str], list[str]]:
-    case_results_by_id = {
-        case_result.case_id: case_result for case_result in eval_result.case_results
-    }
-
-    case_ids: list[str] = []
-    expected_labels: list[str] = []
-    predicted_labels: list[str] = []
-    input_texts: list[str] = []
-
-    for case in eval_cases:
-        expected = expected_label(case)
-        if expected is None:
-            continue
-        case_ids.append(case.id)
-        expected_labels.append(expected)
-        predicted_labels.append(_prediction_label_from_case_result(case_results_by_id.get(case.id)))
-        input_texts.append(_case_input_text(case))
-
-    return case_ids, expected_labels, predicted_labels, input_texts
-
-
-def _refresh_eval_classification_statistics(
-    *,
-    eval_result: EvalResult,
-    eval_cases: list[RuleKilnCase],
-    bootstrap_enabled: bool,
-    bootstrap_iterations: int,
-    bootstrap_seed: int,
-) -> EvalResult:
-    case_ids, expected_labels, predicted_labels, _ = _aligned_classification_columns(
-        eval_cases=eval_cases,
-        eval_result=eval_result,
-    )
-    if not case_ids:
-        return eval_result
-
-    classification_stats = compute_classification_statistics(
-        actual_labels=expected_labels,
-        predicted_labels=predicted_labels,
-        case_ids=case_ids,
+        completed_case_results=completed_case_results,
+        on_case_result=_persist_strategy_case,
         bootstrap_enabled=bootstrap_enabled,
         bootstrap_iterations=bootstrap_iterations,
-        bootstrap_seed=bootstrap_seed,
+        bootstrap_seed=_evaluation_bootstrap_seed(
+            job_id=job_id,
+            strategy=strategy,
+            split=split,
+            seed_offset=bootstrap_seed_offset,
+        ),
     )
-
-    return eval_result.model_copy(
-        update={
-            "accuracy": classification_stats.accuracy,
-            "accuracy_ci_95": classification_stats.accuracy_ci_95,
-            "macro_f1": classification_stats.macro_f1,
-            "macro_f1_ci_95": classification_stats.macro_f1_ci_95,
-            "per_label_metrics": classification_stats.per_label_metrics,
-            "per_outcome_precision": classification_stats.per_outcome_precision,
-            "per_outcome_recall": classification_stats.per_outcome_recall,
-            "confusion_matrix": classification_stats.confusion_matrix,
-            "top_confusions": classification_stats.top_confusions,
-        }
+    await _insert_eval_run_if_missing(
+        session,
+        job_id=job_id,
+        split=split,
+        strategy=strategy,
+        result=result,
     )
-
-
-def _strategy_family(strategy: str) -> str:
-    return "distilled" if strategy in DISTILLED_STRATEGIES else "baseline"
-
-
-def _best_strategy_for_family(
-    *,
-    strategy_evals: dict[str, EvalResult],
-    strategy_prompt_tokens: dict[str, int],
-    primary_metric: str,
-    family: Literal["baseline", "distilled"],
-) -> str | None:
-    candidates = [
-        strategy_name
-        for strategy_name in strategy_evals
-        if _strategy_family(strategy_name) == family
-    ]
-    if not candidates:
-        return None
-
-    def sort_key(strategy_name: str) -> tuple[float, float, int, str]:
-        strategy_eval = strategy_evals[strategy_name]
-        fallback_token_count = (
-            strategy_eval.prompt_token_count if strategy_eval.prompt_token_count is not None else 0
-        )
-        token_count = strategy_prompt_tokens.get(
-            strategy_name,
-            fallback_token_count,
-        )
-        return (
-            -_primary_score_for_metric(strategy_eval, primary_metric),
-            strategy_eval.malformed_output_rate,
-            token_count,
-            strategy_name,
-        )
-
-    return sorted(candidates, key=sort_key)[0]
-
-
-def _build_runtime_paired_comparison(
-    *,
-    eval_cases: list[RuleKilnCase],
-    baseline_eval: EvalResult,
-    candidate_eval: EvalResult,
-    baseline_strategy_id: str,
-    candidate_strategy_id: str,
-) -> tuple[PairedComparisonArtifacts, list[RegressedLabelRow]]:
-    (
-        case_ids,
-        expected_labels,
-        baseline_predictions,
-        input_texts,
-    ) = _aligned_classification_columns(
-        eval_cases=eval_cases,
-        eval_result=baseline_eval,
-    )
-    _, _, candidate_predictions, _ = _aligned_classification_columns(
-        eval_cases=eval_cases,
-        eval_result=candidate_eval,
-    )
-
-    paired_artifacts = compute_paired_comparison(
-        case_ids=case_ids,
-        actual_labels=expected_labels,
-        baseline_predictions=baseline_predictions,
-        candidate_predictions=candidate_predictions,
-        input_texts=input_texts,
-        baseline_strategy_id=baseline_strategy_id,
-        candidate_strategy_id=candidate_strategy_id,
-    )
-    regressed_labels = compute_regressed_labels(
-        case_ids=case_ids,
-        actual_labels=expected_labels,
-        baseline_predictions=baseline_predictions,
-        candidate_predictions=candidate_predictions,
-    )
-    return paired_artifacts, regressed_labels
-
-
-def _resolve_primary_metric(payload: DistillationRequest, task_mode: str) -> str:
-    if payload.metric and payload.metric.strip():
-        return payload.metric.strip()
-    valid_task_modes = {
-        "classification",
-        "summarization",
-        "extraction",
-        "rubric_review",
-        "routing",
-        "tool_use",
-        "freeform_generation",
-        "agent_behavior",
-    }
-    if task_mode in valid_task_modes:
-        return get_primary_metric(cast(TaskMode, task_mode))
-    return "weighted_case_score"
-
-
-def _build_dataset_identifier(cases: list[RuleKilnCase]) -> str:
-    sorted_cases = sorted(cases, key=lambda case: case.id)
-    case_payloads = [case.model_dump(mode="json") for case in sorted_cases]
-    serialized = json.dumps(case_payloads, sort_keys=True, ensure_ascii=False)
-    digest = sha256(serialized.encode("utf-8")).hexdigest()
-    return f"cases_sha256:{digest}"
-
-
-def _primary_score_for_metric(result: EvalResult | None, primary_metric: str) -> float:
-    if result is None:
-        return 0.0
-    metric_name = primary_metric.strip().lower()
-    if metric_name == "macro_f1":
-        return float(result.macro_f1 or 0.0)
-    if metric_name == "accuracy":
-        return float(result.accuracy or 0.0)
-    return float(result.weighted_case_score or 0.0)
-
-
-def _delta_vs_baseline(
-    result: EvalResult | None,
-    baseline: EvalResult | None,
-    primary_metric: str,
-) -> float:
-    if result is None or baseline is None:
-        return 0.0
-    return _primary_score_for_metric(result, primary_metric) - _primary_score_for_metric(
-        baseline, primary_metric
-    )
+    return result
 
 
 async def _run_refinement_loop(
@@ -3535,158 +3159,3 @@ def _ablation_classify(
     return "neutral"
 
 
-def _build_manifest_entries(root: Path, paths: Sequence[Path]) -> list[str]:
-    entries: set[str] = set()
-    for entry in paths:
-        if not entry.exists():
-            continue
-        try:
-            entries.add(str(entry.relative_to(root)))
-        except ValueError:
-            continue
-    return sorted(entries)
-
-
-def _artifact_root(artifact_root_setting: str, job_id: str) -> Path:
-    return Path(artifact_root_setting) / job_id
-
-
-async def _insert_eval_run_if_missing(
-    session: AsyncSession,
-    *,
-    job_id: str,
-    split: str,
-    strategy: str,
-    result: EvalResult,
-) -> None:
-    existing_eval_runs = await get_eval_runs_for_job(session, job_id)
-    has_strategy_eval = any(
-        run.strategy == strategy and run.split == split for run in existing_eval_runs
-    )
-    if not has_strategy_eval:
-        await insert_eval_run(session, _eval_to_db(job_id, None, result))
-
-
-async def _persist_case_results(
-    session: AsyncSession,
-    *,
-    job_id: str,
-    student_id: str,
-    strategy: str,
-    split: str,
-    case_by_id: dict[str, RuleKilnCase],
-    case_results: list[CaseEvalResult],
-) -> None:
-    for case_result in case_results:
-        case = case_by_id.get(case_result.case_id)
-        if case is None:
-            continue
-        payload_row = _build_eval_case_upsert_payload(
-            job_id=job_id,
-            student_id=student_id,
-            strategy=strategy,
-            split=split,
-            case=case,
-            result=case_result,
-        )
-        await upsert_eval_case_result(session, payload_row)
-
-
-async def _evaluate_prompt_strategy(
-    session: AsyncSession,
-    *,
-    job_id: str,
-    strategy: str,
-    split: str,
-    student_id: str,
-    system_prompt: str,
-    cases: list[RuleKilnCase],
-    task: RuleKilnTask,
-    case_by_id: dict[str, RuleKilnCase],
-    chat_client: ChatModelClient,
-    config: ProviderConfig,
-    bootstrap_enabled: bool,
-    bootstrap_iterations: int,
-    bootstrap_seed_offset: int,
-) -> EvalResult:
-    existing_rows = await get_eval_case_results(
-        session,
-        job_id=job_id,
-        student_id=student_id,
-        strategy=strategy,
-        split=split,
-    )
-    completed_case_results = {
-        row.case_id: _eval_case_record_to_schema(row) for row in existing_rows
-    }
-
-    async def _persist_strategy_case(case_result: CaseEvalResult) -> None:
-        case = case_by_id.get(case_result.case_id)
-        if case is None:
-            return
-        payload_row = _build_eval_case_upsert_payload(
-            job_id=job_id,
-            student_id=student_id,
-            strategy=strategy,
-            split=split,
-            case=case,
-            result=case_result,
-        )
-        await upsert_eval_case_result(session, payload_row)
-
-    result = await evaluate_prompt(
-        system_prompt,
-        cases,
-        task,
-        chat_client,
-        config,
-        strategy=strategy,
-        split=split,
-        completed_case_results=completed_case_results,
-        on_case_result=_persist_strategy_case,
-        bootstrap_enabled=bootstrap_enabled,
-        bootstrap_iterations=bootstrap_iterations,
-        bootstrap_seed=_evaluation_bootstrap_seed(
-            job_id=job_id,
-            strategy=strategy,
-            split=split,
-            seed_offset=bootstrap_seed_offset,
-        ),
-    )
-    await _insert_eval_run_if_missing(
-        session,
-        job_id=job_id,
-        split=split,
-        strategy=strategy,
-        result=result,
-    )
-    return result
-
-
-def _resolve_distance_metric_from_task(task: RuleKilnTask) -> str:
-    raw_metric = task.prompt_scaffold.get("embedding_distance_metric")
-    if isinstance(raw_metric, str):
-        return resolve_distance_metric(raw_metric)
-    return resolve_distance_metric(None)
-
-
-def _resolve_training_cases(
-    extraction_cases: list[RuleKilnCase],
-    eval_cases: list[RuleKilnCase],
-) -> list[RuleKilnCase]:
-    if extraction_cases:
-        return extraction_cases
-    return eval_cases
-
-
-def _evaluation_bootstrap_seed(
-    *,
-    job_id: str,
-    strategy: str,
-    split: str,
-    seed_offset: int,
-    case_id: str | None = None,
-) -> int:
-    raw_seed = f"{job_id}|{strategy}|{split}|{seed_offset}|{case_id or ''}"
-    digest = sha256(raw_seed.encode("utf-8")).hexdigest()
-    return int(digest[:8], 16)
