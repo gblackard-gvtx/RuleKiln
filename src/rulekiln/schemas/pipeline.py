@@ -484,20 +484,9 @@ class StrategyComparison(BaseModel):
     best_baseline_strategy_id: str | None = None
     best_by_family: dict[str, str] = Field(default_factory=dict)
     paired_comparison: PairedComparisonSummary | None = None
-    strategy_evals: dict[str, EvalResult] = Field(default_factory=dict)
-    strategy_gates: dict[str, QualityGateResult] = Field(default_factory=dict)
-    strategy_prompt_tokens: dict[str, int] = Field(default_factory=dict)
-    strategy_metadata: dict[str, dict[str, str | int | float | bool]] = Field(default_factory=dict)
-    selected_strategy_id: str | None = None
-    selected_strategy_family: str | None = None
-    best_distilled_strategy_id: str | None = None
-    best_baseline_strategy_id: str | None = None
-    best_by_family: dict[str, str] = Field(default_factory=dict)
-    paired_comparison: PairedComparisonSummary | None = None
     selected_strategy: str | None = None
     selection_reason: str | None = None
     evaluation_split_warning: str | None = None
-    pruning_mode_comparison: PruningModeComparison | None = None
     pruning_mode_comparison: PruningModeComparison | None = None
     # Per-student results: strategy_name → student_id → StudentEvalSummary
     all_student_results: dict[str, dict[str, StudentEvalSummary]] = Field(default_factory=dict)
