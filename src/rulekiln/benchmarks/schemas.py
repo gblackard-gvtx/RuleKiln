@@ -9,10 +9,20 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from rulekiln.schemas.classroom import ClassroomConfig, TeacherConfig
-from rulekiln.schemas.pipeline import EvalResult, PairedComparisonSummary, PruningModeComparison
+from rulekiln.schemas.pipeline import (
+    EvalResult,
+    PairedComparisonSummary,
+    PruningModeComparison,
+    StudentEvalSummary,
+)
 
 BenchmarkProfileName = Literal["smoke", "standard", "full"]
 DatasetSource = Literal["auto", "fixture", "download"]
+
+# Re-export for backward compatibility with existing imports.
+__all__ = [
+    "StudentEvalSummary",
+]
 
 
 class BenchmarkProfileConfig(BaseModel):
@@ -21,22 +31,6 @@ class BenchmarkProfileConfig(BaseModel):
     train_cases: int | Literal["all"]
     validation_cases: int | Literal["deterministic_from_train"]
     test_cases: int | Literal["all"]
-
-
-class StudentEvalSummary(BaseModel):
-    """Per-student evaluation summary for a single strategy."""
-
-    schema_version: Literal["rulekiln.student_eval_summary.v1"] = "rulekiln.student_eval_summary.v1"
-    student_id: str
-    macro_f1: float | None = None
-    macro_f1_ci_95: tuple[float, float] | None = None
-    accuracy: float | None = None
-    accuracy_ci_95: tuple[float, float] | None = None
-    malformed_rate: float = 0.0
-    cost_usd: float | None = None
-    latency_p95_ms: float | None = None
-    # ── Phase 3.2: per-student paired comparison ──────────────────────────
-    paired_comparison: PairedComparisonSummary | None = None
 
 
 class PhaseCostBreakdown(BaseModel):

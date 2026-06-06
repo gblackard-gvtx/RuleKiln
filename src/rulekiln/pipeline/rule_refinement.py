@@ -77,6 +77,12 @@ Return a RefinementResult with an actions list. For each implicated rule, includ
 - discard: rule is harmful or irredeemably conflicted, remove it
 
 Always include rule_id and a rationale.
+
+ANTI-MEMORIZATION CONSTRAINT:
+Do not create rules that reference specific case IDs, exact example wording, customer names,
+or one-off literals unless the task policy itself requires that literal.
+Prefer the smallest general rule that explains multiple failures without breaking success cases.
+A rule that only fixes one case is a memorization patch, not a rule — do not write it.
 """
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import uuid
 from collections.abc import Sequence
 from enum import StrEnum
@@ -42,6 +43,10 @@ from rulekiln.artifacts.writer import (
     write_task,
     write_token_cost_summary,
     write_top_confusions_markdown,
+)
+from rulekiln.benchmarks.reporting import (
+    student_eval_summary_from_eval_result,
+    write_per_student_artifacts,
 )
 from rulekiln.config.settings import get_settings
 from rulekiln.db.models import BatchJob as BatchJobModel
@@ -114,6 +119,7 @@ from rulekiln.pipeline.baseline_strategies import (
     select_deterministic_few_shot_examples,
     select_retrieval_examples,
 )
+from rulekiln.pipeline.classroom_evaluator import evaluate_classroom as _evaluate_classroom
 from rulekiln.pipeline.clustering import cluster_dbscan, cluster_hdbscan
 from rulekiln.pipeline.evaluator import (
     build_case_result_from_label_prediction,
@@ -152,7 +158,7 @@ from rulekiln.providers.tracking import (
     set_tracking_context,
     update_tracking_context,
 )
-from rulekiln.schemas.classroom import TeacherConfig
+from rulekiln.schemas.classroom import StudentConfig, TeacherConfig
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.pipeline import (
     CaseEvalResult,
@@ -168,6 +174,7 @@ from rulekiln.schemas.pipeline import (
     RuleAblationArtifact,
     RuleAblationRecord,
     RuleClusterSchema,
+    StudentEvalSummary,
     SynthesizedRuleSchema,
 )
 from rulekiln.schemas.task_case import RuleKilnCase, RuleKilnTask, TaskMode
@@ -211,6 +218,7 @@ class PipelineStage(StrEnum):
     REFINING_RULES = "refining_rules"
     ABLATING_RULES = "ablating_rules"
     OPTIMIZING_PRUNING = "optimizing_pruning"
+    EVALUATING_CLASSROOM = "evaluating_classroom"
     CHECKING_QUALITY_GATES = "checking_quality_gates"
     LOGGING_ARTIFACTS = "logging_artifacts"
     EXPORTING_ARTIFACTS = "exporting_artifacts"
@@ -1653,6 +1661,10 @@ async def _run(
         token_counts: dict[str, int] = dict(strategy_prompt_tokens)
         token_counts.setdefault(BASELINE_SCAFFOLD_STRATEGY, baseline_prompt_tokens)
         compiled_prompts: dict[str, str] = dict(baseline_variant_prompts)
+        # Collect golden cases once; they are typically not in eval_cases so must be
+        # evaluated separately before the golden-failure quality gate can fire.
+        _gate_golden_cases = [c for c in cases if c.split == "golden"]
+        _gate_golden_eval_map: dict[str, EvalResult] = {}
 
         for strategy in DISTILLED_STRATEGIES:
             strategy_eval = eval_map.get(strategy)
@@ -1668,6 +1680,36 @@ async def _run(
             prompt_text, _ = compile_prompt(task, schemas, strategy)
             compiled_prompts[strategy] = prompt_text
             token_counts[strategy] = count_tokens_approx(prompt_text)
+            if _gate_golden_cases:
+                set_tracking_context(
+                    ModelCallContext(
+                        job_id=job_id,
+                        stage=PipelineStage.CHECKING_QUALITY_GATES,
+                        role="student",
+                        provider_profile=student_profile,
+                        provider=student_config.provider,
+                        model=student_config.model,
+                        strategy=strategy,
+                    ),
+                    collector,
+                )
+                try:
+                    _gate_golden_eval_map[strategy] = await evaluate_prompt(
+                        system_prompt=prompt_text,
+                        cases=_gate_golden_cases,
+                        task=task,
+                        chat_client=student_chat,
+                        config=student_config,
+                        strategy=f"{strategy}_golden",
+                        split="golden",
+                    )
+                except Exception as _golden_exc:
+                    logger.warning(
+                        "quality_gate_golden_eval_failed",
+                        job_id=job_id,
+                        strategy=strategy,
+                        error=str(_golden_exc),
+                    )
             gate = check_quality_gates(
                 strategy=strategy,
                 distilled_eval=strategy_eval,
@@ -1677,6 +1719,7 @@ async def _run(
                 task_gates=task.quality_gates,
                 settings_defaults=settings.default_quality_gate,
                 prompt_token_count=token_counts[strategy],
+                golden_eval=_gate_golden_eval_map.get(strategy),
             )
             gate_map[strategy] = gate
             if not gate_stage_complete:
@@ -1827,13 +1870,76 @@ async def _run(
         refined_rules: list[SynthesizedRuleSchema] | None = None
         if not await is_stage_complete(session, job_id, PipelineStage.REFINING_RULES):
             await _set_stage(session, job_id, PipelineStage.REFINING_RULES)
+            _refinement_blocked_reason: str | None = None
+            if eval_split in ("test", "golden"):
+                _refinement_blocked_reason = (
+                    f"eval_split={eval_split!r} — refinement must not"
+                    " optimize against test or golden data"
+                )
+            elif (
+                eval_split == "train"
+                and split_policy.fallback_warning
+                and not task.allow_refinement_on_train_split
+            ):
+                _refinement_blocked_reason = (
+                    "eval_split='train' due to missing validation split and "
+                    "allow_refinement_on_train_split is not set — "
+                    "refinement would double-use train data already used for extraction"
+                )
+            if _refinement_blocked_reason is not None:
+                logger.warning(
+                    "refinement_disabled_unsafe_split",
+                    job_id=job_id,
+                    eval_split=eval_split,
+                    reason=_refinement_blocked_reason,
+                )
+            _golden_cases_for_loop = [c for c in cases if c.split == "golden"]
             if (
                 task.enable_refinement_loop
                 and failure_analysis_result is not None
                 and selected_strategy in DISTILLED_STRATEGIES
+                and _refinement_blocked_reason is None
             ):
                 selected_eval_for_loop = eval_map.get(selected_strategy)
                 if selected_eval_for_loop is not None:
+                    # Resolve effective conflict-resolution values:
+                    # task-level fields (when set) override settings-level defaults.
+                    _cr = settings.default_conflict_resolution
+                    _eff_max_iterations = (
+                        task.refinement_max_iterations
+                        if task.refinement_max_iterations is not None
+                        else _cr.refinement_max_iterations
+                    )
+                    _eff_max_failure_cases = (
+                        task.refinement_max_failure_cases
+                        if task.refinement_max_failure_cases is not None
+                        else _cr.max_failure_cases_per_iteration
+                    )
+                    _eff_max_success_cases = (
+                        task.refinement_max_success_cases
+                        if task.refinement_max_success_cases is not None
+                        else _cr.max_success_cases_per_iteration
+                    )
+                    _eff_holdout_fraction = (
+                        task.validation_holdout_fraction
+                        if task.validation_holdout_fraction is not None
+                        else _cr.validation_holdout_fraction
+                    )
+                    # Quality gate thresholds reused inside the loop:
+                    # task.quality_gates > settings.default_quality_gate.
+                    _task_gates = task.quality_gates
+                    _eff_min_metric_delta = float(
+                        _task_gates.get(
+                            "min_metric_delta",
+                            settings.default_quality_gate.min_metric_delta,
+                        )
+                    )
+                    _eff_max_golden_failures = int(
+                        _task_gates.get(
+                            "max_golden_failures",
+                            settings.default_quality_gate.max_golden_failures,
+                        )
+                    )
                     refined_rules, refined_eval = await _run_refinement_loop(
                         session=session,
                         job_id=job_id,
@@ -1845,6 +1951,7 @@ async def _run(
                         eval_cases=eval_cases,
                         eval_split=eval_split,
                         case_by_id=case_by_id,
+                        golden_cases=_golden_cases_for_loop,
                         teacher_chat=refinement_teacher_chat,
                         teacher_config=refinement_teacher_config,
                         student_chat=student_chat,
@@ -1853,6 +1960,12 @@ async def _run(
                         bootstrap_enabled=evaluation_bootstrap_enabled,
                         bootstrap_iterations=evaluation_bootstrap_iterations,
                         bootstrap_seed=evaluation_bootstrap_seed_offset,
+                        effective_max_iterations=_eff_max_iterations,
+                        effective_max_failure_cases=_eff_max_failure_cases,
+                        effective_max_success_cases=_eff_max_success_cases,
+                        effective_holdout_fraction=_eff_holdout_fraction,
+                        effective_min_metric_delta=_eff_min_metric_delta,
+                        effective_max_golden_failures=_eff_max_golden_failures,
                     )
                     if refined_eval is not None:
                         eval_map[selected_strategy] = refined_eval
@@ -1902,6 +2015,71 @@ async def _run(
             if pruning_mode_comparison is not None:
                 comparison.pruning_mode_comparison = pruning_mode_comparison
             await mark_stage_complete(session, job_id, PipelineStage.OPTIMIZING_PRUNING)
+
+        # ── Stage: evaluating_classroom ───────────────────────────────────
+        # Evaluate every LLM-prompt strategy across all classroom students.
+        # Skipped when classroom_config has only one student (anchor-only run).
+        _classroom_student_evals: dict[str, dict[str, EvalResult]] = {}
+        _all_student_results: dict[str, dict[str, StudentEvalSummary]] = {}
+        _classroom_cfg = payload.classroom_config
+        if (
+            _classroom_cfg is not None
+            and len(_classroom_cfg.students) > 1
+            and not await is_stage_complete(session, job_id, PipelineStage.EVALUATING_CLASSROOM)
+        ):
+            await _set_stage(session, job_id, PipelineStage.EVALUATING_CLASSROOM)
+
+            def _classroom_chat_client(student: StudentConfig) -> ChatModelClient:
+                cfg = resolve_provider_config(
+                    student.provider, student.model, role="student", settings=settings
+                )
+                return get_chat_client(cfg)
+
+            def _classroom_provider_config(student: StudentConfig) -> ProviderConfig:
+                return resolve_provider_config(
+                    student.provider, student.model, role="student", settings=settings
+                )
+
+            _llm_prompt_strategies = {
+                s: p
+                for s, p in compiled_prompts.items()
+                if s not in EMBEDDING_BASELINE_STRATEGIES
+            }
+            for _cls_strategy, _cls_prompt in _llm_prompt_strategies.items():
+                try:
+                    _cls_results = await _evaluate_classroom(
+                        system_prompt=_cls_prompt,
+                        cases=eval_cases,
+                        task=task,
+                        classroom_config=_classroom_cfg,
+                        get_chat_client=_classroom_chat_client,
+                        get_provider_config=_classroom_provider_config,
+                        strategy=_cls_strategy,
+                        split=eval_split,
+                        bootstrap_enabled=evaluation_bootstrap_enabled,
+                        bootstrap_iterations=evaluation_bootstrap_iterations,
+                        bootstrap_seed=_evaluation_bootstrap_seed(
+                            job_id=job_id,
+                            strategy=_cls_strategy,
+                            split=eval_split,
+                            seed_offset=evaluation_bootstrap_seed_offset,
+                        ),
+                    )
+                    _classroom_student_evals[_cls_strategy] = _cls_results
+                    _all_student_results[_cls_strategy] = {
+                        sid: student_eval_summary_from_eval_result(r, sid)
+                        for sid, r in _cls_results.items()
+                    }
+                except Exception as _cls_exc:
+                    logger.warning(
+                        "classroom_eval_strategy_failed",
+                        job_id=job_id,
+                        strategy=_cls_strategy,
+                        error=str(_cls_exc),
+                    )
+            if _all_student_results:
+                comparison.all_student_results = _all_student_results
+            await mark_stage_complete(session, job_id, PipelineStage.EVALUATING_CLASSROOM)
 
         # ── Late stages ───────────────────────────────────────────────────
         if not await is_stage_complete(session, job_id, PipelineStage.LOGGING_ARTIFACTS):
@@ -2101,6 +2279,16 @@ async def _run(
                     )
                     written_artifacts.append(
                         write_rule_provenance_markdown(artifact_root, prov_artifact)
+                    )
+
+            # ── Per-student classroom artifacts ──────────────────────────
+            if _classroom_student_evals:
+                per_student_root = artifact_root / "classroom"
+                for _cls_strategy, _cls_student_evals in _classroom_student_evals.items():
+                    written_artifacts.extend(
+                        write_per_student_artifacts(
+                            per_student_root, _cls_strategy, _cls_student_evals
+                        )
                     )
 
             for strategy in DISTILLED_STRATEGIES:
@@ -2673,6 +2861,7 @@ async def _run_refinement_loop(
     eval_cases: list[RuleKilnCase],
     eval_split: str,
     case_by_id: dict[str, RuleKilnCase],
+    golden_cases: list[RuleKilnCase],
     teacher_chat: ChatModelClient,
     teacher_config: ProviderConfig,
     student_chat: ChatModelClient,
@@ -2681,6 +2870,12 @@ async def _run_refinement_loop(
     bootstrap_enabled: bool,
     bootstrap_iterations: int,
     bootstrap_seed: int,
+    effective_max_iterations: int,
+    effective_max_failure_cases: int,
+    effective_max_success_cases: int,
+    effective_holdout_fraction: float,
+    effective_min_metric_delta: float,
+    effective_max_golden_failures: int,
 ) -> tuple[list[SynthesizedRuleSchema] | None, EvalResult | None]:
     """Run the closed-loop conflict resolution loop (paper Phase 3, §3.3).
 
@@ -2688,6 +2883,10 @@ async def _run_refinement_loop(
     Emits outputs/refinement_iter_{n}.json per iteration.
     Returns (best_rules, best_eval) or (None, None) if no iteration improved the metric.
     The caller is responsible for checking the return and rolling back if needed.
+
+    effective_holdout_fraction reserves that fraction of eval_cases as a held-out
+    set that is never used for iterative evaluation, preventing the loop from
+    overfitting to the validation split.  0.0 disables holdout (uses all cases).
     """
     outputs_dir = artifact_root_path / "outputs"
     outputs_dir.mkdir(parents=True, exist_ok=True)
@@ -2697,6 +2896,16 @@ async def _run_refinement_loop(
     if not initial_rules:
         return None, None
 
+    # Split eval_cases into refinement set and holdout set (deterministic).
+    if effective_holdout_fraction > 0.0 and len(eval_cases) > 1:
+        rng_holdout = random.Random(task.refinement_seed)  # noqa: S311
+        shuffled = list(eval_cases)
+        rng_holdout.shuffle(shuffled)
+        holdout_n = max(1, int(len(shuffled) * effective_holdout_fraction))
+        refinement_eval_cases = shuffled[holdout_n:]
+    else:
+        refinement_eval_cases = eval_cases
+
     baseline_metric = _primary_score_for_metric(current_eval, primary_metric)
     current_metric = baseline_metric
     current_rules = initial_rules
@@ -2705,7 +2914,7 @@ async def _run_refinement_loop(
     best_eval = current_eval
     any_improvement = False
 
-    for iteration in range(task.refinement_max_iterations):
+    for iteration in range(effective_max_iterations):
         iter_path = outputs_dir / f"refinement_iter_{iteration}.json"
         if iter_path.exists():
             try:
@@ -2738,8 +2947,8 @@ async def _run_refinement_loop(
                 chat_client=teacher_chat,
                 config=teacher_config,
                 seed=task.refinement_seed + iteration,
-                max_failure_cases=task.refinement_max_failure_cases,
-                max_success_cases=task.refinement_max_success_cases,
+                max_failure_cases=effective_max_failure_cases,
+                max_success_cases=effective_max_success_cases,
             )
         except Exception as exc:
             logger.warning(
@@ -2796,7 +3005,7 @@ async def _run_refinement_loop(
         try:
             new_eval = await evaluate_prompt(
                 system_prompt=new_prompt,
-                cases=eval_cases,
+                cases=refinement_eval_cases,
                 task=task,
                 chat_client=student_chat,
                 config=student_config,
@@ -2823,9 +3032,35 @@ async def _run_refinement_loop(
         new_metric = _primary_score_for_metric(new_eval, primary_metric)
         improvement = new_metric - current_metric
 
-        if new_metric < current_metric:
+        # Evaluate golden cases with the candidate prompt and block acceptance on failures.
+        golden_failures_count = 0
+        if golden_cases:
+            try:
+                golden_eval = await evaluate_prompt(
+                    system_prompt=new_prompt,
+                    cases=golden_cases,
+                    task=task,
+                    chat_client=student_chat,
+                    config=student_config,
+                    strategy=f"{selected_strategy}_golden_{iteration}",
+                    split="golden",
+                )
+                golden_failures_count = sum(
+                    1 for r in golden_eval.case_results if not r.passed
+                )
+            except Exception as exc:
+                logger.warning(
+                    "refinement_golden_eval_failed",
+                    job_id=job_id,
+                    iteration=iteration,
+                    error=str(exc),
+                )
+
+        if golden_failures_count > effective_max_golden_failures:
+            stop_reason = "golden_failure"
+        elif new_metric < current_metric:
             stop_reason = "regression"
-        elif improvement < task.refinement_epsilon:
+        elif improvement < effective_min_metric_delta:
             stop_reason = "converged"
         else:
             stop_reason = "continue"
@@ -2839,6 +3074,7 @@ async def _run_refinement_loop(
             improvement=improvement,
             revised_rule_ids=revised_ids,
             stop_reason=stop_reason if stop_reason != "continue" else None,
+            golden_failures=golden_failures_count,
         )
         iter_path.write_text(iter_artifact.model_dump_json())
 
@@ -2886,6 +3122,10 @@ async def _run_refinement_loop(
                     "failure_case_ids": _failure_case_ids,
                     "success_case_ids": _success_case_ids,
                     "actions": _provenance_actions,
+                    "prior_metric": current_metric,
+                    "new_metric": new_metric,
+                    "golden_failures": golden_failures_count,
+                    "stop_reason": stop_reason,
                 },
                 ensure_ascii=False,
             )
@@ -2902,10 +3142,11 @@ async def _run_refinement_loop(
             prior_metric=current_metric,
             new_metric=new_metric,
             improvement=improvement,
+            golden_failures=golden_failures_count,
             stop_reason=stop_reason,
         )
 
-        if stop_reason == "regression":
+        if stop_reason in ("regression", "golden_failure"):
             break
 
         best_rules = pruning_result.selected

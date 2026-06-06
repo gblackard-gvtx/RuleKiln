@@ -82,12 +82,17 @@ class RuleKilnTask(BaseModel):
 
     # ── Closed-loop conflict resolution (Phase 3) ─────────────────────────
     # OFF by default (smoke); turn ON for standard/full profiles.
+    # None on numeric/fraction fields means "inherit from ConflictResolutionDefaults in settings."
     enable_refinement_loop: bool = False
-    refinement_max_iterations: int = 2
-    refinement_epsilon: float = 0.005
+    refinement_max_iterations: int | None = None
     refinement_seed: int = 1729
-    refinement_max_failure_cases: int = 20
-    refinement_max_success_cases: int = 20
+    refinement_max_failure_cases: int | None = None
+    refinement_max_success_cases: int | None = None
+    validation_holdout_fraction: float | None = None
+    # Allow refinement when eval_split fell back to train (train was already used for
+    # extraction, so this risks double-use). False by default; opt-in when no validation
+    # split is available and the operator accepts the double-use risk.
+    allow_refinement_on_train_split: bool = False
 
 
 AssertionType = Literal[

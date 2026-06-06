@@ -43,6 +43,7 @@ def check_quality_gates(
     task_gates: dict[str, object],
     settings_defaults: QualityGateDefaults,
     prompt_token_count: int = 0,
+    golden_eval: EvalResult | None = None,
 ) -> QualityGateResult:
     violations: list[str] = []
 
@@ -96,10 +97,15 @@ def check_quality_gates(
         )
 
     # Gate 3: golden failures
+    # golden_eval is a separate evaluation run against golden-split cases only; prefer it
+    # over distilled_eval because golden cases are usually not in the eval (validation) set
+    # and would be absent from distilled_eval.case_results otherwise.
     golden_ids = {c.id for c in cases if c.split == "golden"}
-    golden_failures = sum(
-        1 for r in distilled_eval.case_results if r.case_id in golden_ids and not r.passed
-    )
+    if golden_eval is not None:
+        golden_results = golden_eval.case_results
+    else:
+        golden_results = distilled_eval.case_results
+    golden_failures = sum(1 for r in golden_results if r.case_id in golden_ids and not r.passed)
     if golden_failures > max_golden_failures:
         violations.append(
             f"golden_failures {golden_failures} > max_golden_failures {max_golden_failures}"

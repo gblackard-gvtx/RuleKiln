@@ -395,6 +395,7 @@ class RefinementIterationArtifact(BaseModel):
     improvement: float
     revised_rule_ids: list[str] = Field(default_factory=list)
     stop_reason: str | None = None
+    golden_failures: int = 0
 
 
 # ── Refinement ablation artifact (loop ON vs OFF) ─────────────────────────────
@@ -424,6 +425,26 @@ class RefinementAblationArtifact(BaseModel):
     rows: list[RefinementAblationRow] = Field(default_factory=list)
     loop_helped: bool | None = None
     delta_macro_f1: float | None = None
+
+
+# ── Per-student evaluation summary ───────────────────────────────────────────
+
+
+class StudentEvalSummary(BaseModel):
+    """Per-student evaluation summary for a single strategy."""
+
+    schema_version: Literal["rulekiln.student_eval_summary.v1"] = (
+        "rulekiln.student_eval_summary.v1"
+    )
+    student_id: str
+    macro_f1: float | None = None
+    macro_f1_ci_95: tuple[float, float] | None = None
+    accuracy: float | None = None
+    accuracy_ci_95: tuple[float, float] | None = None
+    malformed_rate: float = 0.0
+    cost_usd: float | None = None
+    latency_p95_ms: float | None = None
+    paired_comparison: PairedComparisonSummary | None = None
 
 
 # ── Quality gates ─────────────────────────────────────────────────────────────
@@ -478,3 +499,5 @@ class StrategyComparison(BaseModel):
     evaluation_split_warning: str | None = None
     pruning_mode_comparison: PruningModeComparison | None = None
     pruning_mode_comparison: PruningModeComparison | None = None
+    # Per-student results: strategy_name → student_id → StudentEvalSummary
+    all_student_results: dict[str, dict[str, StudentEvalSummary]] = Field(default_factory=dict)

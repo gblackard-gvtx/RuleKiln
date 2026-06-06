@@ -67,6 +67,23 @@ class QualityGateDefaults(BaseModel):
     require_human_approval: bool = True
 
 
+class ConflictResolutionDefaults(BaseModel):
+    """Org-level defaults for the empirical closed-loop conflict-resolution stage.
+
+    Task-level fields on RuleKilnTask override these when set (non-None).
+    Quality gate thresholds (min_metric_delta, max_golden_failures, etc.) live
+    in QualityGateDefaults and are resolved through the standard gate mechanism.
+    """
+
+    enabled: bool = True
+    refinement_max_iterations: int = 3
+    validation_holdout_fraction: float = 0.20
+    max_failure_cases_per_iteration: int = 20
+    max_success_cases_per_iteration: int = 20
+    reject_case_specific_rules: bool = True
+    preserve_test_seal: bool = True
+
+
 class EvaluationSettings(BaseModel):
     """Evaluation metric settings including bootstrap CI controls."""
 
@@ -119,6 +136,11 @@ class AppSettings(BaseSettings):
     default_quality_gate: QualityGateDefaults = Field(
         default_factory=QualityGateDefaults,
         alias="DEFAULT_QUALITY_GATE",
+    )
+
+    default_conflict_resolution: ConflictResolutionDefaults = Field(
+        default_factory=ConflictResolutionDefaults,
+        alias="DEFAULT_CONFLICT_RESOLUTION",
     )
 
     evaluation: EvaluationSettings = Field(

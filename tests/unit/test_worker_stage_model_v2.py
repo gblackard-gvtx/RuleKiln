@@ -23,6 +23,7 @@ def test_all_required_stages_present() -> None:
         "refining_rules",
         "ablating_rules",
         "optimizing_pruning",
+        "evaluating_classroom",
         "checking_quality_gates",
         "logging_artifacts",
         "exporting_artifacts",
@@ -34,7 +35,7 @@ def test_all_required_stages_present() -> None:
 
 
 def test_stage_count() -> None:
-    assert len(PipelineStage) == 23
+    assert len(PipelineStage) == 24
 
 
 def test_new_stages_present() -> None:
