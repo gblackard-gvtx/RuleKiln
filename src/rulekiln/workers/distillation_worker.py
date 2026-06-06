@@ -226,17 +226,8 @@ class PipelineStage(StrEnum):
     FAILED = "failed"
 
 
-PipelinePhase = Literal[
-    "full",
-    "validate_project",
-    "compile_prompts",
-    "extraction_batch_submit",
-    "extraction_batch_collect",
-    "evaluate_baseline",
-    "evaluate_dbscan",
-    "evaluate_hdbscan",
-    "aggregate_evaluation_report",
-]
+from rulekiln.workers.pipeline.orchestrator import DistillationPipelineRunner
+from rulekiln.workers.pipeline.phase_plan import PipelinePhase
 
 
 async def run_distillation_pipeline(
@@ -247,7 +238,7 @@ async def run_distillation_pipeline(
     session_factory = get_session_factory()
     async with session_factory() as session:
         try:
-            await _run(session, job_id, payload)
+            await DistillationPipelineRunner(session).run(job_id, payload)
         except Exception as exc:
             error_message = format_worker_error_message(exc)
             logger.error("pipeline_failed", job_id=job_id, error=error_message)
@@ -269,7 +260,7 @@ async def run_pipeline_phase(
     phase: PipelinePhase,
 ) -> None:
     """Run one pipeline phase while preserving existing stage-marker idempotency guards."""
-    await _run(session, job_id, payload, phase=phase)
+    await DistillationPipelineRunner(session).run(job_id, payload, phase=phase)
 
 
 async def _run(
