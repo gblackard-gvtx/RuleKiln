@@ -127,7 +127,6 @@ from rulekiln.schemas.pipeline import (
     EvalResult,
     PruningModeComparison,
     PruningModeRow,
-    QualityGateResult,
     RefinementIterationArtifact,
     RuleAblationArtifact,
     RuleAblationRecord,
@@ -136,6 +135,7 @@ from rulekiln.schemas.pipeline import (
 )
 from rulekiln.schemas.task_case import RuleKilnCase, RuleKilnTask
 from rulekiln.workers.error_classification import format_worker_error_message
+from rulekiln.workers.pipeline.artifacts_state import PipelineArtifactsState
 from rulekiln.workers.pipeline.classification_metrics import (
     _build_runtime_paired_comparison,
     _is_classification_task_mode,
@@ -340,35 +340,40 @@ async def _run(
         return
 
     # ── Stage: evaluating_baseline ────────────────────────────────────────
+    state = PipelineArtifactsState()
+
     if payload.baseline_prompt:
-        baseline_prompt_text = payload.baseline_prompt
-        baseline_prompt_source = "provided"
+        state.baseline_prompt_text = payload.baseline_prompt
+        state.baseline_prompt_source = "provided"
     else:
-        baseline_prompt_text = compile_baseline_prompt(task)
-        baseline_prompt_source = "compiled"
+        state.baseline_prompt_text = compile_baseline_prompt(task)
+        state.baseline_prompt_source = "compiled"
+
+    baseline_prompt_text = state.baseline_prompt_text
+    baseline_prompt_source = state.baseline_prompt_source
 
     train_cases = _resolve_training_cases(extraction_cases, eval_cases)
     distance_metric = _resolve_distance_metric_from_task(task)
-    baseline_prompt_tokens = count_tokens_approx(baseline_prompt_text)
+    state.baseline_prompt_tokens = count_tokens_approx(baseline_prompt_text)
+    baseline_prompt_tokens = state.baseline_prompt_tokens
 
+    state.baseline_variant_prompts[BASELINE_SCAFFOLD_STRATEGY] = baseline_prompt_text
+    state.strategy_prompt_tokens[BASELINE_SCAFFOLD_STRATEGY] = baseline_prompt_tokens
+    state.strategy_metadata[BASELINE_SCAFFOLD_STRATEGY] = {
+        "prompt_source": baseline_prompt_source,
+    }
+    state.strategy_metadata[RETRIEVAL_FEW_SHOT_STRATEGY] = {
+        "configured_k": RETRIEVAL_FEW_SHOT_K,
+        "distance_metric": distance_metric,
+    }
+
+    baseline_variant_prompts = state.baseline_variant_prompts
+    baseline_variant_evals = state.baseline_variant_evals
+    strategy_prompt_tokens = state.strategy_prompt_tokens
+    strategy_metadata = state.strategy_metadata
     baseline_eval: EvalResult | None = None
     baseline_scaffold_eval: EvalResult | None = None
-    baseline_variant_evals: dict[str, EvalResult] = {}
-    baseline_variant_prompts: dict[str, str] = {
-        BASELINE_SCAFFOLD_STRATEGY: baseline_prompt_text,
-    }
-    strategy_prompt_tokens: dict[str, int] = {
-        BASELINE_SCAFFOLD_STRATEGY: baseline_prompt_tokens,
-    }
-    strategy_metadata: dict[str, dict[str, str | int | float | bool]] = {
-        BASELINE_SCAFFOLD_STRATEGY: {
-            "prompt_source": baseline_prompt_source,
-        },
-        RETRIEVAL_FEW_SHOT_STRATEGY: {
-            "configured_k": RETRIEVAL_FEW_SHOT_K,
-            "distance_metric": distance_metric,
-        },
-    }
+
     for strategy_name, k_value in BASELINE_FEW_SHOT_STRATEGY_TO_K.items():
         selected_examples = select_deterministic_few_shot_examples(train_cases, k=k_value)
         prompt_text, prompt_tokens, used_examples = build_few_shot_prompt_with_budget(
@@ -418,6 +423,7 @@ async def _run(
             bootstrap_seed_offset=evaluation_bootstrap_seed_offset,
         )
         baseline_eval.prompt_token_count = baseline_prompt_tokens
+        state.baseline_eval = baseline_eval
 
         baseline_scaffold_eval = baseline_eval.model_copy(
             update={
@@ -425,6 +431,7 @@ async def _run(
                 "prompt_token_count": baseline_prompt_tokens,
             }
         )
+        state.baseline_scaffold_eval = baseline_scaffold_eval
         baseline_variant_evals[BASELINE_SCAFFOLD_STRATEGY] = baseline_scaffold_eval
         baseline_variant_prompts[BASELINE_SCAFFOLD_STRATEGY] = baseline_prompt_text
         strategy_prompt_tokens[BASELINE_SCAFFOLD_STRATEGY] = baseline_prompt_tokens
@@ -854,7 +861,8 @@ async def _run(
         return
 
     # ── Stage: evaluating_distilled ───────────────────────────────────────
-    eval_map: dict[str, EvalResult] = dict(baseline_variant_evals)
+    state.eval_map.update(baseline_variant_evals)
+    eval_map = state.eval_map
     distilled_strategies: tuple[str, ...]
     if phase == "evaluate_dbscan":
         distilled_strategies = ("dbscan",)
@@ -961,6 +969,7 @@ async def _run(
                 strategy=BASELINE_STRATEGY,
                 split=eval_split,
             )
+            state.baseline_eval = baseline_eval
 
         if baseline_scaffold_eval is None:
             baseline_scaffold_eval = await _load_eval_result_from_db(
@@ -977,6 +986,7 @@ async def _run(
                         "prompt_token_count": baseline_prompt_tokens,
                     }
                 )
+            state.baseline_scaffold_eval = baseline_scaffold_eval
 
         if baseline_scaffold_eval is not None:
             eval_map.setdefault(BASELINE_SCAFFOLD_STRATEGY, baseline_scaffold_eval)
@@ -1009,11 +1019,14 @@ async def _run(
                         seed_offset=evaluation_bootstrap_seed_offset,
                     ),
                 )
-            eval_map = refreshed_eval_map
+            state.eval_map = refreshed_eval_map
+            eval_map = state.eval_map
             if baseline_eval is not None and BASELINE_STRATEGY in eval_map:
                 baseline_eval = eval_map[BASELINE_STRATEGY]
+                state.baseline_eval = baseline_eval
             if baseline_scaffold_eval is not None and BASELINE_SCAFFOLD_STRATEGY in eval_map:
                 baseline_scaffold_eval = eval_map[BASELINE_SCAFFOLD_STRATEGY]
+                state.baseline_scaffold_eval = baseline_scaffold_eval
 
         if RETRIEVAL_FEW_SHOT_STRATEGY not in eval_map:
             loaded_retrieval = await _load_eval_result_from_db(
@@ -1040,10 +1053,12 @@ async def _run(
                 eval_map[strategy] = loaded
 
         # ── Stage: checking_quality_gates ─────────────────────────────────
-        gate_map: dict[str, QualityGateResult] = {}
-        token_counts: dict[str, int] = dict(strategy_prompt_tokens)
+        gate_map = state.gate_map
+        token_counts = state.token_counts
+        token_counts.update(strategy_prompt_tokens)
         token_counts.setdefault(BASELINE_SCAFFOLD_STRATEGY, baseline_prompt_tokens)
-        compiled_prompts: dict[str, str] = dict(baseline_variant_prompts)
+        compiled_prompts = state.compiled_prompts
+        compiled_prompts.update(baseline_variant_prompts)
         # Collect golden cases once; they are typically not in eval_cases so must be
         # evaluated separately before the golden-failure quality gate can fire.
         _gate_golden_cases = [c for c in cases if c.split == "golden"]
