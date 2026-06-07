@@ -567,7 +567,7 @@ async def test_compile_phase_resumes_synthesis_by_cluster(
         "rulekiln.workers.pipeline.early_stages.synthesize_cluster", _flaky_synthesize
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.review_rule_for_conflicts",
+        "rulekiln.workers.pipeline.compile_phase_stages.review_rule_for_conflicts",
         _no_conflict_review,
     )
 
@@ -755,7 +755,7 @@ async def test_compile_phase_resumes_conflict_review_by_rule(
         _synthesize_two_rules,
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.review_rule_for_conflicts",
+        "rulekiln.workers.pipeline.compile_phase_stages.review_rule_for_conflicts",
         _flaky_conflict_review,
     )
 

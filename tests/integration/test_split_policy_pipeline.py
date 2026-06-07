@@ -290,7 +290,7 @@ async def test_split_policy_uses_train_for_extraction_and_validation_for_eval(
         "rulekiln.workers.pipeline.early_stages.synthesize_cluster", _synthesize_stub
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.review_rule_for_conflicts",
+        "rulekiln.workers.pipeline.compile_phase_stages.review_rule_for_conflicts",
         _review_stub,
     )
     monkeypatch.setattr("rulekiln.workers.distillation_worker.evaluate_prompt", _evaluate_stub)
@@ -475,7 +475,7 @@ async def test_split_policy_falls_back_to_train_with_warning(
         "rulekiln.workers.pipeline.early_stages.synthesize_cluster", _synthesize_stub
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.review_rule_for_conflicts",
+        "rulekiln.workers.pipeline.compile_phase_stages.review_rule_for_conflicts",
         _review_stub,
     )
     monkeypatch.setattr("rulekiln.workers.distillation_worker.evaluate_prompt", _evaluate_stub)

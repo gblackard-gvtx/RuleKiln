@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import json
 import random
-import uuid
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal
 
-from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from rulekiln.agents.rule_conflict_review import review_rule_for_conflicts
 from rulekiln.artifacts.settings_snapshot import write_settings_snapshot
 from rulekiln.artifacts.writer import (
     write_baseline_prompt,
@@ -43,8 +40,6 @@ from rulekiln.benchmarks.reporting import (
 from rulekiln.config.settings import get_settings
 from rulekiln.db.models import (
     MicroRule,
-    PromptVersion,
-    SynthesizedRule,
 )
 from rulekiln.db.repositories.eval_case_results import (
     get_eval_case_results,
@@ -56,13 +51,11 @@ from rulekiln.db.repositories.jobs import (
     get_selected_synthesized_rules_for_job,
     get_synthesized_rules_for_job,
     insert_eval_run,
-    insert_prompt_version,
     is_stage_complete,
     mark_prompt_version_selected,
     mark_stage_complete,
     set_mlflow_run_id,
     update_job_status,
-    update_synthesized_rule_pruning,
 )
 from rulekiln.db.repositories.model_calls import (
     bulk_insert_model_call_events,
@@ -132,7 +125,6 @@ from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.pipeline import (
     CaseEvalResult,
     EvalResult,
-    MicroRuleSchema,
     PruningModeComparison,
     PruningModeRow,
     QualityGateResult,
@@ -150,6 +142,11 @@ from rulekiln.workers.pipeline.classification_metrics import (
     _refresh_eval_classification_statistics,
     _resolve_distance_metric_from_task,
     _resolve_training_cases,
+)
+from rulekiln.workers.pipeline.compile_phase_stages import (
+    PromptCompilationService,
+    PruningStageService,
+    StaticConflictReviewService,
 )
 from rulekiln.workers.pipeline.context_factory import PipelineContextFactory
 from rulekiln.workers.pipeline.db_mappers import (
@@ -175,7 +172,6 @@ from rulekiln.workers.pipeline.orchestrator import DistillationPipelineRunner
 from rulekiln.workers.pipeline.paths import (
     _artifact_root,
     _build_manifest_entries,
-    _conflict_review_rule_marker,
 )
 from rulekiln.workers.pipeline.phase_plan import PipelinePhase
 from rulekiln.workers.pipeline.pipeline_stage import PipelineStage
@@ -298,8 +294,6 @@ async def _run(
 
     student_profile = payload.student.provider_profile
     embedding_profile = payload.embedding.provider_profile
-    judge_route = payload.judge or payload.teacher
-    judge_profile = judge_route.provider_profile
 
     # ── Stage: validating_project ──────────────────────────────────────────
     if run_validate:
@@ -314,11 +308,9 @@ async def _run(
     teacher_config = bundle.teacher_config
     student_config = bundle.student_config
     embedding_config = bundle.embedding_config
-    judge_config = bundle.judge_config
     refinement_teacher_config = bundle.refinement_teacher_config
     student_chat = bundle.student_chat
     embedding_client = bundle.embedding_client
-    judge_chat = bundle.judge_chat
     refinement_teacher_chat = bundle.refinement_teacher_chat
     eval_student_id = bundle.eval_student_id
     primary_metric = ctx.primary_metric
@@ -338,172 +330,10 @@ async def _run(
         rule_map: dict[str, MicroRule] = {r.id: r for r in _emb.db_micro_rules}
         await SynthesisStageService(session).run(ctx, bundle, _clust, rule_map)
 
-        # ── Stage: reviewing_rule_conflicts (static rule review, pre-eval hygiene) ──
-        total_train_cases = len(extraction_cases)
-        for strategy in DISTILLED_STRATEGIES:
-            if await is_stage_complete(
-                session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy
-            ):
-                continue
-            await _set_stage(session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS)
-            set_tracking_context(
-                ModelCallContext(
-                    job_id=job_id,
-                    stage=PipelineStage.REVIEWING_RULE_CONFLICTS,
-                    role="judge",
-                    provider_profile=judge_profile,
-                    provider=judge_config.provider,
-                    model=judge_config.model,
-                    strategy=strategy,
-                ),
-                collector,
-            )
-            db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
-            reviewed_rule_count = 0
-            skipped_rule_count = 0
-            for synth_rule in db_synth:
-                review_marker = _conflict_review_rule_marker(strategy, synth_rule.id)
-                if await is_stage_complete(
-                    session,
-                    job_id,
-                    PipelineStage.REVIEWING_RULE_CONFLICTS,
-                    strategy=strategy,
-                    artifact_type=review_marker,
-                ):
-                    skipped_rule_count += 1
-                    continue
-
-                schema = _db_synth_to_schema(synth_rule)
-                support = len(schema.source_case_ids)
-                ratio = support / total_train_cases if total_train_cases > 0 else 0.0
-                golden_backed = bool(
-                    task.quality_gates and any(cid in set(schema.source_case_ids) for cid in [])
-                )
-                token_count = count_tokens_approx(f"{schema.topic} {' '.join(schema.applies_when)}")
-                await update_synthesized_rule_pruning(
-                    session,
-                    synth_rule.id,
-                    is_pruned=False,
-                    pruning_reason=None,
-                    support_count=support,
-                    support_ratio=ratio,
-                    golden_case_backed=golden_backed,
-                    estimated_token_count=token_count,
-                )
-                cluster_micro = [
-                    MicroRuleSchema(
-                        topic=rule_map[rid].topic,
-                        condition=rule_map[rid].condition,
-                        expected_outcome=rule_map[rid].expected_outcome,
-                        output_path=rule_map[rid].output_path,
-                        rationale_summary=rule_map[rid].rationale_summary,
-                        rule_type=rule_map[rid].rule_type,
-                        positive_cues=list(rule_map[rid].positive_cues or []),
-                        negative_cues=list(rule_map[rid].negative_cues or []),
-                    )
-                    for rid in (schema.source_micro_rule_ids or [])
-                    if rid in rule_map
-                ]
-                review = await review_rule_for_conflicts(
-                    task,
-                    schema,
-                    cluster_micro,
-                    judge_chat,
-                    judge_config,
-                )
-                has_conflicts = review.has_conflicts and review.resolution in ("discard",)
-                await session.execute(
-                    update(SynthesizedRule)
-                    .where(SynthesizedRule.id == synth_rule.id)
-                    .values(
-                        has_conflicts=has_conflicts,
-                        conflict_summary=review.conflict_summary,
-                        conflicting_micro_rule_ids=review.conflicting_micro_rule_ids,
-                    )
-                )
-                await mark_stage_complete(
-                    session,
-                    job_id,
-                    PipelineStage.REVIEWING_RULE_CONFLICTS,
-                    strategy=strategy,
-                    artifact_type=review_marker,
-                )
-                reviewed_rule_count += 1
-
-            await mark_stage_complete(
-                session, job_id, PipelineStage.REVIEWING_RULE_CONFLICTS, strategy=strategy
-            )
-            logger.info(
-                "conflict_review_done",
-                job_id=job_id,
-                strategy=strategy,
-                reviewed=reviewed_rule_count,
-                skipped=skipped_rule_count,
-            )
-
-        # ── Stage: pruning_rules ──────────────────────────────────────────
-        for strategy in DISTILLED_STRATEGIES:
-            if await is_stage_complete(
-                session, job_id, PipelineStage.PRUNING_RULES, strategy=strategy
-            ):
-                continue
-            await _set_stage(session, job_id, PipelineStage.PRUNING_RULES)
-            db_synth = await get_synthesized_rules_for_job(session, job_id, strategy)
-            schemas = [_db_synth_to_schema(r) for r in db_synth]
-            pruning_result = prune_rules(
-                schemas,
-                max_rules=task.max_rules,
-                max_prompt_tokens=task.max_prompt_tokens,
-                min_rule_support_count=task.min_rule_support_count,
-                preserve_golden_rules=task.preserve_golden_rules,
-            )
-            selected_ids = {r.id for r in pruning_result.selected}
-            for record in pruning_result.pruned:
-                await update_synthesized_rule_pruning(
-                    session,
-                    record.rule.id,
-                    is_pruned=True,
-                    pruning_reason=record.reason,
-                    support_count=record.rule.support_count,
-                    support_ratio=record.rule.support_ratio,
-                    golden_case_backed=record.rule.golden_case_backed,
-                    estimated_token_count=record.rule.estimated_token_count,
-                )
-            logger.info(
-                "pruning_done",
-                job_id=job_id,
-                strategy=strategy,
-                selected=len(selected_ids),
-                pruned=len(pruning_result.pruned),
-            )
-            await mark_stage_complete(
-                session, job_id, PipelineStage.PRUNING_RULES, strategy=strategy
-            )
-
-        # ── Stage: compiling_prompts ──────────────────────────────────────
-        for strategy in DISTILLED_STRATEGIES:
-            if await is_stage_complete(
-                session, job_id, PipelineStage.COMPILING_PROMPTS, strategy=strategy
-            ):
-                continue
-            await _set_stage(session, job_id, PipelineStage.COMPILING_PROMPTS)
-            db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
-            schemas = [_db_synth_to_schema(r) for r in db_synth]
-            prompt_text, prompt_hash = compile_prompt(task, schemas, strategy)
-            pv = PromptVersion(
-                id=str(uuid.uuid4()),
-                job_id=job_id,
-                task_id=task.task_id,
-                task_name=task.task_name,
-                strategy=strategy,
-                version="v1",
-                system_prompt=prompt_text,
-                prompt_hash=prompt_hash,
-            )
-            await insert_prompt_version(session, pv)
-            await mark_stage_complete(
-                session, job_id, PipelineStage.COMPILING_PROMPTS, strategy=strategy
-            )
+        # ── Stages: reviewing_rule_conflicts → pruning → compiling_prompts ──
+        await StaticConflictReviewService(session).run(ctx, bundle, rule_map)
+        await PruningStageService(session).run(ctx)
+        await PromptCompilationService(session).run(ctx)
 
     if phase == "compile_prompts":
         await _persist_collector_records(session, job_id, collector)
