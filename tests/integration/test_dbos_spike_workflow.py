@@ -201,6 +201,10 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
         "rulekiln.workers.distillation_worker.evaluate_prompt",
         _evaluate_prompt_fail_once,
     )
+    monkeypatch.setattr(
+        "rulekiln.workers.pipeline.distilled_eval_service.evaluate_prompt",
+        _evaluate_prompt_fail_once,
+    )
 
     payload = _build_payload()
     job_id = "aaaaaaaa-1111-0000-0000-0000000000dc"

@@ -295,6 +295,9 @@ async def test_split_policy_uses_train_for_extraction_and_validation_for_eval(
     )
     monkeypatch.setattr("rulekiln.workers.distillation_worker.evaluate_prompt", _evaluate_stub)
     monkeypatch.setattr(
+        "rulekiln.workers.pipeline.distilled_eval_service.evaluate_prompt", _evaluate_stub
+    )
+    monkeypatch.setattr(
         "rulekiln.workers.pipeline.early_stages.cluster_dbscan",
         lambda rule_ids, embeddings, eps=0.3, min_samples=2: _single_cluster("dbscan", rule_ids),
     )
@@ -479,6 +482,9 @@ async def test_split_policy_falls_back_to_train_with_warning(
         _review_stub,
     )
     monkeypatch.setattr("rulekiln.workers.distillation_worker.evaluate_prompt", _evaluate_stub)
+    monkeypatch.setattr(
+        "rulekiln.workers.pipeline.distilled_eval_service.evaluate_prompt", _evaluate_stub
+    )
     monkeypatch.setattr(
         "rulekiln.workers.pipeline.early_stages.cluster_dbscan",
         lambda rule_ids, embeddings, eps=0.3, min_samples=2: _single_cluster("dbscan", rule_ids),

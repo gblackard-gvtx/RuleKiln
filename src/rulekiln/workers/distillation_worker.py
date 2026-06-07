@@ -46,11 +46,9 @@ from rulekiln.db.repositories.eval_case_results import (
     upsert_eval_case_result,
 )
 from rulekiln.db.repositories.jobs import (
-    get_eval_runs_for_job,
     get_rule_clusters_for_job,
     get_selected_synthesized_rules_for_job,
     get_synthesized_rules_for_job,
-    insert_eval_run,
     is_stage_complete,
     mark_prompt_version_selected,
     mark_stage_complete,
@@ -153,8 +151,8 @@ from rulekiln.workers.pipeline.db_mappers import (
     _build_eval_case_upsert_payload,
     _db_synth_to_schema,
     _eval_case_record_to_schema,
-    _eval_to_db,
 )
+from rulekiln.workers.pipeline.distilled_eval_service import DistilledEvaluationService
 from rulekiln.workers.pipeline.early_stages import (
     ClusteringStageService,
     ExtractionStageService,
@@ -863,95 +861,7 @@ async def _run(
     # ── Stage: evaluating_distilled ───────────────────────────────────────
     state.eval_map.update(baseline_variant_evals)
     eval_map = state.eval_map
-    distilled_strategies: tuple[str, ...]
-    if phase == "evaluate_dbscan":
-        distilled_strategies = ("dbscan",)
-    elif phase == "evaluate_hdbscan":
-        distilled_strategies = ("hdbscan",)
-    elif phase == "full":
-        distilled_strategies = DISTILLED_STRATEGIES
-    else:
-        distilled_strategies = ()
-
-    for strategy in distilled_strategies:
-        if await is_stage_complete(
-            session, job_id, PipelineStage.EVALUATING_DISTILLED, strategy=strategy
-        ):
-            continue
-        await _set_stage(session, job_id, PipelineStage.EVALUATING_DISTILLED)
-        set_tracking_context(
-            ModelCallContext(
-                job_id=job_id,
-                stage=PipelineStage.EVALUATING_DISTILLED,
-                role="student",
-                provider_profile=student_profile,
-                provider=student_config.provider,
-                model=student_config.model,
-                strategy=strategy,
-            ),
-            collector,
-        )
-        existing_rows = await get_eval_case_results(
-            session,
-            job_id=job_id,
-            student_id=eval_student_id,
-            strategy=strategy,
-            split=eval_split,
-        )
-        completed_case_results = {
-            row.case_id: _eval_case_record_to_schema(row) for row in existing_rows
-        }
-
-        async def _persist_strategy_case(
-            case_result: CaseEvalResult,
-            *,
-            strategy_name: str = strategy,
-        ) -> None:
-            case = case_by_id.get(case_result.case_id)
-            if case is None:
-                return
-            payload_row = _build_eval_case_upsert_payload(
-                job_id=job_id,
-                student_id=eval_student_id,
-                strategy=strategy_name,
-                split=eval_split,
-                case=case,
-                result=case_result,
-            )
-            await upsert_eval_case_result(session, payload_row)
-
-        db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
-        schemas = [_db_synth_to_schema(r) for r in db_synth]
-        prompt_text, _ = compile_prompt(task, schemas, strategy)
-        ev = await evaluate_prompt(
-            prompt_text,
-            eval_cases,
-            task,
-            student_chat,
-            student_config,
-            strategy=strategy,
-            split=eval_split,
-            completed_case_results=completed_case_results,
-            on_case_result=_persist_strategy_case,
-            bootstrap_enabled=evaluation_bootstrap_enabled,
-            bootstrap_iterations=evaluation_bootstrap_iterations,
-            bootstrap_seed=_evaluation_bootstrap_seed(
-                job_id=job_id,
-                strategy=strategy,
-                split=eval_split,
-                seed_offset=evaluation_bootstrap_seed_offset,
-            ),
-        )
-        eval_map[strategy] = ev
-        existing_eval_runs = await get_eval_runs_for_job(session, job_id)
-        has_strategy_eval = any(
-            run.strategy == strategy and run.split == eval_split for run in existing_eval_runs
-        )
-        if not has_strategy_eval:
-            await insert_eval_run(session, _eval_to_db(job_id, None, ev))
-        await mark_stage_complete(
-            session, job_id, PipelineStage.EVALUATING_DISTILLED, strategy=strategy
-        )
+    await DistilledEvaluationService(session).run(ctx, bundle, state, phase=phase)
 
     if phase in {"evaluate_dbscan", "evaluate_hdbscan"}:
         await _persist_collector_records(session, job_id, collector)
