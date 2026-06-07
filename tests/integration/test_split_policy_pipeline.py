@@ -295,6 +295,9 @@ async def test_split_policy_uses_train_for_extraction_and_validation_for_eval(
     )
     monkeypatch.setattr("rulekiln.workers.distillation_worker.evaluate_prompt", _evaluate_stub)
     monkeypatch.setattr(
+        "rulekiln.workers.pipeline.baseline_eval_service.evaluate_prompt", _evaluate_stub
+    )
+    monkeypatch.setattr(
         "rulekiln.workers.pipeline.distilled_eval_service.evaluate_prompt", _evaluate_stub
     )
     monkeypatch.setattr(
@@ -482,6 +485,9 @@ async def test_split_policy_falls_back_to_train_with_warning(
         _review_stub,
     )
     monkeypatch.setattr("rulekiln.workers.distillation_worker.evaluate_prompt", _evaluate_stub)
+    monkeypatch.setattr(
+        "rulekiln.workers.pipeline.baseline_eval_service.evaluate_prompt", _evaluate_stub
+    )
     monkeypatch.setattr(
         "rulekiln.workers.pipeline.distilled_eval_service.evaluate_prompt", _evaluate_stub
     )
