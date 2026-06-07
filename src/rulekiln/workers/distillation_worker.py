@@ -50,7 +50,6 @@ from rulekiln.db.repositories.jobs import (
     get_selected_synthesized_rules_for_job,
     get_synthesized_rules_for_job,
     is_stage_complete,
-    mark_prompt_version_selected,
     mark_stage_complete,
     set_mlflow_run_id,
     update_job_status,
@@ -156,6 +155,13 @@ from rulekiln.workers.pipeline.evaluation_persistence import (
     _load_eval_result_from_db,
     _persist_collector_records,
 )
+from rulekiln.workers.pipeline.late_stage_services import (
+    FailureAnalysisService,
+    PruningOptimizationService,
+    RefinementLoopService,
+    RuleAblationService,
+    StrategySelectionService,
+)
 from rulekiln.workers.pipeline.orchestrator import DistillationPipelineRunner
 from rulekiln.workers.pipeline.paths import (
     _artifact_root,
@@ -239,7 +245,6 @@ async def _run(
     # Local aliases consumed by the still-inline stages below.
     task = ctx.task
     cases = ctx.cases
-    case_by_id = ctx.case_by_id
     extraction_cases = ctx.extraction_cases
     eval_cases = ctx.eval_cases
     eval_split = ctx.eval_split
@@ -294,9 +299,7 @@ async def _run(
     teacher_config = bundle.teacher_config
     student_config = bundle.student_config
     embedding_config = bundle.embedding_config
-    refinement_teacher_config = bundle.refinement_teacher_config
     student_chat = bundle.student_chat
-    refinement_teacher_chat = bundle.refinement_teacher_chat
     eval_student_id = bundle.eval_student_id
     primary_metric = ctx.primary_metric
     dataset = ctx.dataset_id
@@ -628,185 +631,29 @@ async def _run(
                 comparison.baseline_eval = selected_eval
 
         # ── Stage: selecting_strategy ─────────────────────────────────────
-        if not await is_stage_complete(session, job_id, PipelineStage.SELECTING_STRATEGY):
-            await _set_stage(session, job_id, PipelineStage.SELECTING_STRATEGY)
-            if selected_strategy in DISTILLED_STRATEGIES:
-                await mark_prompt_version_selected(session, job_id, selected_strategy)
-            logger.info(
-                "strategy_selected",
-                job_id=job_id,
-                strategy=selected_strategy,
-                reason=comparison.selection_reason,
-            )
-            await mark_stage_complete(session, job_id, PipelineStage.SELECTING_STRATEGY)
+        await StrategySelectionService(session).run(ctx, comparison, selected_strategy)
 
         # ── Stage: analyzing_failures ─────────────────────────────────────
-        failure_analysis_result: FailureAnalysisResult | None = None
-        if not await is_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES):
-            await _set_stage(session, job_id, PipelineStage.ANALYZING_FAILURES)
-            selected_eval = eval_map.get(selected_strategy)
-            if selected_eval and selected_strategy in DISTILLED_STRATEGIES:
-                db_synth = await get_selected_synthesized_rules_for_job(
-                    session, job_id, selected_strategy
-                )
-                selected_schemas = [_db_synth_to_schema(r) for r in db_synth]
-                failure_analysis_result = analyze_failures(
-                    baseline_scaffold_eval or baseline_eval,
-                    selected_eval,
-                    selected_schemas,
-                    list(case_by_id.values()),
-                )
-            await mark_stage_complete(session, job_id, PipelineStage.ANALYZING_FAILURES)
+        failure_analysis_result = await FailureAnalysisService(session).run(
+            ctx, state, selected_strategy
+        )
 
-        # ── Stage: refining_rules (closed-loop conflict resolution) ──────────
-        refined_rules: list[SynthesizedRuleSchema] | None = None
-        if not await is_stage_complete(session, job_id, PipelineStage.REFINING_RULES):
-            await _set_stage(session, job_id, PipelineStage.REFINING_RULES)
-            _refinement_blocked_reason: str | None = None
-            if eval_split in ("test", "golden"):
-                _refinement_blocked_reason = (
-                    f"eval_split={eval_split!r} — refinement must not"
-                    " optimize against test or golden data"
-                )
-            elif (
-                eval_split == "train"
-                and ctx.split_policy.fallback_warning
-                and not task.allow_refinement_on_train_split
-            ):
-                _refinement_blocked_reason = (
-                    "eval_split='train' due to missing validation split and "
-                    "allow_refinement_on_train_split is not set — "
-                    "refinement would double-use train data already used for extraction"
-                )
-            if _refinement_blocked_reason is not None:
-                logger.warning(
-                    "refinement_disabled_unsafe_split",
-                    job_id=job_id,
-                    eval_split=eval_split,
-                    reason=_refinement_blocked_reason,
-                )
-            _golden_cases_for_loop = [c for c in cases if c.split == "golden"]
-            if (
-                task.enable_refinement_loop
-                and failure_analysis_result is not None
-                and selected_strategy in DISTILLED_STRATEGIES
-                and _refinement_blocked_reason is None
-            ):
-                selected_eval_for_loop = eval_map.get(selected_strategy)
-                if selected_eval_for_loop is not None:
-                    # Resolve effective conflict-resolution values:
-                    # task-level fields (when set) override settings-level defaults.
-                    _cr = settings.default_conflict_resolution
-                    _eff_max_iterations = (
-                        task.refinement_max_iterations
-                        if task.refinement_max_iterations is not None
-                        else _cr.refinement_max_iterations
-                    )
-                    _eff_max_failure_cases = (
-                        task.refinement_max_failure_cases
-                        if task.refinement_max_failure_cases is not None
-                        else _cr.max_failure_cases_per_iteration
-                    )
-                    _eff_max_success_cases = (
-                        task.refinement_max_success_cases
-                        if task.refinement_max_success_cases is not None
-                        else _cr.max_success_cases_per_iteration
-                    )
-                    _eff_holdout_fraction = (
-                        task.validation_holdout_fraction
-                        if task.validation_holdout_fraction is not None
-                        else _cr.validation_holdout_fraction
-                    )
-                    # Quality gate thresholds reused inside the loop:
-                    # task.quality_gates > settings.default_quality_gate.
-                    _task_gates = task.quality_gates
-                    _eff_min_metric_delta = float(
-                        _task_gates.get(
-                            "min_metric_delta",
-                            settings.default_quality_gate.min_metric_delta,
-                        )
-                    )
-                    _eff_max_golden_failures = int(
-                        _task_gates.get(
-                            "max_golden_failures",
-                            settings.default_quality_gate.max_golden_failures,
-                        )
-                    )
-                    refined_rules, refined_eval = await _run_refinement_loop(
-                        session=session,
-                        job_id=job_id,
-                        task=task,
-                        artifact_root_path=_artifact_root(settings.artifact_root, job_id),
-                        failure_analysis_result=failure_analysis_result,
-                        selected_strategy=selected_strategy,
-                        current_eval=selected_eval_for_loop,
-                        eval_cases=eval_cases,
-                        eval_split=eval_split,
-                        case_by_id=case_by_id,
-                        golden_cases=_golden_cases_for_loop,
-                        teacher_chat=refinement_teacher_chat,
-                        teacher_config=refinement_teacher_config,
-                        student_chat=student_chat,
-                        student_config=student_config,
-                        primary_metric=primary_metric,
-                        bootstrap_enabled=evaluation_bootstrap_enabled,
-                        bootstrap_iterations=evaluation_bootstrap_iterations,
-                        bootstrap_seed=evaluation_bootstrap_seed_offset,
-                        effective_max_iterations=_eff_max_iterations,
-                        effective_max_failure_cases=_eff_max_failure_cases,
-                        effective_max_success_cases=_eff_max_success_cases,
-                        effective_holdout_fraction=_eff_holdout_fraction,
-                        effective_min_metric_delta=_eff_min_metric_delta,
-                        effective_max_golden_failures=_eff_max_golden_failures,
-                    )
-                    if refined_eval is not None:
-                        eval_map[selected_strategy] = refined_eval
-            await mark_stage_complete(session, job_id, PipelineStage.REFINING_RULES)
+        # ── Stage: refining_rules ─────────────────────────────────────────
+        await RefinementLoopService(session).run(
+            ctx, bundle, state, selected_strategy, failure_analysis_result
+        )
 
         # ── Stage: ablating_rules ─────────────────────────────────────────
-        if not await is_stage_complete(session, job_id, PipelineStage.ABLATING_RULES):
-            ablation_artifact = await _run_rule_ablation(
-                session,
-                job_id=job_id,
-                task=task,
-                selected_strategy=selected_strategy,
-                eval_cases=eval_cases,
-                eval_split=eval_split,
-                case_by_id=case_by_id,
-                student_id=eval_student_id,
-                student_chat=student_chat,
-                student_config=student_config,
-                primary_metric=primary_metric,
-                bootstrap_enabled=evaluation_bootstrap_enabled,
-                bootstrap_iterations=evaluation_bootstrap_iterations,
-                bootstrap_seed_offset=evaluation_bootstrap_seed_offset,
-                eval_map=eval_map,
-            )
-            await mark_stage_complete(session, job_id, PipelineStage.ABLATING_RULES)
+        ablation_artifact = await RuleAblationService(session).run(
+            ctx, bundle, state, selected_strategy
+        )
 
         # ── Stage: optimizing_pruning (two-pass) ─────────────────────────
-        if not await is_stage_complete(session, job_id, PipelineStage.OPTIMIZING_PRUNING):
-            pruning_mode_comparison = await _run_two_pass_optimizer(
-                session,
-                job_id=job_id,
-                task=task,
-                selected_strategy=selected_strategy,
-                eval_cases=eval_cases,
-                eval_split=eval_split,
-                case_by_id=case_by_id,
-                student_id=eval_student_id,
-                student_chat=student_chat,
-                student_config=student_config,
-                primary_metric=primary_metric,
-                bootstrap_enabled=evaluation_bootstrap_enabled,
-                bootstrap_iterations=evaluation_bootstrap_iterations,
-                bootstrap_seed_offset=evaluation_bootstrap_seed_offset,
-                eval_map=eval_map,
-                ablation_artifact=ablation_artifact,
-            )
-            if pruning_mode_comparison is not None:
-                comparison.pruning_mode_comparison = pruning_mode_comparison
-            await mark_stage_complete(session, job_id, PipelineStage.OPTIMIZING_PRUNING)
+        pruning_mode_comparison = await PruningOptimizationService(session).run(
+            ctx, bundle, state, selected_strategy, ablation_artifact
+        )
+        if pruning_mode_comparison is not None:
+            comparison.pruning_mode_comparison = pruning_mode_comparison
 
         # ── Stage: evaluating_classroom ───────────────────────────────────
         # Evaluate every LLM-prompt strategy across all classroom students.
