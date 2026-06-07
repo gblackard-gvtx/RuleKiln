@@ -382,7 +382,7 @@ async def test_compile_phase_resumes_extraction_by_case(
         )
 
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.extract_rules_for_case", _flaky_extract
+        "rulekiln.workers.pipeline.early_stages.extract_rules_for_case", _flaky_extract
     )
 
     async with db_factory() as session:
@@ -555,16 +555,16 @@ async def test_compile_phase_resumes_synthesis_by_cluster(
         )
 
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.extract_rules_for_case", _simple_extract
+        "rulekiln.workers.pipeline.early_stages.extract_rules_for_case", _simple_extract
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.cluster_dbscan", _split_dbscan_clusters
+        "rulekiln.workers.pipeline.early_stages.cluster_dbscan", _split_dbscan_clusters
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.cluster_hdbscan", _empty_hdbscan_clusters
+        "rulekiln.workers.pipeline.early_stages.cluster_hdbscan", _empty_hdbscan_clusters
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.synthesize_cluster", _flaky_synthesize
+        "rulekiln.workers.pipeline.early_stages.synthesize_cluster", _flaky_synthesize
     )
     monkeypatch.setattr(
         "rulekiln.workers.distillation_worker.review_rule_for_conflicts",
@@ -742,16 +742,16 @@ async def test_compile_phase_resumes_conflict_review_by_rule(
         )
 
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.extract_rules_for_case", _simple_extract
+        "rulekiln.workers.pipeline.early_stages.extract_rules_for_case", _simple_extract
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.cluster_dbscan", _single_dbscan_cluster
+        "rulekiln.workers.pipeline.early_stages.cluster_dbscan", _single_dbscan_cluster
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.cluster_hdbscan", _empty_hdbscan_clusters
+        "rulekiln.workers.pipeline.early_stages.cluster_hdbscan", _empty_hdbscan_clusters
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.synthesize_cluster",
+        "rulekiln.workers.pipeline.early_stages.synthesize_cluster",
         _synthesize_two_rules,
     )
     monkeypatch.setattr(

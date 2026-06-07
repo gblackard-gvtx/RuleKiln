@@ -284,20 +284,22 @@ async def test_split_policy_uses_train_for_extraction_and_validation_for_eval(
         )
 
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.extract_rules_for_case", _extract_stub
+        "rulekiln.workers.pipeline.early_stages.extract_rules_for_case", _extract_stub
     )
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.synthesize_cluster", _synthesize_stub)
+    monkeypatch.setattr(
+        "rulekiln.workers.pipeline.early_stages.synthesize_cluster", _synthesize_stub
+    )
     monkeypatch.setattr(
         "rulekiln.workers.distillation_worker.review_rule_for_conflicts",
         _review_stub,
     )
     monkeypatch.setattr("rulekiln.workers.distillation_worker.evaluate_prompt", _evaluate_stub)
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.cluster_dbscan",
+        "rulekiln.workers.pipeline.early_stages.cluster_dbscan",
         lambda rule_ids, embeddings, eps=0.3, min_samples=2: _single_cluster("dbscan", rule_ids),
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.cluster_hdbscan",
+        "rulekiln.workers.pipeline.early_stages.cluster_hdbscan",
         lambda rule_ids, embeddings, min_cluster_size=2: _single_cluster("hdbscan", rule_ids),
     )
 
@@ -467,20 +469,22 @@ async def test_split_policy_falls_back_to_train_with_warning(
         )
 
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.extract_rules_for_case", _extract_stub
+        "rulekiln.workers.pipeline.early_stages.extract_rules_for_case", _extract_stub
     )
-    monkeypatch.setattr("rulekiln.workers.distillation_worker.synthesize_cluster", _synthesize_stub)
+    monkeypatch.setattr(
+        "rulekiln.workers.pipeline.early_stages.synthesize_cluster", _synthesize_stub
+    )
     monkeypatch.setattr(
         "rulekiln.workers.distillation_worker.review_rule_for_conflicts",
         _review_stub,
     )
     monkeypatch.setattr("rulekiln.workers.distillation_worker.evaluate_prompt", _evaluate_stub)
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.cluster_dbscan",
+        "rulekiln.workers.pipeline.early_stages.cluster_dbscan",
         lambda rule_ids, embeddings, eps=0.3, min_samples=2: _single_cluster("dbscan", rule_ids),
     )
     monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.cluster_hdbscan",
+        "rulekiln.workers.pipeline.early_stages.cluster_hdbscan",
         lambda rule_ids, embeddings, min_cluster_size=2: _single_cluster("hdbscan", rule_ids),
     )
 
