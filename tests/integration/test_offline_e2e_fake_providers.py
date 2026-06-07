@@ -5,7 +5,6 @@ Exercises the full pipeline orchestration in-process with SQLite + fake chat/emb
 
 import json
 from pathlib import Path
-from typing import Literal
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -97,23 +96,6 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
     # Patch get_settings in the worker module (direct import reference)
     monkeypatch.setattr("rulekiln.workers.distillation_worker.get_settings", lambda: fake_settings)
 
-    # Patch resolve_provider_config in the worker to always use fake_settings
-    from rulekiln.providers import resolver as _resolver
-
-    def _patched_resolve(
-        profile_name: str,
-        model: str,
-        *,
-        role: Literal["teacher", "student", "embedding", "judge"],
-        settings: AppSettings,
-    ) -> ProviderConfig:
-        return _resolver.resolve_provider_config(
-            profile_name, model, role=role, settings=fake_settings
-        )
-
-    monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.resolve_provider_config", _patched_resolve
-    )
 
     payload = _build_payload()
     job_id = "aaaaaaaa-1111-0000-0000-000000000001"
@@ -265,23 +247,6 @@ async def test_pipeline_runs_to_completion(db_factory, fake_settings, monkeypatc
 async def test_pipeline_with_baseline_runs(db_factory, fake_settings, monkeypatch) -> None:
     monkeypatch.setattr("rulekiln.workers.distillation_worker.get_settings", lambda: fake_settings)
 
-    from rulekiln.providers import resolver as _resolver
-
-    def _patched_resolve(
-        profile_name: str,
-        model: str,
-        *,
-        role: Literal["teacher", "student", "embedding", "judge"],
-        settings: AppSettings,
-    ) -> ProviderConfig:
-        return _resolver.resolve_provider_config(
-            profile_name, model, role=role, settings=fake_settings
-        )
-
-    monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.resolve_provider_config", _patched_resolve
-    )
-
     payload = _build_payload(baseline=True)
     job_id = "aaaaaaaa-1111-0000-0000-000000000002"
 
@@ -316,23 +281,6 @@ async def test_compile_phase_resumes_extraction_by_case(
     db_factory, fake_settings, monkeypatch
 ) -> None:
     monkeypatch.setattr("rulekiln.workers.distillation_worker.get_settings", lambda: fake_settings)
-
-    from rulekiln.providers import resolver as _resolver
-
-    def _patched_resolve(
-        profile_name: str,
-        model: str,
-        *,
-        role: Literal["teacher", "student", "embedding", "judge"],
-        settings: AppSettings,
-    ) -> ProviderConfig:
-        return _resolver.resolve_provider_config(
-            profile_name, model, role=role, settings=fake_settings
-        )
-
-    monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.resolve_provider_config", _patched_resolve
-    )
 
     payload = _build_payload()
     job_id = "aaaaaaaa-1111-0000-0000-000000000003"
@@ -405,23 +353,6 @@ async def test_compile_phase_resumes_synthesis_by_cluster(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr("rulekiln.workers.distillation_worker.get_settings", lambda: fake_settings)
-
-    from rulekiln.providers import resolver as _resolver
-
-    def _patched_resolve(
-        profile_name: str,
-        model: str,
-        *,
-        role: Literal["teacher", "student", "embedding", "judge"],
-        settings: AppSettings,
-    ) -> ProviderConfig:
-        return _resolver.resolve_provider_config(
-            profile_name, model, role=role, settings=fake_settings
-        )
-
-    monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.resolve_provider_config", _patched_resolve
-    )
 
     payload = _build_payload()
     job_id = "aaaaaaaa-1111-0000-0000-000000000004"
@@ -593,23 +524,6 @@ async def test_compile_phase_resumes_conflict_review_by_rule(
     monkeypatch,
 ) -> None:
     monkeypatch.setattr("rulekiln.workers.distillation_worker.get_settings", lambda: fake_settings)
-
-    from rulekiln.providers import resolver as _resolver
-
-    def _patched_resolve(
-        profile_name: str,
-        model: str,
-        *,
-        role: Literal["teacher", "student", "embedding", "judge"],
-        settings: AppSettings,
-    ) -> ProviderConfig:
-        return _resolver.resolve_provider_config(
-            profile_name, model, role=role, settings=fake_settings
-        )
-
-    monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.resolve_provider_config", _patched_resolve
-    )
 
     payload = _build_payload()
     job_id = "aaaaaaaa-1111-0000-0000-000000000005"

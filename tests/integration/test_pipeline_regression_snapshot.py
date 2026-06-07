@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Literal
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -129,22 +128,6 @@ def _build_payload() -> DistillationRequest:
 def _patch_providers(monkeypatch: pytest.MonkeyPatch, fake_settings: AppSettings) -> None:
     monkeypatch.setattr("rulekiln.workers.distillation_worker.get_settings", lambda: fake_settings)
 
-    from rulekiln.providers import resolver as _resolver
-
-    def _patched_resolve(
-        profile_name: str,
-        model: str,
-        *,
-        role: Literal["teacher", "student", "embedding", "judge"],
-        settings: AppSettings,
-    ) -> object:
-        return _resolver.resolve_provider_config(
-            profile_name, model, role=role, settings=fake_settings
-        )
-
-    monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.resolve_provider_config", _patched_resolve
-    )
 
 
 @pytest.mark.asyncio

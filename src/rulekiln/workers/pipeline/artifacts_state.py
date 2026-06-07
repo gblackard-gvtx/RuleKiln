@@ -11,6 +11,7 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field
 
 from rulekiln.pipeline.quality_gates import QualityGateResult
+from rulekiln.pipeline.statistics import PairedComparisonArtifacts
 from rulekiln.schemas.pipeline import EvalResult
 
 
@@ -49,3 +50,5 @@ class PipelineArtifactsState(BaseModel):
 
     # ── Quality gate results ──────────────────────────────────────────────
     gate_map: dict[str, QualityGateResult] = Field(default_factory=dict)
+    paired_comparison_artifacts: PairedComparisonArtifacts | None = None
+    classroom_student_evals: dict[str, dict[str, EvalResult]] = Field(default_factory=dict)

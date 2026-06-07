@@ -6,12 +6,21 @@ import hashlib
 import json
 from typing import Literal, cast
 
+from rulekiln.pipeline.baseline_strategies import (
+    EMBEDDING_CENTROID_STRATEGY,
+    EMBEDDING_KNN_STRATEGY_TO_K,
+)
 from rulekiln.pipeline.evaluator import get_primary_metric
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.pipeline import EvalResult
 from rulekiln.schemas.task_case import RuleKilnCase, TaskMode
 
 DISTILLED_STRATEGIES: tuple[str, str] = ("dbscan", "hdbscan")
+_EMBEDDING_KNN_STRATEGIES: tuple[str, ...] = tuple(EMBEDDING_KNN_STRATEGY_TO_K.keys())
+EMBEDDING_BASELINE_STRATEGIES: tuple[str, ...] = (
+    EMBEDDING_CENTROID_STRATEGY,
+    *_EMBEDDING_KNN_STRATEGIES,
+)
 
 _KNOWN_TASK_MODES: frozenset[str] = frozenset(
     {

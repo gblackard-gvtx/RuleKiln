@@ -95,27 +95,6 @@ def _build_payload(
 def _patch_worker_dependencies(monkeypatch: MonkeyPatch, fake_settings: AppSettings) -> None:
     monkeypatch.setattr("rulekiln.workers.distillation_worker.get_settings", lambda: fake_settings)
 
-    from rulekiln.providers import resolver as _resolver
-
-    def _patched_resolve(
-        profile_name: str,
-        model: str,
-        *,
-        role: Literal["teacher", "student", "embedding", "judge"],
-        settings: AppSettings,
-    ) -> ProviderConfig:
-        return _resolver.resolve_provider_config(
-            profile_name,
-            model,
-            role=role,
-            settings=fake_settings,
-        )
-
-    monkeypatch.setattr(
-        "rulekiln.workers.distillation_worker.resolve_provider_config",
-        _patched_resolve,
-    )
-
 
 async def _seed_job(
     db_factory: async_sessionmaker[AsyncSession],
