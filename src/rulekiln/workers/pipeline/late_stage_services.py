@@ -31,6 +31,11 @@ from rulekiln.workers.pipeline.db_mappers import _db_synth_to_schema
 from rulekiln.workers.pipeline.paths import _artifact_root
 from rulekiln.workers.pipeline.pipeline_stage import PipelineStage
 from rulekiln.workers.pipeline.provider_bundle import ProviderBundle
+from rulekiln.workers.pipeline.refinement_ablation import (
+    _run_refinement_loop,
+    _run_rule_ablation,
+    _run_two_pass_optimizer,
+)
 from rulekiln.workers.pipeline.strategy_utils import DISTILLED_STRATEGIES
 
 logger = get_logger(__name__)
@@ -184,10 +189,6 @@ class RefinementLoopService:
                         ctx.settings.default_quality_gate.max_golden_failures,
                     )
                 )
-                from rulekiln.workers.distillation_worker import (  # noqa: PLC0415
-                    _run_refinement_loop,
-                )
-
                 _, refined_eval = await _run_refinement_loop(
                     session=self._session,
                     job_id=ctx.job_id,
@@ -235,8 +236,6 @@ class RuleAblationService:
     ) -> RuleAblationArtifact | None:
         if await is_stage_complete(self._session, ctx.job_id, PipelineStage.ABLATING_RULES):
             return None
-        from rulekiln.workers.distillation_worker import _run_rule_ablation  # noqa: PLC0415
-
         ablation_artifact = await _run_rule_ablation(
             self._session,
             job_id=ctx.job_id,
@@ -274,8 +273,6 @@ class PruningOptimizationService:
     ) -> PruningModeComparison | None:
         if await is_stage_complete(self._session, ctx.job_id, PipelineStage.OPTIMIZING_PRUNING):
             return None
-        from rulekiln.workers.distillation_worker import _run_two_pass_optimizer  # noqa: PLC0415
-
         pruning_mode_comparison = await _run_two_pass_optimizer(
             self._session,
             job_id=ctx.job_id,

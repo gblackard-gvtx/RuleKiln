@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from rulekiln.workers.distillation_worker import _ablation_classify
+from rulekiln.workers.pipeline.refinement_ablation import _ablation_classify
 
 
 @pytest.mark.parametrize(
