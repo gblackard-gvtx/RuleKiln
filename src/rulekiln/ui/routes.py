@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Annotated, cast
 
@@ -45,6 +45,7 @@ from rulekiln.db.session import get_db_session
 from rulekiln.observability.logging import get_logger
 from rulekiln.pipeline.evaluator import get_primary_metric
 from rulekiln.pipeline.split_policy import resolve_split_policy
+from rulekiln.pipeline.strategy_families import strategy_family
 from rulekiln.schemas.classroom import PhaseTeacherConfig, TeacherConfig
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.task_case import ModelRoute, RuleKilnCase, RuleKilnTask, TaskMode
@@ -127,6 +128,23 @@ async def _get_selected_strategy(session: AsyncSession, job: DistillationJob) ->
     return job.selected_strategy
 
 
+def _safe_job_artifact_root(artifact_root: str, job_id: str) -> Path:
+    """Resolve a job's artifact root; raise 400 on traversal or absolute job ids."""
+    if job_id.startswith("/") or job_id.startswith("\\") or ".." in Path(job_id).parts:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid job id.",
+        )
+    root = Path(artifact_root).resolve()
+    base_dir = (root / job_id).resolve()
+    if not base_dir.is_relative_to(root):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid job id.",
+        )
+    return base_dir
+
+
 def _safe_artifact_path(artifact_root: str, job_id: str, path_param: str) -> Path:
     """Resolve an artifact path; raise 400 on traversal or absolute paths."""
     if path_param.startswith("/") or path_param.startswith("\\"):
@@ -139,7 +157,7 @@ def _safe_artifact_path(artifact_root: str, job_id: str, path_param: str) -> Pat
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Path traversal is not permitted.",
         )
-    base_dir = (Path(artifact_root) / job_id).resolve()
+    base_dir = _safe_job_artifact_root(artifact_root, job_id)
     resolved = (base_dir / path_param).resolve()
     if not resolved.is_relative_to(base_dir):
         raise HTTPException(
@@ -262,6 +280,46 @@ def _select_summary_eval_run(eval_runs: Sequence[object], strategy: str) -> obje
     return strategy_runs[-1]
 
 
+def _selection_score_lineage_warning(
+    selection_table: Sequence[Mapping[str, object]],
+    eval_runs: Sequence[object],
+    primary_metric: str,
+    *,
+    tolerance: float = 1e-3,
+) -> str | None:
+    """Warn when a selection-table score disagrees with the live eval row.
+
+    The Strategy Selection table is read from the persisted ``strategy_comparison.json``
+    while the evaluation table is read live from the DB. When those two sources diverge
+    for the same strategy (e.g. a stale pre-hardening ``strategy_comparison.json`` whose
+    baseline macro-F1 was diluted by a spurious out-of-vocabulary class), the page would
+    otherwise show two different numbers for one strategy with no explanation. Surface it
+    instead. See docs/investigations/contractnli_hdbscan_validation_win.md.
+    """
+    diverged: list[str] = []
+    for row in selection_table:
+        strategy = row.get("strategy")
+        selection_score = row.get("selection_score")
+        if not isinstance(strategy, str) or not isinstance(selection_score, (int, float)):
+            continue
+        run = _select_summary_eval_run(eval_runs, strategy)
+        if run is None:
+            continue
+        live_score = _score_for_metric(run, primary_metric)
+        if live_score is None:
+            continue
+        if abs(float(selection_score) - live_score) > tolerance:
+            diverged.append(strategy)
+    if not diverged:
+        return None
+    return (
+        "Strategy Selection scores were loaded from a persisted strategy_comparison.json "
+        "that disagrees with the live evaluation table for: "
+        f"{', '.join(sorted(diverged))}. The persisted artifact is likely stale; re-run the "
+        "job to refresh it. Trust the Macro F1 column below."
+    )
+
+
 def _load_json_object(path: Path) -> dict[str, object] | None:
     if not path.exists():
         return None
@@ -272,6 +330,65 @@ def _load_json_object(path: Path) -> dict[str, object] | None:
     if isinstance(parsed, dict):
         return parsed
     return None
+
+
+def _build_provenance_promotion_view(
+    artifact_root: Path,
+    selected_strategy: str | None,
+    comparison_payload: Mapping[str, object] | None,
+) -> dict[str, object] | None:
+    """Assemble the Provenance & Promotion view from persisted run artifacts.
+
+    Returns ``None`` for legacy runs that have neither promotion status nor clustering
+    provenance persisted, so the template can show an explicit "unavailable" message
+    rather than fabricating values from the current repository configuration.
+    """
+    hashes_payload = _load_json_object(artifact_root / "metadata" / "hashes.json")
+    promotion_payload = _load_json_object(artifact_root / "metadata" / "promotion_status.json")
+    validation_payload = _load_json_object(
+        artifact_root / "metadata" / "provenance_validation.json"
+    )
+
+    clustering_payload: dict[str, object] | None = None
+    if selected_strategy in {"dbscan", "hdbscan"}:
+        clustering_payload = _load_json_object(
+            artifact_root
+            / "outputs"
+            / "clustering"
+            / selected_strategy
+            / "clustering_provenance.json"
+        )
+
+    strategy_row: dict[str, object] | None = None
+    if comparison_payload is not None:
+        rows = comparison_payload.get("strategy_provenance")
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict) and row.get("strategy") == selected_strategy:
+                    strategy_row = row
+                    break
+
+    if (
+        hashes_payload is None
+        and promotion_payload is None
+        and clustering_payload is None
+    ):
+        return None
+
+    job_hashes: Mapping[str, object] = {}
+    if hashes_payload is not None:
+        raw_hashes = hashes_payload.get("hashes")
+        if isinstance(raw_hashes, dict):
+            job_hashes = raw_hashes
+
+    return {
+        "job_hashes": job_hashes,
+        "promotion": promotion_payload,
+        "validation": validation_payload,
+        "clustering": clustering_payload,
+        "strategy_row": strategy_row,
+        "selected_strategy": selected_strategy,
+    }
 
 
 def _count_non_empty_jsonl_rows(path: Path) -> int:
@@ -993,9 +1110,9 @@ async def cancel_job_from_ui(
         from dbos import DBOS  # imported lazily to keep optional dependency behavior
 
         workflow_id = f"rulekiln-job-{job.id}"
-        workflow_status = DBOS.get_workflow_status(workflow_id)
+        workflow_status = await DBOS.get_workflow_status_async(workflow_id)
         if workflow_status is not None:
-            DBOS.cancel_workflow(workflow_id)
+            await DBOS.cancel_workflow_async(workflow_id)
             logger.info("ui_dbos_workflow_cancelled", job_id=job.id, workflow_id=workflow_id)
     except Exception as exc:
         logger.warning(
@@ -1094,7 +1211,9 @@ async def job_results(
     primary_metric = _resolve_primary_metric(job)
 
     comparison_payload = _load_json_object(
-        Path(settings.artifact_root) / job_id / "outputs" / "strategy_comparison.json"
+        _safe_job_artifact_root(settings.artifact_root, job_id)
+        / "outputs"
+        / "strategy_comparison.json"
     )
     if selected_strategy is None and comparison_payload is not None:
         payload_strategy = comparison_payload.get("selected_strategy")
@@ -1207,7 +1326,7 @@ async def job_results(
         if isinstance(prompt_tokens_payload, dict):
             selected_prompt_token_count = _as_int(prompt_tokens_payload.get(selected_strategy))
 
-    outputs_dir = Path(settings.artifact_root) / job_id / "outputs"
+    outputs_dir = _safe_job_artifact_root(settings.artifact_root, job_id) / "outputs"
     fixed_count = _count_non_empty_jsonl_rows(outputs_dir / "failures_fixed.jsonl")
     broken_count = _count_non_empty_jsonl_rows(outputs_dir / "failures_broken.jsonl")
 
@@ -1338,7 +1457,9 @@ async def job_eval_report(
     eval_runs = await get_eval_runs_for_job(session, job_id)
     primary_metric = _resolve_primary_metric(job)
     comparison_payload = _load_json_object(
-        Path(settings.artifact_root) / job_id / "outputs" / "strategy_comparison.json"
+        _safe_job_artifact_root(settings.artifact_root, job_id)
+        / "outputs"
+        / "strategy_comparison.json"
     )
     evaluation_split_warning: str | None = None
     selected_strategy_id: str | None = None
@@ -1346,11 +1467,8 @@ async def job_eval_report(
     best_baseline_strategy_id: str | None = None
     best_distilled_strategy_id: str | None = None
     paired_summary: dict[str, float | int | str | None] | None = None
-    selected_strategy_id: str | None = None
-    selected_strategy_family: str | None = None
-    best_baseline_strategy_id: str | None = None
-    best_distilled_strategy_id: str | None = None
-    paired_summary: dict[str, float | int | str | None] | None = None
+    selection_table: list[dict[str, object]] = []
+    selection_reason: str | None = None
     if comparison_payload is not None:
         warning_value = comparison_payload.get("evaluation_split_warning")
         evaluation_split_warning = _as_non_empty_str(warning_value)
@@ -1358,6 +1476,7 @@ async def job_eval_report(
         selected_strategy_id = _as_non_empty_str(
             comparison_payload.get("selected_strategy_id")
         ) or _as_non_empty_str(comparison_payload.get("selected_strategy"))
+        selection_reason = _as_non_empty_str(comparison_payload.get("selection_reason"))
         selected_strategy_family = _as_non_empty_str(
             comparison_payload.get("selected_strategy_family")
         )
@@ -1389,50 +1508,45 @@ async def job_eval_report(
                 "overall_net_fix_rate": _as_float(paired_payload.get("overall_net_fix_rate")),
             }
 
-    if selected_strategy_family is None and selected_strategy_id is not None:
-        selected_strategy_family = (
-            "distilled" if selected_strategy_id in {"dbscan", "hdbscan"} else "baseline"
-        )
-        evaluation_split_warning = _as_non_empty_str(warning_value)
-
-        selected_strategy_id = _as_non_empty_str(
-            comparison_payload.get("selected_strategy_id")
-        ) or _as_non_empty_str(comparison_payload.get("selected_strategy"))
-        selected_strategy_family = _as_non_empty_str(
-            comparison_payload.get("selected_strategy_family")
-        )
-        best_baseline_strategy_id = _as_non_empty_str(
-            comparison_payload.get("best_baseline_strategy_id")
-        )
-        best_distilled_strategy_id = _as_non_empty_str(
-            comparison_payload.get("best_distilled_strategy_id")
-        )
-
-        best_by_family_payload = comparison_payload.get("best_by_family")
-        if isinstance(best_by_family_payload, dict):
-            best_baseline_strategy_id = best_baseline_strategy_id or _as_non_empty_str(
-                best_by_family_payload.get("baseline")
-            )
-            best_distilled_strategy_id = best_distilled_strategy_id or _as_non_empty_str(
-                best_by_family_payload.get("distilled")
-            )
-
-        paired_payload = comparison_payload.get("paired_comparison")
-        if isinstance(paired_payload, dict):
-            paired_summary = {
-                "fixed_count": _as_int(paired_payload.get("fixed_count")),
-                "broken_count": _as_int(paired_payload.get("broken_count")),
-                "unchanged_correct_count": _as_int(paired_payload.get("unchanged_correct_count")),
-                "unchanged_wrong_count": _as_int(paired_payload.get("unchanged_wrong_count")),
-                "net_fix_rate": _as_float(paired_payload.get("net_fix_rate")),
-                "net_fix_rate_status": _as_non_empty_str(paired_payload.get("net_fix_rate_status")),
-                "overall_net_fix_rate": _as_float(paired_payload.get("overall_net_fix_rate")),
-            }
+        selection_table_payload = comparison_payload.get("selection_table")
+        if isinstance(selection_table_payload, list):
+            for row in selection_table_payload:
+                if not isinstance(row, dict):
+                    continue
+                strategy_name = _as_non_empty_str(row.get("strategy"))
+                if strategy_name is None:
+                    continue
+                gate_failures_raw = row.get("gate_failures")
+                gate_failures = (
+                    [str(v) for v in gate_failures_raw]
+                    if isinstance(gate_failures_raw, list)
+                    else []
+                )
+                selection_table.append(
+                    {
+                        "strategy": strategy_name,
+                        "family": _as_non_empty_str(row.get("family")),
+                        "eligible": bool(row.get("eligible")),
+                        "gate_failures": gate_failures,
+                        "selection_score": _as_float(row.get("selection_score")),
+                        "selection_rank": _as_int(row.get("selection_rank")),
+                        "selected": bool(row.get("selected")),
+                        "reason": _as_non_empty_str(row.get("reason")),
+                    }
+                )
 
     if selected_strategy_family is None and selected_strategy_id is not None:
-        selected_strategy_family = (
-            "distilled" if selected_strategy_id in {"dbscan", "hdbscan"} else "baseline"
-        )
+        selected_strategy_family = strategy_family(selected_strategy_id)
+
+    selection_lineage_warning = _selection_score_lineage_warning(
+        selection_table, eval_runs, primary_metric
+    )
+
+    provenance_view = _build_provenance_promotion_view(
+        _safe_job_artifact_root(settings.artifact_root, job_id),
+        selected_strategy_id,
+        comparison_payload,
+    )
 
     return templates.TemplateResponse(
         request,
@@ -1447,6 +1561,10 @@ async def job_eval_report(
             "best_baseline_strategy_id": best_baseline_strategy_id,
             "best_distilled_strategy_id": best_distilled_strategy_id,
             "paired_summary": paired_summary,
+            "selection_table": selection_table,
+            "selection_reason": selection_reason,
+            "selection_lineage_warning": selection_lineage_warning,
+            "provenance_view": provenance_view,
         },
     )
 
@@ -1464,7 +1582,7 @@ async def job_failures(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
 
-    artifact_base = Path(settings.artifact_root) / job_id / "outputs"
+    artifact_base = _safe_job_artifact_root(settings.artifact_root, job_id) / "outputs"
     fixed_path = artifact_base / "failures_fixed.jsonl"
     broken_path = artifact_base / "failures_broken.jsonl"
     artifacts_pending = not (fixed_path.exists() or broken_path.exists())
@@ -1512,7 +1630,7 @@ async def job_artifacts(
     if job is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found.")
 
-    artifact_root = Path(settings.artifact_root) / job_id
+    artifact_root = _safe_job_artifact_root(settings.artifact_root, job_id)
     files: list[ArtifactFileView] = []
     for rel_str in _KNOWN_ARTIFACT_PATTERNS:
         full = artifact_root / rel_str

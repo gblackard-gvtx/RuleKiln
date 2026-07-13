@@ -421,10 +421,16 @@ async def test_compile_phase_resumes_synthesis_by_cluster(
         rule_ids: list[str],
         embeddings: list[list[float]],
         min_cluster_size: int = 2,
+        min_samples: int | None = None,
+        cluster_selection_method: str = "eom",
+        cluster_selection_epsilon: float = 0.0,
     ) -> list[RuleClusterSchema]:
         del rule_ids
         del embeddings
         del min_cluster_size
+        del min_samples
+        del cluster_selection_method
+        del cluster_selection_epsilon
         return []
 
     synth_call_markers: list[str] = []
@@ -584,10 +590,16 @@ async def test_compile_phase_resumes_conflict_review_by_rule(
         rule_ids: list[str],
         embeddings: list[list[float]],
         min_cluster_size: int = 2,
+        min_samples: int | None = None,
+        cluster_selection_method: str = "eom",
+        cluster_selection_epsilon: float = 0.0,
     ) -> list[RuleClusterSchema]:
         del rule_ids
         del embeddings
         del min_cluster_size
+        del min_samples
+        del cluster_selection_method
+        del cluster_selection_epsilon
         return []
 
     async def _synthesize_two_rules(
@@ -682,3 +694,172 @@ async def test_compile_phase_resumes_conflict_review_by_rule(
 
     assert review_topics.count("synth-keep") == 1
     assert review_topics.count("synth-flaky") == 2
+
+
+@pytest.mark.asyncio
+async def test_pipeline_writes_provenance_and_promotion_artifacts(
+    db_factory, fake_settings, monkeypatch
+) -> None:
+    """Workstream M #31-35: a full clustered run writes provenance/hash/promotion
+    artifacts, the manifest verifies them, references match, and status round-trips."""
+    monkeypatch.setattr(
+        "rulekiln.workers.distillation_worker.get_settings", lambda: fake_settings
+    )
+
+    payload = _build_payload()
+    job_id = "aaaaaaaa-1111-0000-0000-0000000000cc"
+
+    from rulekiln.db.models import DistillationJob
+    from rulekiln.db.repositories.jobs import create_job
+
+    async with db_factory() as session:
+        await create_job(
+            session,
+            DistillationJob(
+                id=job_id,
+                task_id=payload.task.task_id,
+                task_name=payload.task.task_name,
+                task_mode=payload.task.task_mode,
+                status="created",
+                stage=None,
+                request_json=payload.model_dump(mode="json"),
+            ),
+        )
+
+    async def _simple_extract(task, case, chat_client, config):  # noqa: ANN001, ANN202
+        del task, chat_client, config
+        return ExtractionOutput(
+            rules=[
+                MicroRuleSchema(
+                    topic=f"topic-{case.id}",
+                    condition="if input is present",
+                    expected_outcome="emit expected label",
+                )
+            ]
+        )
+
+    def _two_clusters(strategy, algorithm):  # noqa: ANN001, ANN202
+        def _cluster(rule_ids, embeddings, *args, **kwargs):  # noqa: ANN001, ANN202
+            del embeddings, args, kwargs
+            ids = sorted(rule_ids)
+            half = max(1, len(ids) // 2)
+            clusters = [
+                RuleClusterSchema(
+                    strategy=strategy, algorithm=algorithm, topic="a", rule_ids=ids[:half],
+                    cluster_metadata={"cluster_id": 0, "size": len(ids[:half])},
+                )
+            ]
+            if ids[half:]:
+                clusters.append(
+                    RuleClusterSchema(
+                        strategy=strategy, algorithm=algorithm, topic="b", rule_ids=ids[half:],
+                        cluster_metadata={"cluster_id": 1, "size": len(ids[half:])},
+                    )
+                )
+            return clusters
+
+        return _cluster
+
+    async def _synth(task, cluster_topic, micro_rules, source_case_ids,
+                     source_micro_rule_ids, chat_client, config):  # noqa: ANN001, ANN202
+        del task, cluster_topic, micro_rules, chat_client, config
+        return SynthesisOutput(
+            rules=[
+                SynthesizedRuleSchema(
+                    topic=f"synth-{len(source_micro_rule_ids)}",
+                    applies_when=["input present"],
+                    outcome_conditions={
+                        "label": OutcomeCondition(outcome="positive", when=["input present"])
+                    },
+                    source_case_ids=list(source_case_ids),
+                    source_micro_rule_ids=list(source_micro_rule_ids),
+                )
+            ]
+        )
+
+    async def _keep_review(task, rule, micro_rules, chat_client, config):  # noqa: ANN001, ANN202
+        del task, micro_rules, chat_client, config
+        return RuleConflictReview(
+            synthesized_rule_id=rule.id, has_conflicts=False, resolution="keep"
+        )
+
+    monkeypatch.setattr(
+        "rulekiln.workers.pipeline.early_stages.extract_rules_for_case", _simple_extract
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.pipeline.early_stages.cluster_dbscan",
+        _two_clusters("dbscan", "dbscan"),
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.pipeline.early_stages.cluster_hdbscan",
+        _two_clusters("hdbscan", "hdbscan"),
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.pipeline.early_stages.synthesize_cluster", _synth
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.pipeline.compile_phase_stages.review_rule_for_conflicts",
+        _keep_review,
+    )
+
+    await run_distillation_pipeline(job_id, payload)
+
+    artifact_root = Path(fake_settings.artifact_root) / job_id
+
+    # #31: metadata + clustering provenance artifacts written.
+    for rel in (
+        "metadata/hashes.json",
+        "metadata/provenance_validation.json",
+        "metadata/promotion_status.json",
+    ):
+        assert (artifact_root / rel).exists(), f"missing {rel}"
+    for algo in ("dbscan", "hdbscan"):
+        base = artifact_root / "outputs" / "clustering" / algo
+        assert (base / "clustering_provenance.json").exists(), f"missing {algo} provenance"
+        assert (base / "cluster_assignments.jsonl").exists()
+        assert (base / "cluster_summary.json").exists()
+
+    # #32: manifest verifies every rich entry against files on disk.
+    from rulekiln.artifacts.manifest import RunManifest, verify_manifest
+
+    manifest = RunManifest.model_validate(
+        json.loads((artifact_root / "metadata" / "manifest.json").read_text("utf-8"))
+    )
+    assert manifest.entries
+    assert verify_manifest(artifact_root, manifest) == []
+    entry_paths = {e.path for e in manifest.entries}
+    assert "metadata/promotion_status.json" in entry_paths
+    assert "outputs/clustering/hdbscan/clustering_provenance.json" in entry_paths
+
+    # #33: strategy_comparison hash references match persisted provenance.
+    comparison = json.loads(
+        (artifact_root / "outputs" / "strategy_comparison.json").read_text("utf-8")
+    )
+    rows = {r["strategy"]: r for r in comparison.get("strategy_provenance", [])}
+    assert "hdbscan" in rows and "dbscan" in rows
+    hdbscan_prov = json.loads(
+        (artifact_root / "outputs" / "clustering" / "hdbscan" / "clustering_provenance.json")
+        .read_text("utf-8")
+    )
+    assert (
+        rows["hdbscan"]["cluster_assignment_hash"]
+        == hdbscan_prov["hashes"]["cluster_assignment_hash"]
+    )
+
+    # #34: promotion status round-trips through disk.
+    from rulekiln.schemas.promotion import PromotionStatus
+
+    status = PromotionStatus.model_validate(
+        json.loads((artifact_root / "metadata" / "promotion_status.json").read_text("utf-8"))
+    )
+    assert status.selected_strategy == comparison.get("selected_strategy")
+    assert status.promoted_strategy is None  # selected is never auto-promoted
+
+    # #35: recomputing a non-model hash from the persisted artifact is stable.
+    from rulekiln.pipeline.provenance_validation import (
+        _hash_assignment_records,
+        _load_assignments,
+    )
+
+    recomputed = _hash_assignment_records(_load_assignments(artifact_root, "hdbscan"))
+    assert recomputed == hdbscan_prov["hashes"]["cluster_assignment_hash"]

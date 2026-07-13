@@ -92,8 +92,14 @@ def log_artifacts_dir(tracking_uri: str, run_id: str, local_dir: Path) -> None:
     _allow_file_store_if_needed(tracking_uri)
     mlflow = _get_mlflow()
     mlflow.set_tracking_uri(tracking_uri)
+    _exc: BaseException | None = None
     with mlflow.start_run(run_id=run_id):
-        mlflow.log_artifacts(str(local_dir))
+        try:
+            mlflow.log_artifacts(str(local_dir))
+        except BaseException as e:
+            _exc = e
+    if _exc is not None:
+        raise _exc
 
 
 def log_prompt_to_registry(

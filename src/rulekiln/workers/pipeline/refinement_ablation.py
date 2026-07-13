@@ -20,6 +20,7 @@ from rulekiln.db.repositories.eval_case_results import (
 from rulekiln.db.repositories.jobs import (
     get_selected_synthesized_rules_for_job,
     get_synthesized_rules_for_job,
+    is_job_cancelled,
     is_stage_complete,
     mark_stage_complete,
 )
@@ -61,7 +62,7 @@ from rulekiln.workers.pipeline.strategy_utils import (
 logger = get_logger(__name__)
 
 # evaluate_prompt is imported locally to allow tests to monkeypatch it.
-from rulekiln.pipeline.evaluator import evaluate_prompt  # noqa: E402
+from rulekiln.pipeline.evaluator import JobCancelledError, evaluate_prompt  # noqa: E402
 
 
 async def _evaluate_prompt_strategy(
@@ -106,6 +107,9 @@ async def _evaluate_prompt_strategy(
         )
         await upsert_eval_case_result(session, payload_row)
 
+    async def _check_cancelled() -> bool:
+        return await is_job_cancelled(session, job_id)
+
     result = await evaluate_prompt(
         system_prompt,
         cases,
@@ -118,6 +122,7 @@ async def _evaluate_prompt_strategy(
         on_case_result=_persist_strategy_case,
         bootstrap_enabled=bootstrap_enabled,
         bootstrap_iterations=bootstrap_iterations,
+        check_cancelled=_check_cancelled,
         bootstrap_seed=_evaluation_bootstrap_seed(
             job_id=job_id,
             strategy=strategy,
@@ -257,6 +262,7 @@ async def _run_refinement_loop(
             ranking_mode=task.rule_pruning_mode,
             regression_penalty=task.rule_regression_penalty,
             utility_signals=utility_signals,
+            task=task,
         )
         if not pruning_result.selected:
             logger.warning("refinement_pruning_empty", job_id=job_id, iteration=iteration)
@@ -271,6 +277,9 @@ async def _run_refinement_loop(
             )
             break
 
+        async def _check_cancelled() -> bool:
+            return await is_job_cancelled(session, job_id)
+
         try:
             new_eval = await evaluate_prompt(
                 system_prompt=new_prompt,
@@ -282,6 +291,7 @@ async def _run_refinement_loop(
                 split=eval_split,
                 bootstrap_enabled=bootstrap_enabled,
                 bootstrap_iterations=bootstrap_iterations,
+                check_cancelled=_check_cancelled,
                 bootstrap_seed=_evaluation_bootstrap_seed(
                     job_id=job_id,
                     strategy=iter_strategy,
@@ -289,6 +299,8 @@ async def _run_refinement_loop(
                     seed_offset=bootstrap_seed,
                 ),
             )
+        except JobCancelledError:
+            raise
         except Exception as exc:
             logger.warning(
                 "refinement_eval_failed", job_id=job_id, iteration=iteration, error=str(exc)
@@ -309,8 +321,11 @@ async def _run_refinement_loop(
                     config=student_config,
                     strategy=f"{selected_strategy}_golden_{iteration}",
                     split="golden",
+                    check_cancelled=_check_cancelled,
                 )
                 golden_failures_count = sum(1 for r in golden_eval.case_results if not r.passed)
+            except JobCancelledError:
+                raise
             except Exception as exc:
                 logger.warning(
                     "refinement_golden_eval_failed",
@@ -548,6 +563,8 @@ async def _run_rule_ablation(
                 bootstrap_iterations=bootstrap_iterations,
                 bootstrap_seed_offset=bootstrap_seed_offset,
             )
+        except JobCancelledError:
+            raise
         except Exception as exc:
             logger.warning("ablation_eval_failed", job_id=job_id, rule_id=rule.id, error=str(exc))
             records.append(
@@ -714,6 +731,7 @@ async def _run_two_pass_optimizer(
             ranking_mode=mode,  # type: ignore[arg-type]
             regression_penalty=regression_penalty,
             utility_signals=utility_signals,
+            task=task,
         )
         if not pruned_result.selected:
             await mark_stage_complete(session, job_id, mode_strategy_id)
@@ -743,6 +761,8 @@ async def _run_two_pass_optimizer(
                 bootstrap_iterations=bootstrap_iterations,
                 bootstrap_seed_offset=bootstrap_seed_offset,
             )
+        except JobCancelledError:
+            raise
         except Exception as exc:
             logger.warning("pruning_mode_eval_failed", job_id=job_id, mode=mode, error=str(exc))
             await mark_stage_complete(session, job_id, mode_strategy_id)

@@ -34,6 +34,28 @@ def _coerce_int(value: object, default: int) -> int:
     return default
 
 
+def _coerce_bool(value: object, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    return default
+
+
+def resolve_max_prompt_tokens(
+    task_gates: dict[str, object],
+    settings_defaults: QualityGateDefaults,
+) -> int:
+    """Resolve the max_prompt_tokens threshold (task > settings > hardcoded 8000).
+
+    Exposed so evaluation services can fail fast on an over-budget compiled prompt
+    before spending a model call per case (an over-budget prompt typically 400s on
+    every call and reports as 100% malformed).
+    """
+    return _coerce_int(
+        _get_threshold(task_gates, settings_defaults, "max_prompt_tokens", 8000),
+        8000,
+    )
+
+
 def check_quality_gates(
     strategy: str,
     distilled_eval: EvalResult,
@@ -67,6 +89,10 @@ def check_quality_gates(
     max_tokens = _coerce_int(
         _get_threshold(task_gates, settings_defaults, "max_prompt_tokens", 8000),
         8000,
+    )
+    require_paired_net_improvement = _coerce_bool(
+        _get_threshold(task_gates, settings_defaults, "require_paired_net_improvement", True),
+        True,
     )
 
     primary_metric = get_primary_metric(task_mode)
@@ -113,6 +139,8 @@ def check_quality_gates(
 
     # Gate 4: regression rate vs baseline
     regression_rate = 0.0
+    paired_fixed: int | None = None
+    paired_broken: int | None = None
     if baseline_eval is not None:
         baseline_pass = {r.case_id for r in baseline_eval.case_results if r.passed}
         distilled_pass = {r.case_id for r in distilled_eval.case_results if r.passed}
@@ -123,6 +151,17 @@ def check_quality_gates(
             violations.append(
                 f"regression_rate {regression_rate:.4f}"
                 f" > max_regression_rate {max_regression_rate:.4f}"
+            )
+
+        # Gate 6: paired net improvement — a candidate must fix at least as many
+        # cases as it breaks. Aggregate metrics can look acceptable while the
+        # paired comparison is a net regression (e.g. 41 fixed / 74 broken).
+        paired_fixed = len(distilled_pass - baseline_pass)
+        paired_broken = len(regressions)
+        if require_paired_net_improvement and paired_broken > paired_fixed:
+            violations.append(
+                f"paired_broken {paired_broken} > paired_fixed {paired_fixed}"
+                " (net paired regression vs baseline)"
             )
 
     # Gate 5: token budget
@@ -137,5 +176,7 @@ def check_quality_gates(
         golden_failures=golden_failures,
         malformed_output_rate=distilled_eval.malformed_output_rate,
         prompt_tokens=prompt_token_count,
+        paired_fixed=paired_fixed,
+        paired_broken=paired_broken,
         violations=violations,
     )

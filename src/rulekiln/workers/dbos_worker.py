@@ -19,6 +19,7 @@ from rulekiln.db.repositories.jobs import (
     renew_lease,
 )
 from rulekiln.db.session import get_session_factory
+from rulekiln.observability.logging import configure_logging
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.workers.dbos_runtime import ensure_dbos_runtime_launched
 from rulekiln.workers.error_classification import (
@@ -129,6 +130,7 @@ async def worker_loop(worker_id: str) -> None:
 
 
 def main() -> None:
+    configure_logging()
     _install_signal_handlers()
     worker_id = str(uuid.uuid4())
     asyncio.run(worker_loop(worker_id))

@@ -93,10 +93,19 @@ async def test_openai_chat_uses_configured_retry_budget(monkeypatch: pytest.Monk
 async def test_openai_compatible_chat_uses_configured_retry_budget(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """OpenAI-compatible adapter should pass ProviderConfig.max_retries into Agent(...)."""
+    """OpenAI-compatible adapter passes max_retries into Agent and uses a native-mode profile."""
     import rulekiln.providers.chat.openai_compatible_chat as module
 
-    captured: dict[str, int] = {}
+    captured: dict[str, object] = {}
+
+    class _FakeRunResult:
+        output: BaseModel = _DummyOutput()
+
+        def usage(self) -> _FakeUsage:
+            return _FakeUsage()
+
+        def new_messages(self) -> list[object]:
+            return []  # no TextPart messages → content=""
 
     class _FakeAgent:
         def __init__(
@@ -121,8 +130,10 @@ async def test_openai_compatible_chat_uses_configured_retry_budget(
             pass
 
     class _FakeModel:
-        def __init__(self, _model_name: str, *, provider: object) -> None:
-            assert provider is not None
+        def __init__(
+            self, _model_name: str, *, provider: object, profile: object
+        ) -> None:
+            captured["profile"] = profile
 
     monkeypatch.setattr(module, "Agent", _FakeAgent)
     monkeypatch.setattr(module, "OpenAIProvider", _FakeProvider)
@@ -143,8 +154,14 @@ async def test_openai_compatible_chat_uses_configured_retry_budget(
         ),
     )
 
-    assert captured == {"retries": 4, "output_retries": 4}
+    assert captured["retries"] == 4
+    assert captured["output_retries"] == 4
+    # Verify we're using the native-mode profile (not the default tool-calling mode)
+    from pydantic_ai.models.openai import OpenAIModelProfile
+    assert isinstance(captured["profile"], OpenAIModelProfile)
+    assert captured["profile"].default_structured_output_mode == "native"  # type: ignore[union-attr]
     assert isinstance(result.parsed, _DummyOutput)
+    assert result.content == ""  # no TextPart messages in stub
 
 
 @pytest.mark.asyncio

@@ -221,9 +221,11 @@ async def test_split_policy_uses_train_for_extraction_and_validation_for_eval(
         completed_case_results: Mapping[str, CaseEvalResult] | None = None,
         on_case_result: Callable[[CaseEvalResult], Awaitable[None]] | None = None,
         *,
+        user_message_prefix: str | None = None,
         bootstrap_enabled: bool = True,
         bootstrap_iterations: int = 1000,
         bootstrap_seed: int = 1729,
+        check_cancelled: object = None,
     ) -> EvalResult:
         del system_prompt
         del task
@@ -285,7 +287,12 @@ async def test_split_policy_uses_train_for_extraction_and_validation_for_eval(
     )
     monkeypatch.setattr(
         "rulekiln.workers.pipeline.early_stages.cluster_hdbscan",
-        lambda rule_ids, embeddings, min_cluster_size=2: _single_cluster("hdbscan", rule_ids),
+        lambda rule_ids,
+        embeddings,
+        min_cluster_size=2,
+        min_samples=None,
+        cluster_selection_method="eom",
+        cluster_selection_epsilon=0.0: _single_cluster("hdbscan", rule_ids),
     )
 
     await run_distillation_pipeline(job_id, payload)
@@ -412,9 +419,11 @@ async def test_split_policy_falls_back_to_train_with_warning(
         completed_case_results: Mapping[str, CaseEvalResult] | None = None,
         on_case_result: Callable[[CaseEvalResult], Awaitable[None]] | None = None,
         *,
+        user_message_prefix: str | None = None,
         bootstrap_enabled: bool = True,
         bootstrap_iterations: int = 1000,
         bootstrap_seed: int = 1729,
+        check_cancelled: object = None,
     ) -> EvalResult:
         del system_prompt
         del task
@@ -476,7 +485,12 @@ async def test_split_policy_falls_back_to_train_with_warning(
     )
     monkeypatch.setattr(
         "rulekiln.workers.pipeline.early_stages.cluster_hdbscan",
-        lambda rule_ids, embeddings, min_cluster_size=2: _single_cluster("hdbscan", rule_ids),
+        lambda rule_ids,
+        embeddings,
+        min_cluster_size=2,
+        min_samples=None,
+        cluster_selection_method="eom",
+        cluster_selection_epsilon=0.0: _single_cluster("hdbscan", rule_ids),
     )
 
     await run_distillation_pipeline(job_id, payload)

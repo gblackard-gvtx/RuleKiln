@@ -8,6 +8,7 @@ from pathlib import Path
 
 import yaml
 
+from rulekiln.artifacts.manifest import ManifestEntry
 from rulekiln.pipeline.statistics import PairedComparisonArtifacts
 from rulekiln.schemas.pipeline import (
     EvalResult,
@@ -18,7 +19,103 @@ from rulekiln.schemas.pipeline import (
     SynthesizedRuleSchema,
     TopConfusionRow,
 )
+from rulekiln.schemas.promotion import (
+    ArtifactHashes,
+    PromotionStatus,
+    ProvenanceValidationReport,
+)
+from rulekiln.schemas.provenance import (
+    ClusterAssignmentRecord,
+    ClusteringProvenance,
+    ClusterSummary,
+)
 from rulekiln.schemas.task_case import RuleKilnCase, RuleKilnTask
+
+
+def _clustering_dir(root: Path, algorithm: str) -> Path:
+    path = root / "outputs" / "clustering" / algorithm
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def write_clustering_provenance(
+    root: Path, algorithm: str, provenance: ClusteringProvenance
+) -> Path:
+    """Write outputs/clustering/{algorithm}/clustering_provenance.json."""
+    path = _clustering_dir(root, algorithm) / "clustering_provenance.json"
+    path.write_text(
+        json.dumps(provenance.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_cluster_assignments(
+    root: Path, algorithm: str, records: list[ClusterAssignmentRecord]
+) -> Path:
+    """Write outputs/clustering/{algorithm}/cluster_assignments.jsonl (deterministic order)."""
+    path = _clustering_dir(root, algorithm) / "cluster_assignments.jsonl"
+    lines = [json.dumps(r.model_dump(mode="json"), ensure_ascii=False) for r in records]
+    path.write_text("\n".join(lines), encoding="utf-8")
+    return path
+
+
+def write_cluster_summary(root: Path, algorithm: str, summary: ClusterSummary) -> Path:
+    """Write outputs/clustering/{algorithm}/cluster_summary.json."""
+    path = _clustering_dir(root, algorithm) / "cluster_summary.json"
+    path.write_text(
+        json.dumps(summary.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_clustering_synthesized_rules(
+    root: Path, algorithm: str, rules: list[SynthesizedRuleSchema]
+) -> Path:
+    """Write outputs/clustering/{algorithm}/synthesized_rules.json."""
+    path = _clustering_dir(root, algorithm) / "synthesized_rules.json"
+    path.write_text(
+        json.dumps([r.model_dump(mode="json") for r in rules], indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_artifact_hashes(root: Path, hashes: ArtifactHashes) -> Path:
+    """Write metadata/hashes.json."""
+    metadata = root / "metadata"
+    metadata.mkdir(parents=True, exist_ok=True)
+    path = metadata / "hashes.json"
+    path.write_text(
+        json.dumps(hashes.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_provenance_validation(root: Path, report: ProvenanceValidationReport) -> Path:
+    """Write metadata/provenance_validation.json."""
+    metadata = root / "metadata"
+    metadata.mkdir(parents=True, exist_ok=True)
+    path = metadata / "provenance_validation.json"
+    path.write_text(
+        json.dumps(report.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_promotion_status(root: Path, status: PromotionStatus) -> Path:
+    """Write metadata/promotion_status.json."""
+    metadata = root / "metadata"
+    metadata.mkdir(parents=True, exist_ok=True)
+    path = metadata / "promotion_status.json"
+    path.write_text(
+        json.dumps(status.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
 
 
 def job_artifact_root(artifact_root: str, job_id: str) -> Path:
@@ -125,6 +222,150 @@ def write_strategy_eval(root: Path, strategy: str, eval_result: EvalResult) -> P
     return path
 
 
+def _debug_expected_label(case: RuleKilnCase | None) -> str | None:
+    if case is None or case.expected is None:
+        return None
+    raw = case.expected.get("label") if isinstance(case.expected, dict) else case.expected
+    if raw is None:
+        return None
+    return raw if isinstance(raw, str) else str(raw)
+
+
+def _debug_predicted_label(
+    actual_output: dict[str, str | int | float | bool | None] | str | None,
+) -> str | None:
+    if isinstance(actual_output, dict):
+        raw = actual_output.get("label")
+    elif isinstance(actual_output, str):
+        raw = actual_output
+    else:
+        raw = None
+    if raw is None:
+        return None
+    return raw if isinstance(raw, str) else str(raw)
+
+
+def write_strategy_debug_artifacts(
+    root: Path,
+    strategy: str,
+    eval_result: EvalResult,
+    cases_by_id: dict[str, RuleKilnCase],
+    compiled_prompt: str,
+    prompt_hash: str,
+    baseline_eval: EvalResult | None = None,
+) -> list[Path]:
+    """Write per-strategy debugging artifacts so malformed/regressed cases can be
+    inspected directly from disk without querying the database.
+
+    Writes, under outputs/debug/: {strategy}_raw_outputs.jsonl, _parsed_outputs.jsonl,
+    _malformed_outputs.jsonl, _regressions_vs_baseline.jsonl, _prompt_preview.txt,
+    _compiled_prompt.txt, _confusion_matrix.json, _classification_report.json.
+    """
+    debug_dir = root / "outputs" / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+
+    raw_path = debug_dir / f"{strategy}_raw_outputs.jsonl"
+    raw_lines = [
+        json.dumps({"case_id": r.case_id, "raw_content": r.raw_content}, ensure_ascii=False)
+        for r in eval_result.case_results
+    ]
+    raw_path.write_text("\n".join(raw_lines), encoding="utf-8")
+    paths.append(raw_path)
+
+    parsed_path = debug_dir / f"{strategy}_parsed_outputs.jsonl"
+    parsed_lines = [
+        json.dumps(
+            {
+                "case_id": r.case_id,
+                "parsed_label": _debug_predicted_label(r.actual_output),
+                "expected_label": _debug_expected_label(cases_by_id.get(r.case_id)),
+                "passed": r.passed,
+                "recovered": r.recovered,
+            },
+            ensure_ascii=False,
+        )
+        for r in eval_result.case_results
+        if not r.malformed
+    ]
+    parsed_path.write_text("\n".join(parsed_lines), encoding="utf-8")
+    paths.append(parsed_path)
+
+    malformed_path = debug_dir / f"{strategy}_malformed_outputs.jsonl"
+    malformed_lines = [
+        json.dumps(
+            {
+                "case_id": r.case_id,
+                "expected_label": _debug_expected_label(cases_by_id.get(r.case_id)),
+                "raw_content": r.raw_content,
+                "actual_output": r.actual_output,
+                "parse_error": r.error,
+                "recovered": r.recovered,
+            },
+            ensure_ascii=False,
+        )
+        for r in eval_result.case_results
+        if r.malformed
+    ]
+    malformed_path.write_text("\n".join(malformed_lines), encoding="utf-8")
+    paths.append(malformed_path)
+
+    regressions_path = debug_dir / f"{strategy}_regressions_vs_baseline.jsonl"
+    regression_lines: list[str] = []
+    if baseline_eval is not None:
+        baseline_by_id = {r.case_id: r for r in baseline_eval.case_results}
+        for r in eval_result.case_results:
+            baseline_result = baseline_by_id.get(r.case_id)
+            if baseline_result is None or not baseline_result.passed or r.passed:
+                continue
+            regression_lines.append(
+                json.dumps(
+                    {
+                        "case_id": r.case_id,
+                        "expected_label": _debug_expected_label(cases_by_id.get(r.case_id)),
+                        "baseline_raw_content": baseline_result.raw_content,
+                        "baseline_actual_output": baseline_result.actual_output,
+                        "candidate_raw_content": r.raw_content,
+                        "candidate_actual_output": r.actual_output,
+                        "candidate_malformed": r.malformed,
+                        "candidate_error": r.error,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+    regressions_path.write_text("\n".join(regression_lines), encoding="utf-8")
+    paths.append(regressions_path)
+
+    preview_path = debug_dir / f"{strategy}_prompt_preview.txt"
+    preview_path.write_text(compiled_prompt[:2000], encoding="utf-8")
+    paths.append(preview_path)
+
+    full_prompt_path = debug_dir / f"{strategy}_compiled_prompt.txt"
+    full_prompt_path.write_text(
+        f"# prompt_hash: {prompt_hash}\n\n{compiled_prompt}", encoding="utf-8"
+    )
+    paths.append(full_prompt_path)
+
+    confusion_path = debug_dir / f"{strategy}_confusion_matrix.json"
+    confusion_path.write_text(
+        json.dumps(eval_result.confusion_matrix, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    paths.append(confusion_path)
+
+    report_path = debug_dir / f"{strategy}_classification_report.json"
+    report_path.write_text(
+        json.dumps(
+            [row.model_dump(mode="json") for row in eval_result.per_label_metrics],
+            indent=2,
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    paths.append(report_path)
+
+    return paths
+
+
 def write_strategy_comparison(root: Path, comparison: StrategyComparison) -> Path:
     outputs = root / "outputs"
     outputs.mkdir(parents=True, exist_ok=True)
@@ -167,12 +408,26 @@ def write_mlflow_run_id(root: Path, run_id: str) -> Path:
     return path
 
 
-def write_manifest(root: Path, artifact_paths: list[str]) -> Path:
+def write_manifest(
+    root: Path,
+    artifact_paths: list[str],
+    entries: list[ManifestEntry] | None = None,
+) -> Path:
+    """Write metadata/manifest.json.
+
+    ``artifacts`` (the flat path list) is preserved for existing readers; ``entries``
+    carries per-artifact metadata (type, schema version, sha256, size, timestamp,
+    strategy) when provided.
+    """
     metadata = root / "metadata"
     metadata.mkdir(parents=True, exist_ok=True)
     path = metadata / "manifest.json"
+    payload: dict[str, object] = {"artifacts": artifact_paths}
+    if entries is not None:
+        payload["schema_version"] = "rulekiln.run_manifest.v1"
+        payload["entries"] = [entry.model_dump(mode="json") for entry in entries]
     path.write_text(
-        json.dumps({"artifacts": artifact_paths}, indent=2, ensure_ascii=False),
+        json.dumps(payload, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     return path

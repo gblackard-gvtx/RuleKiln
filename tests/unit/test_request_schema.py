@@ -57,3 +57,24 @@ def test_extra_unknown_field_rejected() -> None:
     payload = {**_base_payload(), "unknown_field": "value"}
     with pytest.raises(ValidationError):
         DistillationRequest.model_validate(payload)
+
+
+def test_optional_refinement_fields_accept_blank_or_null() -> None:
+    payload = _base_payload()
+    payload["task"]["refinement_max_iterations"] = ""
+    payload["task"]["refinement_max_failure_cases"] = ""
+    payload["task"]["refinement_max_success_cases"] = ""
+
+    req = DistillationRequest.model_validate(payload)
+    assert req.task.refinement_max_iterations is None
+    assert req.task.refinement_max_failure_cases is None
+    assert req.task.refinement_max_success_cases is None
+
+    payload["task"]["refinement_max_iterations"] = None
+    payload["task"]["refinement_max_failure_cases"] = None
+    payload["task"]["refinement_max_success_cases"] = None
+
+    req = DistillationRequest.model_validate(payload)
+    assert req.task.refinement_max_iterations is None
+    assert req.task.refinement_max_failure_cases is None
+    assert req.task.refinement_max_success_cases is None

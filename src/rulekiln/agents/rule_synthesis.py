@@ -1,5 +1,7 @@
 """Pydantic AI rule synthesis agent wrapper."""
 
+from typing import Any
+
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.pipeline import MicroRuleSchema, SynthesisOutput
 from rulekiln.schemas.task_case import RuleKilnTask
@@ -18,7 +20,28 @@ Produce:
 
 The synthesized rule should be deterministic, minimal, and correct. \
 Do not introduce conditions not supported by the input micro-rules.
+
+If this task defines a fixed set of allowed output labels, every outcome_conditions key AND
+its `outcome` value must be exactly one of those labels — never invent label variants,
+synonyms, sub-categories, or compound names (e.g. do not write "entailment_verbal_included";
+write "entailment" and put the distinguishing detail in `when`).
+
+Rules describe classification/decision conditions only. Never include instructions about
+response format, explanations, or justification (e.g. "explain your reasoning", "return
+JSON", "state why") — those belong to the system's output contract, not to a rule.
 """
+
+
+def _extract_allowed_labels(output_schema: dict[str, Any]) -> list[str]:
+    """Collect all enum string values from the task's output schema property definitions."""
+    labels: list[str] = []
+    properties = output_schema.get("properties", {})
+    for prop_schema in properties.values():
+        if isinstance(prop_schema, dict):
+            enum_vals = prop_schema.get("enum", [])
+            if isinstance(enum_vals, list):
+                labels.extend(str(v) for v in enum_vals)
+    return labels
 
 
 def _build_synthesis_prompt(
@@ -35,9 +58,17 @@ def _build_synthesis_prompt(
         f"  negative_cues: {r.negative_cues}"
         for i, r in enumerate(rules)
     )
+    allowed_labels = _extract_allowed_labels(task.output_schema) if task.output_schema else []
+    label_line = (
+        f"Allowed output labels for this task: {', '.join(allowed_labels)}. "
+        "Every outcome_conditions key and outcome value must be exactly one of these.\n\n"
+        if allowed_labels
+        else ""
+    )
     return (
         f"Task: {task.task_name}\n"
         f"Cluster topic: {cluster_topic or 'unknown'}\n\n"
+        f"{label_line}"
         f"Micro-rules in this cluster:\n\n{rules_text}\n\n"
         "Synthesize these into one generalized rule."
     )

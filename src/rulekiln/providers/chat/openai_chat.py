@@ -6,6 +6,7 @@ import io
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import cast
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
@@ -56,6 +57,63 @@ def _extract_response_text(response_body: dict[str, object]) -> str | None:
                 if isinstance(text, str):
                     return text
     return None
+
+
+def _format_error_dict(error: dict[str, object]) -> str | None:
+    """Render an OpenAI error object into a compact human-readable string.
+
+    Returns ``None`` when the object carries no usable detail so callers can
+    fall back to other sources rather than emit an empty message.
+    """
+    parts: list[str] = []
+    message = error.get("message")
+    if isinstance(message, str) and message:
+        parts.append(message)
+    for key in ("code", "type", "param"):
+        value = error.get(key)
+        if value not in (None, ""):
+            parts.append(f"{key}={value}")
+    if not parts:
+        return None
+    return " ".join(parts)
+
+
+def _extract_batch_item_error(row: dict[str, object]) -> str:
+    """Extract the most specific error text from a batch result/error row.
+
+    OpenAI places request-level failures in the top-level ``error`` field and
+    API-level failures in ``response.body.error``; either may be populated for a
+    given row. Falls back to the response status code, then a truncated dump of
+    the raw row so the true cause is always recoverable from logs instead of a
+    generic placeholder.
+    """
+    top_error = row.get("error")
+    if isinstance(top_error, dict):
+        rendered = _format_error_dict(top_error)
+        if rendered is not None:
+            return rendered
+    elif isinstance(top_error, str) and top_error:
+        return top_error
+
+    response = row.get("response")
+    if isinstance(response, dict):
+        body = response.get("body")
+        status_code = response.get("status_code")
+        if isinstance(body, dict):
+            body_error = body.get("error")
+            if isinstance(body_error, dict):
+                rendered = _format_error_dict(body_error)
+                if rendered is not None:
+                    if status_code not in (None, ""):
+                        return f"status_code={status_code} {rendered}"
+                    return rendered
+        if status_code not in (None, ""):
+            return f"status_code={status_code} (no error detail in response body)"
+
+    raw = json.dumps(row, default=str)
+    if len(raw) > 500:
+        raw = raw[:500] + "…"
+    return f"unstructured provider error: {raw}"
 
 
 def _parse_usage(response_body: dict[str, object]) -> ModelUsage | None:
@@ -246,7 +304,7 @@ class OpenAIChatClient(BatchChatModelClient):
                         BatchItemResult(
                             custom_id=custom_id,
                             status="errored",
-                            error_message=f"Non-200 status_code={status_code}",
+                            error_message=_extract_batch_item_error(row),
                         )
                     )
                     continue
@@ -302,16 +360,11 @@ class OpenAIChatClient(BatchChatModelClient):
                     continue
                 row = json.loads(line)
                 custom_id = str(row.get("custom_id", ""))
-                error = row.get("error") or {}
-                if isinstance(error, dict):
-                    msg = str(error.get("message", "Provider error"))
-                else:
-                    msg = str(error)
                 items.append(
                     BatchItemResult(
                         custom_id=custom_id,
                         status="errored",
-                        error_message=msg,
+                        error_message=_extract_batch_item_error(row),
                     )
                 )
 
@@ -345,6 +398,37 @@ class OpenAIChatClient(BatchChatModelClient):
         )
 
 
+def _strictify_schema_node(node: object) -> object:
+    """Recursively rewrite one schema node for OpenAI strict structured outputs."""
+    if isinstance(node, dict):
+        transformed: dict[str, object] = {
+            key: _strictify_schema_node(value) for key, value in node.items()
+        }
+        properties = transformed.get("properties")
+        if isinstance(properties, dict):
+            # Strict mode requires every object to forbid extra keys and to mark
+            # all of its properties required. Optional fields are expressed as
+            # nullable unions, which Pydantic already emits.
+            transformed["additionalProperties"] = False
+            transformed["required"] = list(properties.keys())
+        return transformed
+    if isinstance(node, list):
+        return [_strictify_schema_node(item) for item in node]
+    return node
+
+
+def _to_strict_json_schema(schema: dict[str, object]) -> dict[str, object]:
+    """Make a Pydantic JSON schema satisfy OpenAI strict structured outputs.
+
+    ``model_json_schema()`` omits ``additionalProperties: false`` and does not
+    list every property in ``required``, both of which OpenAI's strict mode
+    demands. The hand-built batch request must apply this transform before
+    sending the schema with ``strict: true``; the sequential path gets an
+    equivalent rewrite for free from pydantic_ai.
+    """
+    return cast("dict[str, object]", _strictify_schema_node(schema))
+
+
 def _build_batch_jsonl(items: list[BatchItem], model: str) -> bytes:
     """Serialize a list of BatchItems to a JSONL byte string for /v1/responses."""
     lines: list[bytes] = []
@@ -359,7 +443,7 @@ def _build_batch_jsonl(items: list[BatchItem], model: str) -> bytes:
                 "format": {
                     "type": "json_schema",
                     "name": item.output_schema_class_name,
-                    "schema": item.output_schema_json,
+                    "schema": _to_strict_json_schema(item.output_schema_json),
                     "strict": True,
                 }
             },

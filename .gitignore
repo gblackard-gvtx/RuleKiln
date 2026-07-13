@@ -18,3 +18,5 @@ wheels/
 .headroom/memory_vectors.db
 .headroom*
 .serena
+logs/rulekiln.log
+logs/rulekiln.log*

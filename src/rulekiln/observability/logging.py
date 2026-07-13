@@ -1,7 +1,9 @@
 """Structured logging configuration using structlog."""
 
 import logging
+import os
 import sys
+from logging.handlers import RotatingFileHandler
 
 import structlog
 
@@ -34,12 +36,26 @@ def configure_logging(log_level: str = "INFO") -> None:
         ],
     )
 
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(formatter)
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+
+    log_file = os.environ.get("LOG_FILE")
+    if log_file:
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        file_handler = RotatingFileHandler(
+            log_file,
+            maxBytes=10 * 1024 * 1024,  # 10 MB
+            backupCount=5,
+            encoding="utf-8",
+        )
+        handlers.append(file_handler)
+
+    for handler in handlers:
+        handler.setFormatter(formatter)
 
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
-    root_logger.addHandler(handler)
+    for handler in handlers:
+        root_logger.addHandler(handler)
     root_logger.setLevel(log_level.upper())
 
 

@@ -22,7 +22,7 @@ from rulekiln.db.repositories.jobs import (
     update_synthesized_rule_pruning,
 )
 from rulekiln.observability.logging import get_logger
-from rulekiln.pipeline.prompt_compiler import compile_prompt, count_tokens_approx
+from rulekiln.pipeline.prompt_compiler import compile_prompt, estimate_rule_tokens
 from rulekiln.pipeline.rule_pruning import prune_rules
 from rulekiln.schemas.pipeline import MicroRuleSchema
 from rulekiln.workers.pipeline.context import PipelineContext
@@ -98,7 +98,7 @@ class StaticConflictReviewService:
                 golden_backed = bool(
                     ctx.task.quality_gates and any(cid in set(schema.source_case_ids) for cid in [])
                 )
-                token_count = count_tokens_approx(f"{schema.topic} {' '.join(schema.applies_when)}")
+                token_count = estimate_rule_tokens(schema)
                 await update_synthesized_rule_pruning(
                     self._session,
                     synth_rule.id,
@@ -185,6 +185,7 @@ class PruningStageService:
                 max_prompt_tokens=ctx.task.max_prompt_tokens,
                 min_rule_support_count=ctx.task.min_rule_support_count,
                 preserve_golden_rules=ctx.task.preserve_golden_rules,
+                task=ctx.task,
             )
             for record in pruning_result.pruned:
                 await update_synthesized_rule_pruning(

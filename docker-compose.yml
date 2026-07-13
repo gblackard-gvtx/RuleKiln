@@ -61,6 +61,7 @@ services:
       - ./src:/app/src
       - ./migrations:/app/migrations
       - ./.rulekiln:/app/.rulekiln
+      - ./logs:/app/logs
     env_file:
       - .env
     environment:
@@ -70,6 +71,7 @@ services:
       ENABLE_PGVECTOR: "false"
       EXECUTION_BACKEND: dbos
       PYTHONPATH: /app/src
+      LOG_FILE: /app/logs/rulekiln.log
     depends_on:
       postgres:
         condition: service_healthy
@@ -90,6 +92,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./.rulekiln:/app/.rulekiln
+      - ./logs:/app/logs
     env_file:
       - .env
     environment:
@@ -99,6 +102,7 @@ services:
       ENABLE_PGVECTOR: "false"
       EXECUTION_BACKEND: dbos
       PYTHONPATH: /app/src
+      LOG_FILE: /app/logs/rulekiln.log
     depends_on:
       postgres:
         condition: service_healthy

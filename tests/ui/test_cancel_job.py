@@ -46,6 +46,15 @@ class _FakeDBOS:
     def cancel_workflow(cls, workflow_id: str) -> None:
         cls.cancelled_workflow_ids.append(workflow_id)
 
+    @classmethod
+    async def get_workflow_status_async(cls, workflow_id: str) -> object:
+        _ = workflow_id
+        return object()
+
+    @classmethod
+    async def cancel_workflow_async(cls, workflow_id: str) -> None:
+        cls.cancelled_workflow_ids.append(workflow_id)
+
 
 class TestCancelJob:
     async def test_unknown_job_returns_404(self, client: AsyncClient) -> None:

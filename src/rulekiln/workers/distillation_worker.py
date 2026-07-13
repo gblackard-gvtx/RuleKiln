@@ -30,7 +30,7 @@ from rulekiln.pipeline.prompt_compiler import (
     compile_prompt,
     count_tokens_approx,
 )
-from rulekiln.pipeline.quality_gates import check_quality_gates
+from rulekiln.pipeline.quality_gates import check_quality_gates, resolve_max_prompt_tokens
 from rulekiln.pipeline.statistics import (
     PairedComparisonArtifacts,
 )
@@ -171,6 +171,16 @@ async def _run(
     evaluation_bootstrap_seed_offset = ctx.evaluation_bootstrap_seed_offset
 
     logger.info(
+        "pipeline_started",
+        job_id=job_id,
+        phase=phase,
+        task_mode=task.task_mode,
+        n_cases=len(cases),
+        n_eval_cases=len(eval_cases),
+        n_extraction_cases=len(extraction_cases),
+        student_profile=payload.student.provider_profile,
+    )
+    logger.info(
         "split_policy_resolved",
         job_id=job_id,
         split_counts=ctx.split_policy.split_counts,
@@ -266,6 +276,10 @@ async def _run(
         await _persist_collector_records(session, job_id, collector)
         return
 
+    if phase == "extraction_batch_collect":
+        await _persist_collector_records(session, job_id, collector)
+        return
+
     if run_aggregate:
         paired_comparison_artifacts: PairedComparisonArtifacts | None = None
         ablation_artifact: RuleAblationArtifact | None = None
@@ -351,6 +365,11 @@ async def _run(
         for strategy in DISTILLED_STRATEGIES:
             if strategy in eval_map:
                 continue
+            # Don't surface stale eval rows for strategies that had no rules —
+            # they would pollute strategy comparison with bogus malformed results.
+            db_synth = await get_selected_synthesized_rules_for_job(session, job_id, strategy)
+            if not db_synth:
+                continue
             loaded = await _load_eval_result_from_db(
                 session,
                 job_id=job_id,
@@ -360,6 +379,28 @@ async def _run(
             )
             if loaded is not None:
                 eval_map[strategy] = loaded
+                continue
+            # No eval row despite having selected rules: the evaluate_* step
+            # (a separate DBOS step with its own in-memory state) most likely
+            # skipped this strategy for exceeding max_prompt_tokens. Recompute
+            # the same check here so the report surfaces it as unavailable
+            # instead of silently omitting it.
+            schemas = [_db_synth_to_schema(r) for r in db_synth]
+            prompt_text, _ = compile_prompt(task, schemas, strategy)
+            prompt_tokens = count_tokens_approx(prompt_text)
+            max_prompt_tokens = resolve_max_prompt_tokens(
+                task.quality_gates, settings.default_quality_gate
+            )
+            if prompt_tokens > max_prompt_tokens:
+                strategy_metadata[strategy] = {
+                    "unavailable": True,
+                    "unavailable_reason": (
+                        f"prompt_tokens {prompt_tokens} exceeds "
+                        f"max_prompt_tokens {max_prompt_tokens}; evaluation skipped"
+                    ),
+                    "prompt_token_count": prompt_tokens,
+                    "synthesized_rules_count": len(schemas),
+                }
 
         # ── Stage: checking_quality_gates ─────────────────────────────────
         gate_map = state.gate_map
@@ -431,6 +472,16 @@ async def _run(
                 golden_eval=_gate_golden_eval_map.get(strategy),
             )
             gate_map[strategy] = gate
+            logger.info(
+                "quality_gate_result",
+                job_id=job_id,
+                strategy=strategy,
+                passed=gate.passed,
+                violations=gate.violations,
+                malformed_output_rate=gate.malformed_output_rate,
+                metric_delta=gate.metric_delta,
+                golden_failures=gate.golden_failures,
+            )
             if not gate_stage_complete:
                 await mark_stage_complete(
                     session, job_id, PipelineStage.CHECKING_QUALITY_GATES, strategy=strategy
@@ -470,6 +521,16 @@ async def _run(
                 prompt_token_count=token_counts[strategy],
             )
             gate_map[strategy] = gate
+            logger.info(
+                "quality_gate_result",
+                job_id=job_id,
+                strategy=strategy,
+                passed=gate.passed,
+                violations=gate.violations,
+                malformed_output_rate=gate.malformed_output_rate,
+                metric_delta=gate.metric_delta,
+                golden_failures=gate.golden_failures,
+            )
             if not gate_stage_complete:
                 await mark_stage_complete(
                     session,
@@ -478,6 +539,11 @@ async def _run(
                     strategy=strategy,
                 )
 
+        unavailable_strategies = {
+            strategy: str(meta.get("unavailable_reason") or "unavailable")
+            for strategy, meta in strategy_metadata.items()
+            if meta.get("unavailable")
+        }
         comparison = build_strategy_comparison(
             baseline_eval=baseline_scaffold_eval or baseline_eval,
             dbscan_eval=eval_map.get("dbscan"),
@@ -491,6 +557,7 @@ async def _run(
             strategy_gates=gate_map,
             strategy_prompt_tokens=token_counts,
             baseline_strategy=BASELINE_SCAFFOLD_STRATEGY,
+            unavailable_strategies=unavailable_strategies,
         )
         comparison.strategy_metadata.update(strategy_metadata)
         comparison.evaluation_split_warning = ctx.split_policy.fallback_warning
@@ -515,6 +582,15 @@ async def _run(
             best_by_family["baseline"] = best_baseline_strategy_id
         if best_distilled_strategy_id is not None:
             best_by_family["distilled"] = best_distilled_strategy_id
+        for extra_family in ("embedding_baseline", "retrieval_baseline"):
+            best_for_family = _best_strategy_for_family(
+                strategy_evals=eval_map,
+                strategy_prompt_tokens=token_counts,
+                primary_metric=primary_metric,
+                family=extra_family,
+            )
+            if best_for_family is not None:
+                best_by_family[extra_family] = best_for_family
 
         comparison.best_baseline_strategy_id = best_baseline_strategy_id
         comparison.best_distilled_strategy_id = best_distilled_strategy_id

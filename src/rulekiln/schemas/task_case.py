@@ -2,7 +2,7 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ModelRoute(BaseModel):
@@ -45,6 +45,44 @@ class BaselinePromptPolicy(BaseModel):
     include_distilled_rules: bool = False
 
 
+class DbscanParams(BaseModel):
+    """DBSCAN parameters for rule clustering."""
+
+    model_config = ConfigDict(  # pyright: ignore[reportUnannotatedClassAttribute]
+        extra="ignore",
+    )
+
+    eps: float = 0.3
+    min_samples: int = 2
+
+
+class HdbscanParams(BaseModel):
+    """HDBSCAN parameters for rule clustering.
+
+    A None min_samples defers to the library default (min_cluster_size).
+    """
+
+    model_config = ConfigDict(  # pyright: ignore[reportUnannotatedClassAttribute]
+        extra="ignore",
+    )
+
+    min_cluster_size: int = 2
+    min_samples: int | None = None
+    cluster_selection_method: Literal["eom", "leaf"] = "eom"
+    cluster_selection_epsilon: float = 0.0
+
+
+class ClusteringParams(BaseModel):
+    """Per-algorithm clustering parameters for the distillation pipeline."""
+
+    model_config = ConfigDict(  # pyright: ignore[reportUnannotatedClassAttribute]
+        extra="ignore",
+    )
+
+    dbscan: DbscanParams = Field(default_factory=DbscanParams)
+    hdbscan: HdbscanParams = Field(default_factory=HdbscanParams)
+
+
 class RuleKilnTask(BaseModel):
     """Reusable task definition."""
 
@@ -57,6 +95,7 @@ class RuleKilnTask(BaseModel):
     output_schema: dict[str, Any] = Field(default_factory=dict)
     prompt_scaffold: dict[str, Any] = Field(default_factory=dict)
     baseline_prompt_policy: BaselinePromptPolicy = Field(default_factory=BaselinePromptPolicy)
+    clustering: ClusteringParams = Field(default_factory=ClusteringParams)
     allowed_evaluation_methods: list[str] = Field(default_factory=list)
     provider_model_defaults: dict[
         Literal["teacher", "student", "embedding", "judge"],
@@ -89,6 +128,21 @@ class RuleKilnTask(BaseModel):
     refinement_max_failure_cases: int | None = None
     refinement_max_success_cases: int | None = None
     validation_holdout_fraction: float | None = None
+
+    @field_validator(
+        "refinement_max_iterations",
+        "refinement_max_failure_cases",
+        "refinement_max_success_cases",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_optional_refinement_ints(cls, value: int | str | None) -> int | str | None:
+        if isinstance(value, str):
+            value = value.strip()
+            if value == "":
+                return None
+        return value
+
     # Allow refinement when eval_split fell back to train (train was already used for
     # extraction, so this risks double-use). False by default; opt-in when no validation
     # split is available and the operator accepts the double-use risk.

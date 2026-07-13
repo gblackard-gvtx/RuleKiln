@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 from sklearn.cluster import DBSCAN
 
@@ -10,7 +12,7 @@ from rulekiln.schemas.pipeline import RuleClusterSchema
 _NOISE_LABEL = -1
 
 
-def _cosine_distance_matrix(vectors: list[list[float]]) -> np.ndarray:  # type: ignore[type-arg]
+def cosine_distance_matrix(vectors: list[list[float]]) -> np.ndarray:  # type: ignore[type-arg]
     mat = np.array(vectors, dtype=np.float64)
     norms = np.linalg.norm(mat, axis=1, keepdims=True)
     norms = np.where(norms == 0, 1.0, norms)
@@ -22,6 +24,44 @@ def _cosine_distance_matrix(vectors: list[list[float]]) -> np.ndarray:  # type: 
     np.clip(dist, 0.0, 2.0, out=dist)
     np.fill_diagonal(dist, 0.0)
     return (dist + dist.T) / 2.0
+
+
+def dbscan_labels(
+    distance_matrix: np.ndarray,  # type: ignore[type-arg]
+    *,
+    eps: float,
+    min_samples: int,
+) -> np.ndarray:  # type: ignore[type-arg]
+    """Run DBSCAN on a precomputed cosine-distance matrix; label -1 marks noise."""
+    db = DBSCAN(eps=eps, min_samples=min_samples, metric="precomputed")
+    labels: np.ndarray = db.fit_predict(distance_matrix)  # type: ignore[type-arg]
+    return labels
+
+
+def hdbscan_labels(
+    distance_matrix: np.ndarray,  # type: ignore[type-arg]
+    *,
+    min_cluster_size: int,
+    min_samples: int | None = None,
+    cluster_selection_method: Literal["eom", "leaf"] = "eom",
+    cluster_selection_epsilon: float = 0.0,
+) -> np.ndarray:  # type: ignore[type-arg]
+    """Run HDBSCAN on a precomputed cosine-distance matrix; label -1 marks noise.
+
+    Raises ImportError when the hdbscan package is unavailable. A None
+    min_samples defers to the library default (min_cluster_size).
+    """
+    import hdbscan as hdbscan_lib  # pyright: ignore[reportMissingModuleSource]
+
+    clusterer = hdbscan_lib.HDBSCAN(
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        metric="precomputed",
+        cluster_selection_method=cluster_selection_method,
+        cluster_selection_epsilon=cluster_selection_epsilon,
+    )
+    labels: np.ndarray = clusterer.fit_predict(distance_matrix)  # type: ignore[type-arg]
+    return labels
 
 
 def _build_clusters(
@@ -59,9 +99,8 @@ def cluster_dbscan(
     if len(rule_ids) < 2:
         return [RuleClusterSchema(strategy="dbscan", algorithm="dbscan", rule_ids=rule_ids)]
 
-    dist = _cosine_distance_matrix(embeddings)
-    db = DBSCAN(eps=eps, min_samples=min_samples, metric="precomputed")
-    labels: np.ndarray = db.fit_predict(dist)  # type: ignore[type-arg]
+    dist = cosine_distance_matrix(embeddings)
+    labels = dbscan_labels(dist, eps=eps, min_samples=min_samples)
     return _build_clusters(labels, rule_ids, strategy="dbscan", algorithm="dbscan")
 
 
@@ -69,13 +108,23 @@ def cluster_hdbscan(
     rule_ids: list[str],
     embeddings: list[list[float]],
     min_cluster_size: int = 2,
+    min_samples: int | None = None,
+    cluster_selection_method: Literal["eom", "leaf"] = "eom",
+    cluster_selection_epsilon: float = 0.0,
 ) -> list[RuleClusterSchema]:
     """Cluster rules using HDBSCAN on cosine distance."""
     if len(rule_ids) < 2:
         return [RuleClusterSchema(strategy="hdbscan", algorithm="hdbscan", rule_ids=rule_ids)]
 
+    dist = cosine_distance_matrix(embeddings)
     try:
-        import hdbscan as hdbscan_lib  # pyright: ignore[reportMissingModuleSource]
+        labels = hdbscan_labels(
+            dist,
+            min_cluster_size=min_cluster_size,
+            min_samples=min_samples,
+            cluster_selection_method=cluster_selection_method,
+            cluster_selection_epsilon=cluster_selection_epsilon,
+        )
     except ImportError:
         # Fall back to DBSCAN if hdbscan not available
         clusters = cluster_dbscan(rule_ids, embeddings)
@@ -83,12 +132,4 @@ def cluster_hdbscan(
             c.strategy = "hdbscan"
             c.algorithm = "hdbscan_fallback_dbscan"
         return clusters
-
-    dist = _cosine_distance_matrix(embeddings)
-    clusterer = hdbscan_lib.HDBSCAN(
-        min_cluster_size=min_cluster_size,
-        metric="precomputed",
-        cluster_selection_method="eom",
-    )
-    labels: np.ndarray = clusterer.fit_predict(dist)  # type: ignore[type-arg]
     return _build_clusters(labels, rule_ids, strategy="hdbscan", algorithm="hdbscan")

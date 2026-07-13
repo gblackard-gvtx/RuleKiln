@@ -5,6 +5,13 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from rulekiln.providers.batch_schema_registry import register_schema
+from rulekiln.schemas.promotion import (
+    ArtifactHashes,
+    PromotionStatus,
+    ProvenanceValidationReport,
+)
+from rulekiln.schemas.provenance import StrategyProvenanceRow
+from rulekiln.schemas.task_case import DbscanParams, HdbscanParams
 
 # ── Rule provenance ──────────────────────────────────────────────────────────
 
@@ -327,6 +334,8 @@ class CaseEvalResult(BaseModel):
     assertion_scores: dict[str, float] = Field(default_factory=dict)
     actual_output: dict[str, str | int | float | bool | None] | str | None = None
     error: str | None = None
+    raw_content: str | None = None
+    recovered: bool = False
 
 
 class EvalResult(BaseModel):
@@ -427,6 +436,121 @@ class RefinementAblationArtifact(BaseModel):
     delta_macro_f1: float | None = None
 
 
+# ── Clustering-tuning sweep (Phase A: structure-only, no student eval) ───────
+
+
+type EmbeddingTextVariant = Literal[
+    "rule_only",
+    "label_plus_rule",
+    "label_plus_hypothesis_plus_rule",
+]
+
+
+class EligibilityThresholds(BaseModel):
+    """Structure-level smoke-test thresholds for a sweep arm.
+
+    Heuristics, not promotion gates: an eligible arm is merely worth the cost
+    of downstream synthesis + student eval (Phase B / manual runs).
+    """
+
+    min_cluster_count: int = 8
+    max_cluster_count: int = 40
+    max_noise_pct: float = 60.0
+    max_largest_cluster_pct: float = 40.0
+
+
+class EligibilityFlags(BaseModel):
+    """Per-check results of the structure-level eligibility heuristics."""
+
+    cluster_count_in_window: bool
+    noise_pct_ok: bool
+    largest_cluster_pct_ok: bool
+    eligible: bool
+
+
+class EmbeddingSetupReport(BaseModel):
+    """What was actually embedded and how, for one text variant."""
+
+    text_variant: EmbeddingTextVariant
+    embedding_model: str
+    provider: str
+    provider_profile: str
+    dimension: int
+    vectors_prenormalized: bool
+    normalized_before_distance: bool = True
+    distance_metric: Literal["cosine"] = "cosine"
+    vector_norm_min: float
+    vector_norm_median: float
+    vector_norm_max: float
+    rule_count: int
+    duplicate_rule_rate: float
+
+
+class KDistanceRow(BaseModel):
+    """Percentiles of the distance to each point's k-th nearest neighbor."""
+
+    k: int
+    percentiles: dict[str, float] = Field(default_factory=dict)
+
+
+class KDistanceReport(BaseModel):
+    """k-distance diagnostics for one text variant's embedding space."""
+
+    text_variant: EmbeddingTextVariant
+    rows: list[KDistanceRow] = Field(default_factory=list)
+    eps_candidates_by_min_samples: dict[str, list[float]] = Field(default_factory=dict)
+
+
+class ClusterHealthMetrics(BaseModel):
+    """Structure-level health metrics for one clustering outcome."""
+
+    cluster_count_excluding_noise: int
+    noise_count: int
+    noise_pct: float
+    largest_cluster_size: int
+    largest_cluster_pct: float
+    median_cluster_size: float
+    p90_cluster_size: float
+    small_cluster_count: int
+    label_entropy_mean: float | None = None
+    label_entropy_per_cluster: dict[str, float] = Field(default_factory=dict)
+    per_cluster_label_distribution: dict[str, dict[str, int]] = Field(default_factory=dict)
+    hypothesis_entropy_mean: float | None = None
+    hypothesis_entropy_per_cluster: dict[str, float] = Field(default_factory=dict)
+    per_cluster_hypothesis_distribution: dict[str, dict[str, int]] = Field(default_factory=dict)
+    noise_label_counts: dict[str, int] = Field(default_factory=dict)
+    intra_cluster_distance_mean: float | None = None
+    inter_cluster_distance_mean: float | None = None
+
+
+class ClusteringSweepArm(BaseModel):
+    """One (algorithm, text variant, parameter set) arm of the sweep."""
+
+    arm_id: str
+    algorithm: Literal["dbscan", "hdbscan"]
+    text_variant: EmbeddingTextVariant
+    dbscan_params: DbscanParams | None = None
+    hdbscan_params: HdbscanParams | None = None
+    eps_source_percentile: float | None = None
+    health: ClusterHealthMetrics
+    eligibility: EligibilityFlags
+
+
+class ClusteringSweepArtifact(BaseModel):
+    """Structure-only clustering sweep over a completed job's micro-rules."""
+
+    schema_version: Literal["rulekiln.clustering_sweep.v1"] = "rulekiln.clustering_sweep.v1"
+    job_id: str
+    generated_at: str
+    rule_count: int
+    label_counts: dict[str, int] = Field(default_factory=dict)
+    thresholds: EligibilityThresholds = Field(default_factory=EligibilityThresholds)
+    embedding_setups: list[EmbeddingSetupReport] = Field(default_factory=list)
+    k_distance_reports: list[KDistanceReport] = Field(default_factory=list)
+    arms: list[ClusteringSweepArm] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 # ── Per-student evaluation summary ───────────────────────────────────────────
 
 
@@ -460,7 +584,27 @@ class QualityGateResult(BaseModel):
     golden_failures: int = 0
     malformed_output_rate: float = 0.0
     prompt_tokens: int = 0
+    paired_fixed: int | None = None
+    paired_broken: int | None = None
     violations: list[str] = Field(default_factory=list)
+
+
+class StrategySelectionRow(BaseModel):
+    """Per-strategy selection outcome for the comparison report.
+
+    Every strategy that was evaluated (or skipped before evaluation) gets a row,
+    so the report can always explain why the selected strategy won and why every
+    other strategy lost.
+    """
+
+    strategy: str
+    family: str
+    eligible: bool
+    gate_failures: list[str] = Field(default_factory=list)
+    selection_score: float | None = None
+    selection_rank: int | None = None
+    selected: bool = False
+    reason: str | None = None
 
 
 # ── Strategy comparison ───────────────────────────────────────────────────────
@@ -484,9 +628,17 @@ class StrategyComparison(BaseModel):
     best_baseline_strategy_id: str | None = None
     best_by_family: dict[str, str] = Field(default_factory=dict)
     paired_comparison: PairedComparisonSummary | None = None
+    selection_table: list[StrategySelectionRow] = Field(default_factory=list)
     selected_strategy: str | None = None
     selection_reason: str | None = None
     evaluation_split_warning: str | None = None
     pruning_mode_comparison: PruningModeComparison | None = None
     # Per-student results: strategy_name → student_id → StudentEvalSummary
     all_student_results: dict[str, dict[str, StudentEvalSummary]] = Field(default_factory=dict)
+
+    # ── Provenance & promotion (Workstreams E/F/G) ────────────────────────────
+    # All optional and defaulted so legacy strategy_comparison.json still parses.
+    strategy_provenance: list[StrategyProvenanceRow] = Field(default_factory=list)
+    artifact_hashes: ArtifactHashes | None = None
+    provenance_validation: ProvenanceValidationReport | None = None
+    promotion_status: PromotionStatus | None = None

@@ -270,7 +270,7 @@ async def _run_stage_sequence(job_id: str, payload_json: dict[str, object]) -> N
         poll_interval = get_settings().batch_poll_interval_seconds
         while True:
             if DBOS is not None:
-                await _await_if_needed(DBOS.sleep(poll_interval))
+                await DBOS.sleep_async(poll_interval)
             else:
                 await asyncio.sleep(poll_interval)
             done = await _poll_extraction_batch_step(job_id, payload_json)

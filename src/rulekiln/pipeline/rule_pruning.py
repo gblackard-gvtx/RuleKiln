@@ -4,8 +4,18 @@ from __future__ import annotations
 
 from typing import Literal
 
-from rulekiln.pipeline.prompt_compiler import count_tokens_approx
+from rulekiln.pipeline.prompt_compiler import (
+    compile_baseline_prompt,
+    count_tokens_approx,
+    estimate_rule_tokens,
+)
 from rulekiln.schemas.pipeline import SynthesizedRuleSchema
+from rulekiln.schemas.task_case import RuleKilnTask
+
+# Approximate token cost of the "# Distilled Rule Policy (strategy: ..., version: ...)"
+# header compile_prompt prepends to the rule blocks. Strategy name/rule count barely
+# move this, so a fixed buffer is precise enough to reserve budget for it.
+_RULE_HEADER_TOKEN_BUFFER = 60
 
 PruningReason = Literal[
     "unresolved_conflict",
@@ -148,6 +158,7 @@ def prune_rules(
     regression_penalty: float = 2.0,
     utility_signals: UtilitySignals | None = None,
     classroom_utility_signals: ClassroomUtilitySignals | None = None,
+    task: RuleKilnTask | None = None,
 ) -> PruningResult:
     """Apply the full pruning pipeline to a list of synthesized rules.
 
@@ -159,6 +170,10 @@ def prune_rules(
        with priority as primary key.
     5. Cap at max_rules.
     6. Cap at max_prompt_tokens token budget (hard, enforced in sorted order).
+
+    When task is provided, the budget in step 6 is reduced by the estimated
+    cost of the baseline scaffold prompt and rule-policy header so the cap
+    reflects the actual compiled prompt size rather than rule content alone.
     """
     selected: list[SynthesizedRuleSchema] = []
     pruned: list[PruningRecord] = []
@@ -244,13 +259,16 @@ def prune_rules(
         selected = selected[:max_rules]
 
     # 6. Cap at prompt token budget
+    rule_budget = max_prompt_tokens
+    if task is not None:
+        scaffold_tokens = count_tokens_approx(compile_baseline_prompt(task))
+        rule_budget = max(0, max_prompt_tokens - scaffold_tokens - _RULE_HEADER_TOKEN_BUFFER)
+
     running_tokens = 0
     within_budget: list[SynthesizedRuleSchema] = []
     for rule in selected:
-        token_count = rule.estimated_token_count or count_tokens_approx(
-            f"{rule.topic} {' '.join(rule.applies_when)}"
-        )
-        if running_tokens + token_count > max_prompt_tokens:
+        token_count = rule.estimated_token_count or estimate_rule_tokens(rule)
+        if running_tokens + token_count > rule_budget:
             pruned.append(PruningRecord(rule, "prompt_token_budget_exceeded"))
         else:
             running_tokens += token_count

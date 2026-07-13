@@ -1,16 +1,31 @@
+# syntax=docker/dockerfile:1
 FROM python:3.13-slim
 
 WORKDIR /app
 
-# Install uv for fast dependency resolution
-RUN pip install --no-cache-dir uv
+# Prebuilt uv binary (faster than `pip install uv`)
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
-# Copy dependency metadata and source
-COPY pyproject.toml README.md ./
+# uv build behavior:
+# - copy link mode is required when the cache lives on a mount
+# - compile bytecode for faster container startup
+ENV UV_LINK_MODE=copy \
+    UV_COMPILE_BYTECODE=1 \
+    PATH="/app/.venv/bin:$PATH"
+
+# 1) Install ONLY third-party deps first, without the project or dev group.
+#    Cached across source edits: only busts when pyproject.toml / uv.lock change.
+#    The uv cache mount preserves downloaded/built wheels (e.g. hdbscan) across builds.
+COPY pyproject.toml uv.lock README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
+
+# 2) Copy source and install the project itself (editable). Source edits only
+#    re-run this cheap step, not the full dependency install above.
 COPY src/ src/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
 
-# Install all dependencies including the package itself
-RUN uv pip install --system --no-cache ".[dev]"
 COPY migrations/ migrations/
 COPY alembic.ini ./
 COPY main.py ./

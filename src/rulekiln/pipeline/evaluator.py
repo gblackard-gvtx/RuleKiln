@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Awaitable, Callable, Mapping
+from typing import Any
 
 from pydantic import BaseModel
 
+from rulekiln.observability.logging import get_logger
 from rulekiln.pipeline.statistics import compute_classification_statistics
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.pipeline import (
@@ -20,6 +22,13 @@ from rulekiln.schemas.pipeline import (
 from rulekiln.schemas.task_case import AssertionType, RuleKilnCase, RuleKilnTask, TaskMode
 
 type CaseResultPersistFn = Callable[[CaseEvalResult], Awaitable[None]]
+type CancellationCheckFn = Callable[[], Awaitable[bool]]
+
+_log = get_logger(__name__)
+
+
+class JobCancelledError(Exception):
+    """Raised by evaluate_prompt when check_cancelled reports the job was cancelled."""
 
 # Primary metric by task mode (C005)
 _PRIMARY_METRIC: dict[TaskMode, str] = {
@@ -44,14 +53,113 @@ class _StudentOutputSchema(BaseModel):
     raw: dict[str, str | int | float | bool | None] | str | None = None
 
 
+def _render_input_from_template(template: str, input_fields: dict[str, Any]) -> str:
+    """Substitute {{ key }} placeholders in template with values from input_fields."""
+
+    def _replace(m: re.Match[str]) -> str:
+        value = input_fields.get(m.group(1).strip())
+        return str(value) if value is not None else ""
+
+    return re.sub(r"\{\{\s*(\w+)\s*\}\}", _replace, template).strip()
+
+
+# Answer cue appended after the test-case input for few-shot strategies. Must
+# match the `Output:` label that every rendered few-shot example ends with (see
+# render_few_shot_examples in baseline_strategies.py): the examples train the
+# model to emit the label only after this cue, so presenting it on the test case
+# lets the model complete the trained answer slot instead of continuing the input
+# prose (the k5 echo failure).
+FEW_SHOT_ANSWER_CUE = "Output:"
+
+
+def build_student_user_message(
+    input_template: str,
+    input_fields: dict[str, Any],
+    *,
+    transition_prefix: str | None = None,
+) -> str:
+    """Build the student user message: optional transition block + rendered input.
+
+    The test case is always rendered via ``input_template`` (not json.dumps) so the
+    model sees a fresh natural-language case rather than another example to echo.
+    When ``transition_prefix`` is supplied (few-shot strategies) the transition block
+    is placed ahead of the rendered input to break example-continuation momentum, and
+    the ``Output:`` answer cue is appended so the model completes the trained answer
+    slot the examples establish.
+    """
+    rendered = _render_input_from_template(input_template, input_fields)
+    if transition_prefix:
+        return f"{transition_prefix}\n\n{rendered}\n\n{FEW_SHOT_ANSWER_CUE}"
+    return rendered
+
+
+def _extract_json_from_content(
+    content: str,
+) -> dict[str, str | int | float | bool | None] | str | None:
+    """Extract a JSON object from raw model output text.
+
+    Handles plain JSON, markdown-fenced JSON, and JSON embedded in prose.
+    Filters the result to primitive-valued fields only (matching the type of
+    _StudentOutputSchema.raw).  Returns None when no parseable object is found.
+    """
+    if not content:
+        return None
+
+    text = content.strip()
+
+    # Prefer content inside a markdown code fence when present.
+    fence_match = re.search(r"```(?:json)?\s*\n?(.*?)\n?\s*```", text, re.DOTALL)
+    candidates: list[str] = []
+    if fence_match:
+        candidates.append(fence_match.group(1).strip())
+    candidates.append(text)
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return {
+                    k: v
+                    for k, v in data.items()
+                    if isinstance(v, (str, int, float, bool, type(None)))
+                }
+            if isinstance(data, str):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    # Last resort: find the first flat {...} block in the text.
+    brace_match = re.search(r"\{[^{}]*\}", text, re.DOTALL)
+    if brace_match:
+        try:
+            data = json.loads(brace_match.group(0))
+            if isinstance(data, dict):
+                return {
+                    k: v
+                    for k, v in data.items()
+                    if isinstance(v, (str, int, float, bool, type(None)))
+                }
+        except json.JSONDecodeError:
+            pass
+
+    return None
+
+
 async def _call_student(
     system_prompt: str,
     case: RuleKilnCase,
     chat_client: ChatModelClient,
     config: ProviderConfig,
-) -> tuple[dict[str, str | int | float | bool | None] | str | None, bool]:
-    """Return (parsed_output, is_malformed)."""
-    user_prompt = json.dumps(case.input)
+    *,
+    input_template: str,
+    transition_prefix: str | None = None,
+) -> tuple[dict[str, str | int | float | bool | None] | str | None, bool, str | None]:
+    """Return (parsed_output, is_malformed, raw_content)."""
+    user_prompt = build_student_user_message(
+        input_template, case.input, transition_prefix=transition_prefix
+    )
     try:
         result = await chat_client.complete_structured(
             system_prompt=system_prompt,
@@ -61,9 +169,29 @@ async def _call_student(
         )
         parsed = result.parsed
         output = getattr(parsed, "raw", None) if parsed is not None else None
-        return output, False
-    except Exception:
-        return None, True
+
+        # Fallback for providers that return plain JSON text rather than enforcing
+        # _StudentOutputSchema via tool-calling (e.g. openai_compatible with local models).
+        if output is None and result.content:
+            output = _extract_json_from_content(result.content)
+
+        if output is None:
+            _log.warning(
+                "malformed_output",
+                case_id=case.id,
+                raw_content=result.content,
+                parsed=repr(parsed),
+            )
+
+        return output, False, result.content
+    except Exception as exc:
+        _log.warning(
+            "malformed_output_exception",
+            case_id=case.id,
+            exc_type=type(exc).__name__,
+            exc_msg=str(exc),
+        )
+        return None, True, None
 
 
 def _score_assertion(
@@ -76,10 +204,12 @@ def _score_assertion(
     if actual is None:
         return 0.0
 
-    # Resolve path within actual if applicable
+    # Resolve path within actual if applicable.
+    # Strip the JSONPath root selector ("$.") if present — "$" is not a literal key.
     target: object = actual
     if path and isinstance(actual, dict):
-        for part in path.split("."):
+        clean_path = path[2:] if path.startswith("$.") else path.lstrip("$")
+        for part in clean_path.split(".") if clean_path else []:
             if isinstance(target, dict) and part in target:
                 target = target[part]
             else:
@@ -99,10 +229,58 @@ def _score_assertion(
             return 1.0
 
 
+def _allowed_labels_from_task(task: RuleKilnTask) -> frozenset[str] | None:
+    """Return the exact allowed label values for classification/routing tasks.
+
+    Derived from enum values in the task output schema. Returns None when the
+    task mode has no fixed label vocabulary or the schema declares no enums.
+    """
+    if task.task_mode not in ("classification", "routing") or not task.output_schema:
+        return None
+    enums: set[str] = set()
+    properties = task.output_schema.get("properties", {})
+    for prop_schema in properties.values():
+        if isinstance(prop_schema, dict):
+            enum_vals = prop_schema.get("enum", [])
+            if isinstance(enum_vals, list):
+                enums.update(str(v) for v in enum_vals)
+    return frozenset(enums) if enums else None
+
+
+def _extract_predicted_label(
+    actual: dict[str, str | int | float | bool | None] | str,
+) -> str:
+    """Extract the predicted label string the same way _compute_metrics does."""
+    raw = actual.get("label", "") if isinstance(actual, dict) else actual
+    return raw if isinstance(raw, str) else str(raw)
+
+
+def _try_recover_label(text: str, allowed_labels: frozenset[str]) -> str | None:
+    """Best-effort recovery of a single unambiguous allowed label from `text`.
+
+    Returns None (stays malformed) when zero, or more than one distinct, allowed labels
+    are found — recovery must never launder a genuinely ambiguous or invalid response.
+    Word-boundary matching means compound/underscore-joined strings such as
+    "entailment_verbal_included" do NOT match "entailment" (`_` is a regex word
+    character, so there is no boundary between "entailment" and the following "_").
+    """
+    normalized = text.strip().rstrip(".!?,;:").lower()
+    if normalized in allowed_labels:
+        return normalized
+
+    lowered = text.lower()
+    found = {label for label in allowed_labels if re.search(rf"\b{re.escape(label)}\b", lowered)}
+    if len(found) == 1:
+        return next(iter(found))
+    return None
+
+
 def _score_case(
     case: RuleKilnCase,
     actual: dict[str, str | int | float | bool | None] | str | None,
     malformed: bool,
+    allowed_labels: frozenset[str] | None = None,
+    raw_content: str | None = None,
 ) -> CaseEvalResult:
     if malformed or actual is None:
         return CaseEvalResult(
@@ -111,7 +289,38 @@ def _score_case(
             passed=False,
             malformed=True,
             actual_output=actual,
+            raw_content=raw_content,
         )
+
+    # A parseable output whose label is not in the task's allowed vocabulary is a
+    # contract violation, not a wrong-but-valid prediction. Counting it as a valid
+    # prediction creates one spurious zero-F1 class per unique garbage string and
+    # silently dilutes macro F1 (observed: few-shot echo outputs → macro_f1 ~0.02
+    # with 0% malformed). Mark it malformed so the malformed-rate gate sees it —
+    # unless a single unambiguous label can be recovered from harmless extra text.
+    recovered = False
+    if allowed_labels is not None:
+        predicted_label = _extract_predicted_label(actual)
+        if predicted_label not in allowed_labels:
+            recovered_label = _try_recover_label(predicted_label, allowed_labels)
+            if recovered_label is None and raw_content:
+                recovered_label = _try_recover_label(raw_content, allowed_labels)
+            if recovered_label is None:
+                return CaseEvalResult(
+                    case_id=case.id,
+                    score=0.0,
+                    passed=False,
+                    malformed=True,
+                    actual_output=actual,
+                    error="prediction_not_in_allowed_labels",
+                    raw_content=raw_content,
+                )
+            actual = (
+                {**actual, "label": recovered_label}
+                if isinstance(actual, dict)
+                else recovered_label
+            )
+            recovered = True
 
     assertion_scores: dict[str, float] = {}
     total_weight = 0.0
@@ -132,6 +341,8 @@ def _score_case(
         malformed=False,
         assertion_scores=assertion_scores,
         actual_output=actual,
+        raw_content=raw_content,
+        recovered=recovered,
     )
 
 
@@ -254,21 +465,38 @@ async def evaluate_prompt(
     completed_case_results: Mapping[str, CaseEvalResult] | None = None,
     on_case_result: CaseResultPersistFn | None = None,
     *,
+    user_message_prefix: str | None = None,
     bootstrap_enabled: bool = True,
     bootstrap_iterations: int = 1000,
     bootstrap_seed: int = 1729,
+    check_cancelled: CancellationCheckFn | None = None,
 ) -> EvalResult:
     """Run the student model against every case and return aggregate metrics."""
     case_result_by_id: dict[str, CaseEvalResult] = {}
     if completed_case_results:
         case_result_by_id.update(completed_case_results)
 
+    allowed_labels = _allowed_labels_from_task(task)
     for case in cases:
         if case.id in case_result_by_id:
             continue
 
-        actual, malformed = await _call_student(system_prompt, case, chat_client, config)
-        result = _score_case(case, actual, malformed)
+        if check_cancelled is not None and await check_cancelled():
+            raise JobCancelledError(
+                f"Job cancelled during evaluation (strategy={strategy}, split={split})"
+            )
+
+        actual, malformed, raw_content = await _call_student(
+            system_prompt,
+            case,
+            chat_client,
+            config,
+            input_template=task.input_template,
+            transition_prefix=user_message_prefix,
+        )
+        result = _score_case(
+            case, actual, malformed, allowed_labels=allowed_labels, raw_content=raw_content
+        )
         case_result_by_id[case.id] = result
 
         if on_case_result is not None:

@@ -131,6 +131,32 @@ def render_few_shot_examples(examples: list[RuleKilnCase]) -> str:
     return "\n\n".join(blocks)
 
 
+# Strong, unambiguous instruction break inserted between the few-shot examples
+# (which live in the system prompt) and the test-case user message. Sequential
+# examples build a "continue the sequence" momentum that overwhelms the suffix
+# instruction at higher k (k>=4), so the model echoes/continues the input instead
+# of classifying it. This break explicitly interrupts that momentum. Kept as a
+# named constant so the wording can be tuned in one place.
+FEW_SHOT_TRANSITION_SEPARATOR = (
+    "===\n"
+    "\n"
+    "The {example_count} examples above are for illustration only. A new case follows.\n"
+    "Do not continue the pattern above.\n"
+    "Do not repeat or echo the input.\n"
+    'Return only valid JSON with a single "label" field.\n'
+    "\n"
+    "==="
+)
+
+
+def render_few_shot_transition(example_count: int) -> str:
+    """Render the transition block placed before the test-case input.
+
+    Applied for all few-shot k values (harmless at k3, necessary at k5).
+    """
+    return FEW_SHOT_TRANSITION_SEPARATOR.format(example_count=example_count)
+
+
 def build_few_shot_prompt_with_budget(
     *,
     baseline_prompt: str,
@@ -142,6 +168,9 @@ def build_few_shot_prompt_with_budget(
         tokens = count_tokens_approx(baseline_prompt)
         return baseline_prompt, tokens, []
 
+    # The transition block that breaks the model's "continue the sequence" momentum
+    # is rendered into the test-case *user* message (see render_few_shot_transition),
+    # not appended here, so the examples end the system prompt cleanly.
     selected_examples = list(examples)
     while selected_examples:
         examples_text = render_few_shot_examples(selected_examples)

@@ -55,9 +55,153 @@
       {% endif %}
     </dd>
     {% endif %}
+
+    {% if selection_reason %}
+    <dt class="text-gray-500">Selection reason</dt>
+    <dd class="col-span-1">{{ selection_reason }}</dd>
+    {% endif %}
   </dl>
 </div>
 {% endif %}
+
+{% if selection_lineage_warning %}
+<div class="flash-error mb-6" role="alert">
+  <p class="font-semibold text-sm">{{ selection_lineage_warning }}</p>
+</div>
+{% endif %}
+
+{% if selection_table %}
+<div class="card p-0 overflow-hidden mb-6">
+  <h2 class="text-lg font-semibold px-4 pt-4">Strategy Selection</h2>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Strategy</th>
+        <th>Family</th>
+        <th>Eligible</th>
+        <th>Score ({{ primary_metric }})</th>
+        <th>Rank</th>
+        <th>Selected</th>
+        <th>Gate failures</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in selection_table %}
+      <tr>
+        <td class="font-mono text-sm">{{ row.strategy }}</td>
+        <td class="text-sm text-gray-500">{{ row.family if row.family else "—" }}</td>
+        <td>
+          <span class="badge {% if row.eligible %}badge-completed{% else %}badge-error{% endif %}">
+            {{ "eligible" if row.eligible else "ineligible" }}
+          </span>
+        </td>
+        <td class="font-mono text-sm">
+          {{ "%.4f" | format(row.selection_score) if row.selection_score is not none else "—" }}
+        </td>
+        <td class="font-mono text-sm">{{ row.selection_rank if row.selection_rank is not none else "—" }}</td>
+        <td>{% if row.selected %}✓{% endif %}</td>
+        <td class="text-xs text-gray-500">
+          {% if row.gate_failures %}{{ row.gate_failures | join("; ") }}{% else %}—{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+{# ── Provenance & Promotion (Workstream J) ─────────────────────────────── #}
+<div class="card mb-6">
+  <h2 class="text-lg font-semibold mb-1">Provenance &amp; Promotion</h2>
+  <p class="text-xs text-gray-500 mb-4">
+    <span class="font-semibold">Selected</span> = highest-ranked eligible strategy for this
+    evaluation. <span class="font-semibold">Promotion candidate</span> = the selected strategy
+    under review for reuse/deployment. <span class="font-semibold">Promoted</span> = a strategy
+    explicitly approved under the promotion policy. Selected does <em>not</em> mean production-ready.
+  </p>
+
+  {% if provenance_view is none %}
+  <p class="text-sm text-gray-400">Provenance unavailable for this historical run.</p>
+  {% else %}
+    {% set prom = provenance_view.promotion %}
+    {% set clus = provenance_view.clustering %}
+    {% set row = provenance_view.strategy_row %}
+    {% set jh = provenance_view.job_hashes %}
+
+    {# Promotion status #}
+    {% if prom %}
+    <div class="mb-4">
+      <div class="flex flex-wrap gap-2 items-center mb-2">
+        <span class="badge {% if prom.promotion_status == 'approved' or prom.promotion_status == 'promoted' %}badge-completed{% elif prom.promotion_status == 'blocked' or prom.promotion_status == 'rejected' %}badge-error{% else %}badge-queued{% endif %}">
+          promotion: {{ prom.promotion_status }}
+        </span>
+        <span class="badge badge-queued">provenance: {{ prom.provenance_status }}</span>
+        <span class="badge badge-queued">reproducibility: {{ prom.reproducibility_status }}</span>
+        <span class="badge badge-queued">confidence: {{ prom.confidence_status }}</span>
+      </div>
+      <dl class="grid grid-cols-3 gap-x-4 gap-y-1 text-sm">
+        <dt class="text-gray-500">Selected strategy</dt>
+        <dd class="col-span-2 font-mono">{{ prom.selected_strategy or "—" }}</dd>
+        <dt class="text-gray-500">Promotion candidate</dt>
+        <dd class="col-span-2 font-mono">{{ prom.promotion_candidate or "—" }}</dd>
+        <dt class="text-gray-500">Promoted strategy</dt>
+        <dd class="col-span-2 font-mono">{{ prom.promoted_strategy if prom.promoted_strategy else "none" }}</dd>
+      </dl>
+      {% if prom.promotion_blockers %}
+      <p class="text-sm font-semibold text-gray-700 mt-3 mb-1">Promotion blockers</p>
+      <ul class="list-disc pl-5 text-sm text-gray-700 space-y-1">
+        {% for blocker in prom.promotion_blockers %}
+        <li><span class="font-mono text-xs text-gray-500">{{ blocker.code }}</span> — {{ blocker.message }}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {# Run provenance hashes #}
+    {% if jh %}
+    <p class="text-sm font-semibold text-gray-700 mt-2 mb-1">Run provenance</p>
+    <dl class="grid grid-cols-3 gap-x-4 gap-y-1 text-sm mb-4">
+      <dt class="text-gray-500">Job ID</dt><dd class="col-span-2 font-mono text-xs">{{ job_id }}</dd>
+      <dt class="text-gray-500">Dataset / split</dt><dd class="col-span-2 font-mono text-xs">{{ jh.dataset_split or "—" }}</dd>
+      <dt class="text-gray-500">Task config</dt><dd class="col-span-2 font-mono text-xs">{{ jh.task_config or "—" }}</dd>
+      <dt class="text-gray-500">Ordered case set</dt><dd class="col-span-2 font-mono text-xs">{{ jh.ordered_case_ids or "—" }}</dd>
+      <dt class="text-gray-500">Provider / model config</dt><dd class="col-span-2 font-mono text-xs">{{ jh.provider_config or "—" }}</dd>
+      <dt class="text-gray-500">Parser config</dt><dd class="col-span-2 font-mono text-xs">{{ jh.parser_config or "—" }}</dd>
+    </dl>
+    {% endif %}
+
+    {# Selected strategy provenance #}
+    <p class="text-sm font-semibold text-gray-700 mt-2 mb-1">Selected strategy provenance</p>
+    {% if clus %}
+    <dl class="grid grid-cols-3 gap-x-4 gap-y-1 text-sm">
+      <dt class="text-gray-500">Strategy / family</dt>
+      <dd class="col-span-2 font-mono">{{ clus.source.strategy }}{% if row %} / {{ row.family }}{% endif %}</dd>
+      <dt class="text-gray-500">Algorithm</dt><dd class="col-span-2 font-mono">{{ clus.algorithm }}</dd>
+      <dt class="text-gray-500">Text variant</dt><dd class="col-span-2 font-mono">{{ clus.text_variant }}</dd>
+      <dt class="text-gray-500">Requested params</dt>
+      <dd class="col-span-2 font-mono text-xs">mcs={{ clus.requested_parameters.min_cluster_size }}, min_samples={{ clus.requested_parameters.min_samples }}, eps={{ clus.requested_parameters.eps }}, method={{ clus.requested_parameters.cluster_selection_method }}</dd>
+      <dt class="text-gray-500">Effective params</dt>
+      <dd class="col-span-2 font-mono text-xs">mcs={{ clus.effective_parameters.min_cluster_size }}, min_samples={{ clus.effective_parameters.min_samples }}, eps={{ clus.effective_parameters.eps }}, method={{ clus.effective_parameters.cluster_selection_method }}</dd>
+      <dt class="text-gray-500">Embedding</dt>
+      <dd class="col-span-2 font-mono text-xs">{{ clus.embedding.model }} (dim {{ clus.embedding.dimension }})</dd>
+      <dt class="text-gray-500">Clusters / noise</dt>
+      <dd class="col-span-2 font-mono text-xs">{{ clus.output.cluster_count_excluding_noise }} clusters, {{ "%.2f" | format(clus.output.noise_pct) }}% noise</dd>
+    </dl>
+    {% endif %}
+    {% if row %}
+    <dl class="grid grid-cols-3 gap-x-4 gap-y-1 text-sm mt-1">
+      <dt class="text-gray-500">Clustering-config hash</dt><dd class="col-span-2 font-mono text-xs">{{ row.clustering_config_hash or "—" }}</dd>
+      <dt class="text-gray-500">Cluster-assignment hash</dt><dd class="col-span-2 font-mono text-xs">{{ row.cluster_assignment_hash or "—" }}</dd>
+      <dt class="text-gray-500">Synthesized-rules hash</dt><dd class="col-span-2 font-mono text-xs">{{ row.synthesized_rules_hash or "—" }}</dd>
+      <dt class="text-gray-500">Compiled-prompt hash</dt><dd class="col-span-2 font-mono text-xs">{{ row.compiled_prompt_hash or "—" }}</dd>
+      <dt class="text-gray-500">Prediction hash</dt><dd class="col-span-2 font-mono text-xs">{{ row.prediction_hash or "—" }}</dd>
+    </dl>
+    {% elif not clus %}
+    <p class="text-sm text-gray-400">No clustering provenance for this strategy (non-clustering strategy).</p>
+    {% endif %}
+  {% endif %}
+</div>
 
 {% if eval_runs %}
 <div class="card p-0 overflow-hidden">

@@ -15,6 +15,7 @@ TEXT_TRUNCATE = 2000
 
 TRAIN_LIMIT = 500
 VAL_LIMIT = 300
+TEST_LIMIT = 300
 
 
 def _write_cases_to_file(
@@ -30,6 +31,7 @@ def _write_cases_to_file(
         truncated = len(premise) > TEXT_TRUNCATE
         if truncated:
             premise = premise[:TEXT_TRUNCATE]
+
         case: dict[str, object] = {
             "schema_version": "rulekiln.case.v1",
             "id": f"contractnli_{target_split}_{i:06d}",
@@ -57,7 +59,7 @@ def _write_cases_to_file(
             },
             "weight": 1.0,
         }
-        f.write(json.dumps(case) + "\n")
+        f.write(json.dumps(case, ensure_ascii=False) + "\n")
 
 
 def write_rulekiln_cases(
@@ -69,7 +71,7 @@ def write_rulekiln_cases(
     mode: str = "w",
 ) -> None:
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    with out_path.open(mode) as f:
+    with out_path.open(mode, encoding="utf-8") as f:
         _write_cases_to_file(rows, target_split, f, limit)
 
 
@@ -79,6 +81,24 @@ def main() -> None:
         "--discover-labels",
         action="store_true",
         help="Print unique labels from first 100 rows and exit (no file writes)",
+    )
+    parser.add_argument(
+        "--train-limit",
+        type=int,
+        default=TRAIN_LIMIT,
+        help=f"Maximum number of training cases to write. Default: {TRAIN_LIMIT}",
+    )
+    parser.add_argument(
+        "--validation-limit",
+        type=int,
+        default=VAL_LIMIT,
+        help=f"Maximum number of validation cases to write. Default: {VAL_LIMIT}",
+    )
+    parser.add_argument(
+        "--test-limit",
+        type=int,
+        default=TEST_LIMIT,
+        help=f"Maximum number of test cases to write. Default: {TEST_LIMIT}",
     )
     args = parser.parse_args()
 
@@ -95,7 +115,10 @@ def main() -> None:
         ds = load_dataset(
             "parquet",
             data_files={
-                split: f"hf://datasets/kiddothe2b/contract-nli@refs/convert/parquet/contractnli_a/{split}/*.parquet"
+                split: (
+                    "hf://datasets/kiddothe2b/contract-nli@refs/convert/parquet/"
+                    f"contractnli_a/{split}/*.parquet"
+                )
                 for split in ["train", "validation", "test"]
             },
         )
@@ -118,18 +141,25 @@ def main() -> None:
 
     train_rows = [dict(r) for r in ds["train"]]  # type: ignore[index]
     val_rows = [dict(r) for r in ds["validation"]]  # type: ignore[index]
+    test_rows = [dict(r) for r in ds["test"]]  # type: ignore[index]
 
     write_rulekiln_cases(
         train_rows,
         target_split="train",
         out_path=generated_dir / "cases.train.jsonl",
-        limit=TRAIN_LIMIT,
+        limit=args.train_limit,
     )
     write_rulekiln_cases(
         val_rows,
         target_split="validation",
         out_path=generated_dir / "cases.validation.jsonl",
-        limit=VAL_LIMIT,
+        limit=args.validation_limit,
+    )
+    write_rulekiln_cases(
+        test_rows,
+        target_split="test",
+        out_path=generated_dir / "cases.test.jsonl",
+        limit=args.test_limit,
     )
 
     combined_path = generated_dir / "cases.jsonl"
@@ -137,22 +167,34 @@ def main() -> None:
         train_rows,
         target_split="train",
         out_path=combined_path,
-        limit=TRAIN_LIMIT,
+        limit=args.train_limit,
         mode="w",
     )
     write_rulekiln_cases(
         val_rows,
         target_split="validation",
         out_path=combined_path,
-        limit=VAL_LIMIT,
+        limit=args.validation_limit,
+        mode="a",
+    )
+    write_rulekiln_cases(
+        test_rows,
+        target_split="test",
+        out_path=combined_path,
+        limit=args.test_limit,
         mode="a",
     )
 
-    (generated_dir / "labels.json").write_text(json.dumps(label_names, indent=2) + "\n")
+    (generated_dir / "labels.json").write_text(
+        json.dumps(label_names, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
 
-    print(f"Train: {min(len(train_rows), TRAIN_LIMIT)} cases")
-    print(f"Validation: {min(len(val_rows), VAL_LIMIT)} cases")
+    print(f"Train: {min(len(train_rows), args.train_limit)} cases")
+    print(f"Validation: {min(len(val_rows), args.validation_limit)} cases")
+    print(f"Test: {min(len(test_rows), args.test_limit)} cases")
     print(f"Labels: {len(label_names)}")
+    print(f"Wrote: {combined_path}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,18 @@
+{
+  "schema_version": "rulekiln.approved_strategy_config.v1",
+  "strategy": "dbscan",
+  "config": {
+    "algorithm": "dbscan",
+    "text_variant": "rule_only",
+    "min_cluster_size": null,
+    "min_samples": 2,
+    "eps": 0.3,
+    "cluster_selection_method": null,
+    "cluster_selection_epsilon": null,
+    "distance_metric": "cosine"
+  },
+  "config_hash": null,
+  "approved_at": null,
+  "approved_by": null,
+  "source_run_id": null
+}

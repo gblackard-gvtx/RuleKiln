@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 from pydantic import BaseModel
 
@@ -32,8 +30,7 @@ class _FakeChatClient(ChatModelClient):
         del config
 
         self.calls += 1
-        payload = json.loads(user_prompt)
-        predicted_label = str(payload.get("predicted_label", ""))
+        predicted_label = user_prompt.strip()
         parsed = output_schema.model_validate({"raw": {"label": predicted_label}})
         return ChatCompletionResult(content="", parsed=parsed, usage=None, raw_model="fake")
 
@@ -44,7 +41,7 @@ def _task() -> RuleKilnTask:
         task_name="Task",
         task_mode="classification",
         description="Test task",
-        input_template="{{input}}",
+        input_template="{{ predicted_label }}",
     )
 
 

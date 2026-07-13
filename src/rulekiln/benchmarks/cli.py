@@ -152,6 +152,79 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Strategy to compare (default: dbscan).",
     )
 
+    # ── Clustering sweep subcommand ─────────────────────────────────────────
+    sweep_parser = subparsers.add_parser(
+        "clustering-sweep",
+        help=(
+            "Structure-only DBSCAN/HDBSCAN tuning sweep over a completed job's "
+            "micro-rules. Re-embeds rules per text variant, sweeps parameter "
+            "grids, and emits clustering_sweep.json with k-distance and "
+            "cluster-health diagnostics. No LLM calls."
+        ),
+    )
+    sweep_parser.add_argument(
+        "--job-id",
+        type=str,
+        required=True,
+        help="Completed distillation job whose micro-rules to sweep.",
+    )
+    sweep_parser.add_argument(
+        "--provider-profile",
+        type=str,
+        required=True,
+        help="Provider profile name (PROVIDER_PROFILES__<NAME>__*) for embeddings.",
+    )
+    sweep_parser.add_argument(
+        "--embedding-model",
+        type=str,
+        required=True,
+        help="Embedding model name served by the provider profile.",
+    )
+    sweep_parser.add_argument(
+        "--variants",
+        type=str,
+        default="rule_only,label_plus_rule,label_plus_hypothesis_plus_rule",
+        help="Comma-separated embedding text variants to sweep (default: all three).",
+    )
+    sweep_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help=(
+            "Output path for clustering_sweep.json "
+            "(default: .rulekiln/clustering_sweeps/<job-id>/clustering_sweep.json)."
+        ),
+    )
+    sweep_parser.add_argument(
+        "--mlflow",
+        action="store_true",
+        help="Also log the sweep summary and artifact to MLflow.",
+    )
+    sweep_parser.add_argument(
+        "--min-cluster-count",
+        type=int,
+        default=8,
+        help="Eligibility: minimum cluster count (default: 8).",
+    )
+    sweep_parser.add_argument(
+        "--max-cluster-count",
+        type=int,
+        default=40,
+        help="Eligibility: maximum cluster count (default: 40).",
+    )
+    sweep_parser.add_argument(
+        "--max-noise-pct",
+        type=float,
+        default=60.0,
+        help="Eligibility: maximum noise percentage (default: 60).",
+    )
+    sweep_parser.add_argument(
+        "--max-largest-cluster-pct",
+        type=float,
+        default=40.0,
+        help="Eligibility: maximum largest-cluster percentage (default: 40).",
+    )
+
     return parser
 
 
@@ -211,6 +284,98 @@ def _count_refinement_iterations(artifact_dir: Path) -> int:
     return count
 
 
+def _run_clustering_sweep_subcommand(args: argparse.Namespace) -> int:
+    import asyncio
+
+    from rulekiln.benchmarks.clustering_sweep import (
+        ALL_TEXT_VARIANTS,
+        rank_eligible_arms,
+        run_clustering_sweep,
+        write_clustering_sweep_json,
+    )
+    from rulekiln.config.settings import get_settings
+    from rulekiln.db.session import get_session_factory
+    from rulekiln.providers.embedding import get_embedding_client
+    from rulekiln.providers.resolver import resolve_provider_config
+    from rulekiln.schemas.pipeline import (
+        ClusteringSweepArtifact,
+        EligibilityThresholds,
+        EmbeddingTextVariant,
+    )
+
+    variants: list[EmbeddingTextVariant] = []
+    for raw_variant in args.variants.split(","):
+        name = raw_variant.strip()
+        if not name:
+            continue
+        if name not in ALL_TEXT_VARIANTS:
+            print(
+                f"Unknown variant '{name}'. Valid variants: {', '.join(ALL_TEXT_VARIANTS)}",
+                file=sys.stderr,
+            )
+            return 1
+        variants.append(cast(EmbeddingTextVariant, name))
+    if not variants:
+        print("No embedding text variants selected.", file=sys.stderr)
+        return 1
+
+    settings = get_settings()
+    embedding_config = resolve_provider_config(
+        args.provider_profile,
+        args.embedding_model,
+        role="embedding",
+        settings=settings,
+    )
+    embedding_client = get_embedding_client(embedding_config)
+    thresholds = EligibilityThresholds(
+        min_cluster_count=args.min_cluster_count,
+        max_cluster_count=args.max_cluster_count,
+        max_noise_pct=args.max_noise_pct,
+        max_largest_cluster_pct=args.max_largest_cluster_pct,
+    )
+
+    async def _run() -> ClusteringSweepArtifact:
+        factory = get_session_factory()
+        async with factory() as session:
+            return await run_clustering_sweep(
+                session=session,
+                embedding_client=embedding_client,
+                embedding_config=embedding_config,
+                job_id=args.job_id,
+                text_variants=variants,
+                thresholds=thresholds,
+            )
+
+    artifact = asyncio.run(_run())
+
+    output_path: Path = args.output or (
+        Path(".rulekiln/clustering_sweeps") / args.job_id / "clustering_sweep.json"
+    )
+    write_clustering_sweep_json(output_path, artifact)
+    print(f"Wrote clustering_sweep.json to: {output_path}")
+
+    eligible = rank_eligible_arms(artifact)
+    print(f"Arms: {len(artifact.arms)} total, {len(eligible)} eligible")
+    for arm in eligible[:5]:
+        entropy = arm.health.label_entropy_mean
+        entropy_text = f"{entropy:.3f}" if entropy is not None else "n/a"
+        print(
+            f"  {arm.arm_id}: clusters={arm.health.cluster_count_excluding_noise} "
+            f"noise={arm.health.noise_pct:.1f}% "
+            f"largest={arm.health.largest_cluster_pct:.1f}% "
+            f"label_entropy={entropy_text}"
+        )
+    for note in artifact.notes:
+        print(f"Note: {note}")
+
+    if args.mlflow:
+        from rulekiln.benchmarks.clustering_sweep import log_sweep_to_mlflow
+
+        log_sweep_to_mlflow(artifact, output_path.parent)
+        print("Logged sweep to MLflow.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI main entrypoint."""
     parser = _build_parser()
@@ -218,6 +383,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     if args.benchmark_name == "refinement-ablation":
         return _run_ablation_subcommand(args)
+
+    if args.benchmark_name == "clustering-sweep":
+        return _run_clustering_sweep_subcommand(args)
 
     if args.benchmark_name != "banking77":
         parser.error(f"Unsupported benchmark: {args.benchmark_name}")

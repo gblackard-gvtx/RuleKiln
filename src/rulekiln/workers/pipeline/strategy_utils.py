@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Literal, cast
+from typing import cast
 
 from rulekiln.pipeline.baseline_strategies import (
     EMBEDDING_CENTROID_STRATEGY,
     EMBEDDING_KNN_STRATEGY_TO_K,
 )
 from rulekiln.pipeline.evaluator import get_primary_metric
+from rulekiln.pipeline.strategy_families import strategy_family
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.pipeline import EvalResult
 from rulekiln.schemas.task_case import RuleKilnCase, TaskMode
@@ -37,7 +38,13 @@ _KNOWN_TASK_MODES: frozenset[str] = frozenset(
 
 
 def _strategy_family(strategy: str) -> str:
-    return "distilled" if strategy in DISTILLED_STRATEGIES else "baseline"
+    """Classify a strategy into baseline / embedding_baseline / retrieval_baseline / distilled.
+
+    Delegates to rulekiln.pipeline.strategy_families so the pipeline layer and the
+    worker layer agree; embedding and retrieval baselines are deliberately NOT part
+    of the prompt-baseline family so they cannot be reported as prompt-level wins.
+    """
+    return strategy_family(strategy)
 
 
 def _best_strategy_for_family(
@@ -45,7 +52,7 @@ def _best_strategy_for_family(
     strategy_evals: dict[str, EvalResult],
     strategy_prompt_tokens: dict[str, int],
     primary_metric: str,
-    family: Literal["baseline", "distilled"],
+    family: str,
 ) -> str | None:
     candidates = [
         strategy_name

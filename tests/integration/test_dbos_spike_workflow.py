@@ -13,13 +13,13 @@ from rulekiln.config.settings import AppSettings, ProviderProfile
 from rulekiln.db.models import Base, DistillationJob, StageMarker
 from rulekiln.db.repositories.jobs import create_job, get_eval_runs_for_job, get_job
 from rulekiln.db.session import override_session_factory
-from rulekiln.pipeline.evaluator import CaseResultPersistFn
+from rulekiln.pipeline.evaluator import CancellationCheckFn, CaseResultPersistFn
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.schemas.job import DistillationRequest, ModelRoute
 from rulekiln.schemas.pipeline import CaseEvalResult, EvalResult
 from rulekiln.schemas.task_case import EvaluationSpec, RuleKilnCase, RuleKilnTask
 from rulekiln.workers import distillation_worker as distillation_worker_module
-from rulekiln.workers.dbos_workflow import run_dbos_stage_workflow
+from rulekiln.workers.dbos_workflow import _run_stage_sequence, run_dbos_stage_workflow
 from rulekiln.workers.distillation_worker import PipelineStage
 
 _IN_MEMORY_URL = "sqlite+aiosqlite://"
@@ -130,7 +130,6 @@ async def test_dbos_spike_workflow_completes_and_is_idempotent(
     assert PipelineStage.VALIDATING_PROJECT in marker_stages
     assert PipelineStage.COMPILING_PROMPTS in marker_stages
     assert PipelineStage.EVALUATING_BASELINE in marker_stages
-    assert PipelineStage.EVALUATING_DISTILLED in marker_stages
     assert PipelineStage.CHECKING_QUALITY_GATES in marker_stages
     assert PipelineStage.SELECTING_STRATEGY in marker_stages
     assert PipelineStage.ANALYZING_FAILURES in marker_stages
@@ -139,16 +138,19 @@ async def test_dbos_spike_workflow_completes_and_is_idempotent(
 
     assert (PipelineStage.COMPILING_PROMPTS, "dbscan") in marker_pairs
     assert (PipelineStage.COMPILING_PROMPTS, "hdbscan") in marker_pairs
-    assert (PipelineStage.EVALUATING_DISTILLED, "dbscan") in marker_pairs
-    assert (PipelineStage.EVALUATING_DISTILLED, "hdbscan") in marker_pairs
+
+    # Fake provider returns ExtractionOutput(rules=[]) and SynthesisOutput(rules=[]),
+    # so selected_rules is empty.  EVALUATING_DISTILLED must be skipped entirely.
+    assert (PipelineStage.EVALUATING_DISTILLED, "dbscan") not in marker_pairs
+    assert (PipelineStage.EVALUATING_DISTILLED, "hdbscan") not in marker_pairs
 
     strategy_counts = {
         strategy: len([run for run in eval_runs if run.strategy == strategy])
         for strategy in ("baseline", "dbscan", "hdbscan")
     }
     assert strategy_counts["baseline"] == 1
-    assert strategy_counts["dbscan"] == 1
-    assert strategy_counts["hdbscan"] == 1
+    assert strategy_counts["dbscan"] == 0  # skipped: fake provider produces no synthesized rules
+    assert strategy_counts["hdbscan"] == 0  # skipped: fake provider produces no synthesized rules
 
 
 @pytest.mark.asyncio
@@ -161,8 +163,10 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
     monkeypatch.setattr("rulekiln.workers.dbos_workflow.DBOS", None)
     monkeypatch.setattr("rulekiln.workers.dbos_workflow.SetWorkflowID", None)
 
+    # Fail on baseline eval (not dbscan) because the fake provider returns no synthesized
+    # rules so the no-rules guard skips dbscan/hdbscan entirely — there is nothing to fail.
     original_evaluate_prompt = distillation_worker_module.evaluate_prompt
-    failed_once = {"dbscan": False}
+    failed_once = {"baseline": False}
 
     async def _evaluate_prompt_fail_once(
         system_prompt: str,
@@ -175,13 +179,15 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
         completed_case_results: Mapping[str, CaseEvalResult] | None = None,
         on_case_result: CaseResultPersistFn | None = None,
         *,
+        user_message_prefix: str | None = None,
         bootstrap_enabled: bool = True,
         bootstrap_iterations: int = 1000,
         bootstrap_seed: int = 1729,
+        check_cancelled: CancellationCheckFn | None = None,
     ) -> EvalResult:
-        if strategy == "dbscan" and not failed_once["dbscan"]:
-            failed_once["dbscan"] = True
-            raise RuntimeError("forced dbscan eval failure")
+        if strategy == "baseline" and not failed_once["baseline"]:
+            failed_once["baseline"] = True
+            raise RuntimeError("forced baseline eval failure")
         return await original_evaluate_prompt(
             system_prompt=system_prompt,
             cases=cases,
@@ -192,9 +198,11 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
             split=split,
             completed_case_results=completed_case_results,
             on_case_result=on_case_result,
+            user_message_prefix=user_message_prefix,
             bootstrap_enabled=bootstrap_enabled,
             bootstrap_iterations=bootstrap_iterations,
             bootstrap_seed=bootstrap_seed,
+            check_cancelled=check_cancelled,
         )
 
     monkeypatch.setattr(
@@ -202,7 +210,7 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
         _evaluate_prompt_fail_once,
     )
     monkeypatch.setattr(
-        "rulekiln.workers.pipeline.distilled_eval_service.evaluate_prompt",
+        "rulekiln.workers.pipeline.baseline_eval_service.evaluate_prompt",
         _evaluate_prompt_fail_once,
     )
 
@@ -221,7 +229,7 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
         )
         await create_job(session, job)
 
-    with pytest.raises(RuntimeError, match="forced dbscan eval failure"):
+    with pytest.raises(RuntimeError, match="forced baseline eval failure"):
         await run_dbos_stage_workflow(job_id, payload)
 
     await run_dbos_stage_workflow(job_id, payload)
@@ -257,8 +265,8 @@ async def test_dbos_stage_workflow_resumes_without_rerunning_compile_or_baseline
         for strategy in ("baseline", "dbscan", "hdbscan")
     }
     assert strategy_counts["baseline"] == 1
-    assert strategy_counts["dbscan"] == 1
-    assert strategy_counts["hdbscan"] == 1
+    assert strategy_counts["dbscan"] == 0  # skipped: fake provider produces no synthesized rules
+    assert strategy_counts["hdbscan"] == 0  # skipped: fake provider produces no synthesized rules
 
 
 class _FakeHandle:
@@ -323,6 +331,73 @@ class _FakeDBOSNoStatus:
     async def resume_workflow_async(self, workflow_id: str) -> _FakeHandle:
         self.resume_calls.append(workflow_id)
         return _FakeHandle()
+
+
+@pytest.mark.asyncio
+async def test_dbos_stage_sequence_uses_sleep_async(
+    monkeypatch,
+    fake_settings,
+) -> None:
+    class _FakeDBOSWithSleep:
+        def __init__(self) -> None:
+            self.sleep_calls: list[float] = []
+
+        async def sleep_async(self, seconds: float) -> None:
+            self.sleep_calls.append(seconds)
+
+    fake_dbos = _FakeDBOSWithSleep()
+    monkeypatch.setattr("rulekiln.workers.dbos_workflow.DBOS", fake_dbos)
+    monkeypatch.setattr("rulekiln.workers.dbos_workflow.get_settings", lambda: fake_settings)
+
+    async def _noop(*args: object) -> None:
+        _ = args
+        return None
+
+    async def _poll(*args: object) -> bool:
+        _ = args
+        return True
+
+    monkeypatch.setattr(
+        "rulekiln.workers.dbos_workflow._extraction_batch_enabled",
+        lambda payload_json: True,
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.dbos_workflow._submit_extraction_batch_step",
+        _noop,
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.dbos_workflow._poll_extraction_batch_step",
+        _poll,
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.dbos_workflow._collect_extraction_batch_step",
+        _noop,
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.dbos_workflow._validate_project_step",
+        _noop,
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.dbos_workflow._evaluate_baseline_step",
+        _noop,
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.dbos_workflow._evaluate_dbscan_step",
+        _noop,
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.dbos_workflow._evaluate_hdbscan_step",
+        _noop,
+    )
+    monkeypatch.setattr(
+        "rulekiln.workers.dbos_workflow._aggregate_evaluation_report_step",
+        _noop,
+    )
+
+    payload = _build_payload()
+    await _run_stage_sequence("job-sleep", payload.model_dump(mode="json"))
+
+    assert fake_dbos.sleep_calls == [fake_settings.batch_poll_interval_seconds]
 
 
 @pytest.mark.asyncio

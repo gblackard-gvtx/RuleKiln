@@ -7,12 +7,16 @@ ArtifactExportService       – write all job artifacts to disk, finalize manife
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from hashlib import sha256
+from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from rulekiln.artifacts.manifest import build_manifest_entries
 from rulekiln.artifacts.settings_snapshot import write_settings_snapshot
 from rulekiln.artifacts.writer import (
+    write_artifact_hashes,
     write_baseline_prompt,
     write_baseline_scaffold_prompt,
     write_cases_normalized,
@@ -22,12 +26,15 @@ from rulekiln.artifacts.writer import (
     write_mlflow_run_id,
     write_paired_comparison_artifacts,
     write_per_label_metrics_csv,
+    write_promotion_status,
     write_prompt,
+    write_provenance_validation,
     write_rule_ablation_json,
     write_rule_provenance_json,
     write_rule_provenance_markdown,
     write_selected_prompt,
     write_strategy_comparison,
+    write_strategy_debug_artifacts,
     write_strategy_eval,
     write_strategy_prompt,
     write_task,
@@ -63,6 +70,13 @@ from rulekiln.integrations.mlflow_tracker import (
     log_token_cost_metrics,
 )
 from rulekiln.observability.logging import get_logger
+from rulekiln.pipeline.approved_configs import load_approved_config
+from rulekiln.pipeline.artifact_hashing import (
+    build_artifact_hashes,
+    build_job_hashes,
+    build_strategy_provenance_row,
+    clustering_config_hash,
+)
 from rulekiln.pipeline.baseline_strategies import (
     BASELINE_FEW_SHOT_STRATEGY_TO_K,
     BASELINE_SCAFFOLD_STRATEGY,
@@ -71,7 +85,12 @@ from rulekiln.pipeline.baseline_strategies import (
 )
 from rulekiln.pipeline.classroom_evaluator import evaluate_classroom as _evaluate_classroom
 from rulekiln.pipeline.failure_analysis import analyze_failures
+from rulekiln.pipeline.promotion import evaluate_promotion
 from rulekiln.pipeline.prompt_compiler import compile_prompt
+from rulekiln.pipeline.provenance_validation import (
+    load_clustering_provenance,
+    validate_provenance,
+)
 from rulekiln.pipeline.rule_provenance import (
     build_cluster_id_by_micro_rule,
     build_provenance_records,
@@ -84,6 +103,7 @@ from rulekiln.schemas.pipeline import (
     RuleAblationArtifact,
     StrategyComparison,
 )
+from rulekiln.schemas.promotion import PromotionPolicy
 from rulekiln.workers.pipeline.artifacts_state import PipelineArtifactsState
 from rulekiln.workers.pipeline.classification_metrics import (
     _resolve_training_cases,
@@ -469,6 +489,39 @@ class ArtifactExportService:
             if selected_prompt_text:
                 written_artifacts.append(write_selected_prompt(artifact_root, selected_prompt_text))
 
+        # Per-strategy debug artifacts: raw/parsed/malformed outputs, regressions vs
+        # baseline, and prompt previews, for easy inspection without querying the DB.
+        debug_cases_by_id = {c.id: c for c in ctx.cases}
+        debug_baseline_eval = state.baseline_scaffold_eval or state.baseline_eval
+        for strategy_name, strategy_eval in comparison.strategy_evals.items():
+            debug_prompt_text = compiled_prompts.get(strategy_name, "")
+            debug_prompt_hash = (
+                sha256(debug_prompt_text.encode("utf-8")).hexdigest() if debug_prompt_text else ""
+            )
+            written_artifacts.extend(
+                write_strategy_debug_artifacts(
+                    artifact_root,
+                    strategy_name,
+                    strategy_eval,
+                    debug_cases_by_id,
+                    debug_prompt_text,
+                    debug_prompt_hash,
+                    baseline_eval=(
+                        debug_baseline_eval if strategy_name != BASELINE_SCAFFOLD_STRATEGY else None
+                    ),
+                )
+            )
+
+        # ── Provenance hashes, validation, and promotion status (E/F/G) ──
+        # Enriches `comparison` in place, re-writes strategy_comparison.json, and writes
+        # metadata/{hashes,provenance_validation,promotion_status}.json. Best-effort: a
+        # failure here never fails the job (these are reproducibility side artifacts).
+        written_artifacts.extend(
+            self._write_provenance_and_promotion(
+                ctx, artifact_root, comparison, selected_strategy, compiled_prompts
+            )
+        )
+
         records = ctx.collector.records
         if records:
             await bulk_insert_model_call_events(self._session, ctx.job_id, records)
@@ -481,12 +534,22 @@ class ArtifactExportService:
         if mlflow_run_id_path.exists():
             written_artifacts.append(mlflow_run_id_path)
 
+        # Include clustering artifacts written earlier in the clustering stage (they are
+        # not in `written_artifacts`, which is scoped to the export stage).
+        clustering_root = artifact_root / "outputs" / "clustering"
+        if clustering_root.is_dir():
+            written_artifacts.extend(p for p in sorted(clustering_root.rglob("*")) if p.is_file())
+
         manifest_entries = _build_manifest_entries(artifact_root, written_artifacts)
-        manifest_path = write_manifest(artifact_root, manifest_entries)
+        # Rich entries never include manifest.json itself: a manifest cannot carry a
+        # correct hash of its own final bytes, so it is listed in `artifacts` (for legacy
+        # readers) but excluded from `entries` (which verify_manifest checks by hash).
+        detailed_entries = build_manifest_entries(artifact_root, written_artifacts)
+        manifest_path = write_manifest(artifact_root, manifest_entries, detailed_entries)
         manifest_entries_with_manifest = sorted(
             {*manifest_entries, str(manifest_path.relative_to(artifact_root))}
         )
-        write_manifest(artifact_root, manifest_entries_with_manifest)
+        write_manifest(artifact_root, manifest_entries_with_manifest, detailed_entries)
 
         try:
             if mlflow_run_id_path.exists():
@@ -505,3 +568,142 @@ class ArtifactExportService:
             logger.warning("mlflow_cost_logging_failed", error=str(exc), job_id=ctx.job_id)
 
         await mark_stage_complete(self._session, ctx.job_id, PipelineStage.EXPORTING_ARTIFACTS)
+
+    def _write_provenance_and_promotion(
+        self,
+        ctx: PipelineContext,
+        artifact_root: Path,
+        comparison: StrategyComparison,
+        selected_strategy: str,
+        compiled_prompts: dict[str, str],
+    ) -> list[Path]:
+        """Compute + persist reproducibility hashes, provenance validation, promotion.
+
+        Enriches ``comparison`` in place and re-writes strategy_comparison.json so the UI
+        can read provenance rows and promotion status from a single artifact. Never raises:
+        provenance/promotion are side artifacts and must not fail an otherwise-good job.
+        """
+        try:
+            # Job-level hashes (safe subsets only — no secrets).
+            ordered_case_ids = [case.id for case in ctx.eval_cases]
+            provider_config = {
+                role: route.model_dump(mode="json")
+                for role, route in sorted(ctx.task.provider_model_defaults.items())
+            }
+            parser_config = {
+                "task_mode": ctx.task.task_mode,
+                "output_schema": ctx.task.output_schema,
+                "allowed_evaluation_methods": sorted(ctx.task.allowed_evaluation_methods),
+            }
+            job_hashes = build_job_hashes(
+                task=ctx.task,
+                ordered_case_ids=ordered_case_ids,
+                split=ctx.eval_split,
+                provider_config=provider_config,
+                parser_config=parser_config,
+                quality_gate_config=ctx.task.quality_gates,
+            )
+
+            # Load clustering provenance captured at clustering time (not reconstructed).
+            provenance_by_strategy = {
+                strategy: prov
+                for strategy in DISTILLED_STRATEGIES
+                if (prov := load_clustering_provenance(artifact_root, strategy)) is not None
+            }
+
+            # Per-strategy provenance rows for strategy_comparison.json.
+            strategy_rows = []
+            for strategy in sorted(comparison.strategy_evals):
+                prov = provenance_by_strategy.get(strategy)
+                ref = (
+                    f"outputs/clustering/{strategy}/clustering_provenance.json"
+                    if prov is not None
+                    else None
+                )
+                strategy_rows.append(
+                    build_strategy_provenance_row(
+                        strategy=strategy,
+                        compiled_prompt=compiled_prompts.get(strategy),
+                        eval_result=comparison.strategy_evals.get(strategy),
+                        clustering_provenance=prov,
+                        clustering_provenance_ref=ref,
+                    )
+                )
+
+            artifact_hashes = build_artifact_hashes(
+                job_hashes=job_hashes,
+                clustering_provenance_by_strategy=provenance_by_strategy,
+                strategy_rows=strategy_rows,
+                selected_strategy=selected_strategy,
+            )
+
+            # Provenance validation. Case-set check uses sorted id sets so evaluation
+            # order does not cause false positives; a strategy missing/adding cases still
+            # fails. The reference is the selected strategy's set.
+            prediction_case_ids = {
+                strategy: sorted(case.case_id for case in ev.case_results)
+                for strategy, ev in comparison.strategy_evals.items()
+            }
+            reference_case_ids = prediction_case_ids.get(selected_strategy, ordered_case_ids)
+            prompt_hash_by_strategy = {
+                row.strategy: row.compiled_prompt_hash for row in strategy_rows
+            }
+            validation = validate_provenance(
+                job_id=ctx.job_id,
+                artifact_root=artifact_root,
+                ordered_case_ids=reference_case_ids,
+                compiled_prompts=compiled_prompts,
+                prompt_hash_by_strategy=prompt_hash_by_strategy,
+                prediction_case_ids_by_strategy=prediction_case_ids,
+            )
+
+            # Promotion evaluation for the selected strategy.
+            selected_gate = comparison.strategy_gates.get(selected_strategy)
+            selected_eval = comparison.strategy_evals.get(selected_strategy)
+            paired = comparison.paired_comparison
+            selected_prov = provenance_by_strategy.get(selected_strategy)
+            approved = load_approved_config(selected_strategy)
+            promotion = evaluate_promotion(
+                policy=PromotionPolicy(),
+                selected_strategy=selected_strategy,
+                selected_gate=selected_gate,
+                selected_eval=selected_eval,
+                metric_delta=selected_gate.metric_delta if selected_gate else None,
+                paired_fixed=(
+                    selected_gate.paired_fixed
+                    if selected_gate and selected_gate.paired_fixed is not None
+                    else (paired.fixed_count if paired else None)
+                ),
+                paired_broken=(
+                    selected_gate.paired_broken
+                    if selected_gate and selected_gate.paired_broken is not None
+                    else (paired.broken_count if paired else None)
+                ),
+                malformed_rate=selected_eval.malformed_output_rate if selected_eval else None,
+                runtime_config_hash=(
+                    clustering_config_hash(selected_prov) if selected_prov else None
+                ),
+                approved_config_hash=approved.config_hash if approved else None,
+                provenance_report=validation,
+                reproducibility_status="unverified",
+                confidence_status="not_computed",
+                repeat_run_count=1,
+                evaluated_at=datetime.now(UTC).isoformat(),
+            )
+
+            comparison.strategy_provenance = strategy_rows
+            comparison.artifact_hashes = artifact_hashes
+            comparison.provenance_validation = validation
+            comparison.promotion_status = promotion
+
+            return [
+                write_strategy_comparison(artifact_root, comparison),
+                write_artifact_hashes(artifact_root, artifact_hashes),
+                write_provenance_validation(artifact_root, validation),
+                write_promotion_status(artifact_root, promotion),
+            ]
+        except Exception as exc:  # noqa: BLE001 - provenance/promotion are side artifacts
+            logger.warning(
+                "provenance_promotion_capture_failed", job_id=ctx.job_id, error=str(exc)
+            )
+            return []

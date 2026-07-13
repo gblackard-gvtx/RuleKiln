@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from typing import cast
+from collections import Counter
+from datetime import UTC, datetime
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -21,6 +23,11 @@ from rulekiln.agents.rule_extraction import (
     extract_rules_for_case,
 )
 from rulekiln.agents.rule_synthesis import synthesize_cluster
+from rulekiln.artifacts.writer import (
+    write_cluster_assignments,
+    write_cluster_summary,
+    write_clustering_provenance,
+)
 from rulekiln.db.models import BatchJob as BatchJobModel
 from rulekiln.db.models import MicroRule
 from rulekiln.db.repositories.jobs import (
@@ -35,6 +42,10 @@ from rulekiln.db.repositories.jobs import (
 )
 from rulekiln.observability.logging import get_logger
 from rulekiln.pipeline.clustering import cluster_dbscan, cluster_hdbscan
+from rulekiln.pipeline.clustering_provenance import (
+    build_embedding_provenance,
+    capture_clustering_provenance,
+)
 from rulekiln.providers.contracts import BatchChatModelClient
 from rulekiln.providers.tracking import (
     ModelCallContext,
@@ -43,6 +54,8 @@ from rulekiln.providers.tracking import (
 )
 from rulekiln.schemas.classroom import PhaseTeacherConfig
 from rulekiln.schemas.pipeline import ExtractionOutput, MicroRuleSchema, RuleClusterSchema
+from rulekiln.schemas.provenance import ClusteringAlgorithm, EmbeddingProvenance
+from rulekiln.schemas.task_case import RuleKilnCase
 from rulekiln.workers.pipeline.context import PipelineContext
 from rulekiln.workers.pipeline.db_mappers import (
     _db_case_id,
@@ -52,6 +65,7 @@ from rulekiln.workers.pipeline.db_mappers import (
     _to_db_cluster,
 )
 from rulekiln.workers.pipeline.paths import (
+    _artifact_root,
     _extracting_case_marker,
     _synthesis_cluster_marker,
 )
@@ -63,6 +77,53 @@ from rulekiln.workers.pipeline.strategy_utils import DISTILLED_STRATEGIES
 logger = get_logger(__name__)
 
 
+class ExtractionYieldedNoRulesError(RuntimeError):
+    """Raised when rule extraction produced zero rules.
+
+    A batch that inserts no rules leaves clustering, synthesis, and every
+    distilled strategy with nothing to work on, so the job must fail loudly
+    instead of silently completing with only baseline results. The message
+    embeds the dominant provider error so the worker's error classifier can
+    decide retryability (e.g. rate limits/timeouts are retryable).
+    """
+
+
+def _dominant_failure_reason(messages: list[str]) -> str:
+    """Return the most common failure message, preserving its full text.
+
+    Retryability classification downstream keys off substrings such as
+    ``timeout`` or ``rate limit``, so the whole message is kept rather than a
+    truncated summary.
+    """
+    if not messages:
+        return "no error detail reported by provider"
+    reason, _count = Counter(messages).most_common(1)[0]
+    return reason
+
+
+def _case_expected_label(case: RuleKilnCase | None) -> str | None:
+    """Best-effort expected classification label for a case (for cluster provenance)."""
+    if case is None or case.expected is None:
+        return None
+    raw = case.expected.get("label") if isinstance(case.expected, dict) else case.expected
+    if raw is None:
+        return None
+    return raw if isinstance(raw, str) else str(raw)
+
+
+def _case_hypothesis_id(case: RuleKilnCase | None) -> str | None:
+    """Best-effort hypothesis identifier from case metadata/input; never fabricated."""
+    if case is None:
+        return None
+    sources: tuple[dict[str, Any], ...] = (case.metadata, case.input)
+    for source in sources:
+        for key in ("hypothesis_id", "hypothesis"):
+            value = source.get(key)
+            if isinstance(value, str) and value:
+                return value
+    return None
+
+
 class RuleEmbeddingResult(BaseModel):
     """Output of RuleEmbeddingStageService, consumed by ClusteringStageService."""
 
@@ -72,6 +133,7 @@ class RuleEmbeddingResult(BaseModel):
     rule_ids: list[str]
     rule_texts: list[str]
     embeddings: list[list[float]]
+    embedding_provenance: EmbeddingProvenance
 
 
 class ClusteringResult(BaseModel):
@@ -257,6 +319,7 @@ class ExtractionStageService:
 
         inserted_count = 0
         failed_count = 0
+        failure_messages: list[str] = []
         for item_result in batch_result.items:
             if (
                 item_result.status == "succeeded"
@@ -291,6 +354,8 @@ class ExtractionStageService:
                 )
             else:
                 failed_count += 1
+                if item_result.error_message:
+                    failure_messages.append(item_result.error_message)
                 logger.warning(
                     "extraction_batch_item_failed",
                     job_id=ctx.job_id,
@@ -299,6 +364,7 @@ class ExtractionStageService:
                     error=item_result.error_message,
                 )
 
+        # Persist the batch outcome before any hard-fail so counts survive.
         await update_batch_job(
             self._session,
             batch_job_rec.id,
@@ -306,10 +372,40 @@ class ExtractionStageService:
             succeeded_count=batch_result.succeeded_count,
             errored_count=batch_result.errored_count,
         )
+
+        if inserted_count == 0 and failed_count > 0:
+            # Zero rules *because items failed* starves clustering/synthesis/
+            # distillation: fail loudly rather than silently "completing" with
+            # baseline-only results. Raise before marking the stage complete so a
+            # retry re-collects and can succeed if the provider recovers. (Zero
+            # rules with no failures — every item succeeded but produced none — is
+            # a legitimate empty extraction and is allowed to fall through.)
+            dominant_error = _dominant_failure_reason(failure_messages)
+            logger.error(
+                "extraction_batch_all_items_failed",
+                job_id=ctx.job_id,
+                failed_items=failed_count,
+                total_items=len(batch_result.items),
+                dominant_error=dominant_error,
+            )
+            raise ExtractionYieldedNoRulesError(
+                f"Extraction produced 0 rules: {failed_count}/{len(batch_result.items)} "
+                f"batch items failed. Most common provider error: {dominant_error}"
+            )
+
         await mark_stage_complete(self._session, ctx.job_id, PipelineStage.EXTRACTING_RULES)
         await mark_stage_complete(
             self._session, ctx.job_id, PipelineStage.EXTRACTING_RULES_BATCH_COLLECTED
         )
+        if inserted_count == 0:
+            # Legitimate empty extraction (no item failures): downstream distilled
+            # strategies are skipped and the job completes baseline-only.
+            logger.warning(
+                "extraction_batch_collected_zero_rules",
+                job_id=ctx.job_id,
+                failed_items=failed_count,
+                total_items=len(batch_result.items),
+            )
         logger.info(
             "extraction_batch_collected",
             job_id=ctx.job_id,
@@ -395,6 +491,12 @@ class ExtractionStageService:
             )
             extracted_case_ids.add(case.id)
 
+        # Note: no zero-rules hard-fail here. In the sequential path a provider
+        # error raises out of extract_rules_for_case and fails the job on its
+        # own; reaching this point with zero rules means extraction succeeded
+        # but legitimately produced none, which is allowed to complete
+        # baseline-only. The hard-fail lives in the batch path, where item
+        # failures are collected rather than raised.
         await mark_stage_complete(self._session, ctx.job_id, PipelineStage.EXTRACTING_RULES)
         logger.info(
             "rules_extracted",
@@ -445,11 +547,19 @@ class RuleEmbeddingStageService:
             await guard.start(PipelineStage.EMBEDDING_RULES)
             await guard.complete(PipelineStage.EMBEDDING_RULES)
 
+        embedding_provenance = build_embedding_provenance(
+            provider_profile=ctx.payload.embedding.provider_profile,
+            provider=bundle.embedding_config.provider,
+            model=bundle.embedding_config.model,
+            embeddings=embeddings,
+        )
+
         return RuleEmbeddingResult(
             db_micro_rules=db_micro_rules,
             rule_ids=rule_ids,
             rule_texts=rule_texts,
             embeddings=embeddings,
+            embedding_provenance=embedding_provenance,
         )
 
 
@@ -470,8 +580,71 @@ class ClusteringStageService:
         rule_ids = embedding_result.rule_ids
         embeddings = embedding_result.embeddings
 
-        dbscan_clusters = cluster_dbscan(rule_ids, embeddings) if rule_ids else []
-        hdbscan_clusters = cluster_hdbscan(rule_ids, embeddings) if rule_ids else []
+        params = ctx.task.clustering
+        dbscan_started = datetime.now(UTC)
+        dbscan_clusters = (
+            cluster_dbscan(
+                rule_ids,
+                embeddings,
+                eps=params.dbscan.eps,
+                min_samples=params.dbscan.min_samples,
+            )
+            if rule_ids
+            else []
+        )
+        dbscan_completed = datetime.now(UTC)
+        hdbscan_started = datetime.now(UTC)
+        hdbscan_clusters = (
+            cluster_hdbscan(
+                rule_ids,
+                embeddings,
+                min_cluster_size=params.hdbscan.min_cluster_size,
+                min_samples=params.hdbscan.min_samples,
+                cluster_selection_method=params.hdbscan.cluster_selection_method,
+                cluster_selection_epsilon=params.hdbscan.cluster_selection_epsilon,
+            )
+            if rule_ids
+            else []
+        )
+        hdbscan_completed = datetime.now(UTC)
+
+        algorithm_params = {
+            "dbscan": params.dbscan.model_dump(),
+            "hdbscan": params.hdbscan.model_dump(),
+        }
+        for algorithm, clusters in (("dbscan", dbscan_clusters), ("hdbscan", hdbscan_clusters)):
+            cluster_sizes = [len(c.rule_ids) for c in clusters]
+            clustered_count = sum(cluster_sizes)
+            noise_count = len(rule_ids) - clustered_count
+            logger.info(
+                "clustering_diagnostics",
+                job_id=ctx.job_id,
+                algorithm=algorithm,
+                clustering_params=algorithm_params[algorithm],
+                total_rules=len(rule_ids),
+                cluster_count=len(clusters),
+                clustered_rules=clustered_count,
+                noise_count=noise_count,
+                noise_percentage=round(noise_count / len(rule_ids) * 100, 2) if rule_ids else 0.0,
+                largest_cluster_size=max(cluster_sizes, default=0),
+                median_cluster_size=sorted(cluster_sizes)[len(cluster_sizes) // 2]
+                if cluster_sizes
+                else 0,
+            )
+
+        # ── Capture and persist clustering provenance (Workstream B/C) ──
+        # Captured from the true runtime values here (not reconstructed later from
+        # task.yaml). Persisted immediately because clustering runs in the compile
+        # phase, which may finish in a different process than artifact export.
+        if rule_ids:
+            self._persist_clustering_provenance(
+                ctx,
+                embedding_result,
+                runs=(
+                    ("dbscan", dbscan_clusters, dbscan_started, dbscan_completed),
+                    ("hdbscan", hdbscan_clusters, hdbscan_started, hdbscan_completed),
+                ),
+            )
 
         guard = StageGuard(self._session, ctx.job_id)
         if not await guard.is_complete(PipelineStage.CLUSTERING_RULES):
@@ -486,6 +659,58 @@ class ClusteringStageService:
             dbscan_clusters=dbscan_clusters,
             hdbscan_clusters=hdbscan_clusters,
         )
+
+    def _persist_clustering_provenance(
+        self,
+        ctx: PipelineContext,
+        embedding_result: RuleEmbeddingResult,
+        *,
+        runs: tuple[tuple[str, list[RuleClusterSchema], datetime, datetime], ...],
+    ) -> None:
+        """Capture and write clustering provenance/assignments/summary per algorithm.
+
+        A provenance write failure is logged but never fails the job: provenance is a
+        side artifact and the pipeline must still complete.
+        """
+        try:
+            label_by_rule: dict[str, str | None] = {}
+            source_case_by_rule: dict[str, str | None] = {}
+            hypothesis_by_rule: dict[str, str | None] = {}
+            for rule in embedding_result.db_micro_rules:
+                payload_case_id = _payload_case_id_from_db_case_id(ctx.job_id, rule.case_id)
+                source_case_by_rule[rule.id] = payload_case_id
+                case = ctx.case_by_id.get(payload_case_id)
+                label_by_rule[rule.id] = _case_expected_label(case)
+                hypothesis_by_rule[rule.id] = _case_hypothesis_id(case)
+
+            artifact_root = _artifact_root(ctx.settings.artifact_root, ctx.job_id)
+            for algorithm, clusters, started_at, completed_at in runs:
+                provenance, assignments, summary = capture_clustering_provenance(
+                    job_id=ctx.job_id,
+                    strategy=algorithm,
+                    algorithm=cast("ClusteringAlgorithm", algorithm),
+                    dbscan=ctx.task.clustering.dbscan,
+                    hdbscan=ctx.task.clustering.hdbscan,
+                    embedding=embedding_result.embedding_provenance,
+                    rule_ids=embedding_result.rule_ids,
+                    rule_texts=embedding_result.rule_texts,
+                    embeddings=embedding_result.embeddings,
+                    clusters=clusters,
+                    label_by_rule=label_by_rule,
+                    source_case_by_rule=source_case_by_rule,
+                    hypothesis_by_rule=hypothesis_by_rule,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                )
+                write_clustering_provenance(artifact_root, algorithm, provenance)
+                write_cluster_assignments(artifact_root, algorithm, assignments)
+                write_cluster_summary(artifact_root, algorithm, summary)
+        except Exception as exc:  # noqa: BLE001 - provenance is best-effort side output
+            logger.warning(
+                "clustering_provenance_capture_failed",
+                job_id=ctx.job_id,
+                error=str(exc),
+            )
 
 
 # ── SynthesisStageService ───────────────────────────────────────────────────

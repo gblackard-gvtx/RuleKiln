@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from rulekiln.pipeline.evaluator import get_primary_metric
-from rulekiln.schemas.pipeline import EvalResult, QualityGateResult, StrategyComparison
+from rulekiln.pipeline.strategy_families import strategy_family
+from rulekiln.schemas.pipeline import (
+    EvalResult,
+    QualityGateResult,
+    StrategyComparison,
+    StrategySelectionRow,
+)
 from rulekiln.schemas.task_case import TaskMode
 
 _PRIMARY_METRIC_EPSILON = 0.005
@@ -87,7 +93,22 @@ def select_strategy_generic(
         for strategy, result in candidate_evals.items()
         if strategy not in strategy_gates or strategy_gates[strategy].passed
     }
-    ranked_pool = passing_candidates if passing_candidates else candidate_evals
+    if not passing_candidates:
+        # Every candidate failed its quality gates. Ranking the failed pool would
+        # promote a strategy that is strictly worse than the baseline (that is how
+        # embedding_knn_k1 with macro_f1 0.61 beat baseline_scaffold at 0.71), so
+        # fall back to the baseline scaffold and report the gate failures instead.
+        failed_summary = "; ".join(
+            f"{strategy}: {', '.join(strategy_gates[strategy].violations)}"
+            for strategy in sorted(candidate_evals)
+            if strategy in strategy_gates and strategy_gates[strategy].violations
+        )
+        return (
+            baseline_strategy,
+            f"All {len(candidate_evals)} candidate strategies failed quality gates; "
+            f"selecting baseline scaffold. Gate failures — {failed_summary}",
+        )
+    ranked_pool = passing_candidates
 
     score_by_strategy = {
         strategy: _primary_score(result, task_mode) for strategy, result in ranked_pool.items()
@@ -164,6 +185,75 @@ def select_strategy(
     )
 
 
+def build_selection_table(
+    *,
+    task_mode: TaskMode,
+    strategy_evals: dict[str, EvalResult],
+    strategy_gates: dict[str, QualityGateResult],
+    selected_strategy: str,
+    selection_reason: str | None,
+    baseline_strategy: str,
+    unavailable_strategies: dict[str, str] | None = None,
+) -> list[StrategySelectionRow]:
+    """Build per-strategy selection rows so the report explains every outcome.
+
+    Eligibility: the baseline scaffold is always eligible (it is the fallback);
+    any other strategy is eligible only when it has no gate or its gate passed.
+    Ranking: eligible strategies are ranked by primary score (descending); the
+    ineligible and unavailable strategies carry no rank.
+    """
+    rows: list[StrategySelectionRow] = []
+
+    def _is_eligible(strategy: str) -> bool:
+        if strategy == baseline_strategy or strategy == "baseline":
+            return True
+        gate = strategy_gates.get(strategy)
+        return gate is None or gate.passed
+
+    eligible_scores = {
+        strategy: _primary_score(result, task_mode)
+        for strategy, result in strategy_evals.items()
+        if _is_eligible(strategy)
+    }
+    ranked = sorted(eligible_scores.items(), key=lambda item: (-item[1], item[0]))
+    rank_by_strategy = {strategy: rank for rank, (strategy, _) in enumerate(ranked, start=1)}
+
+    for strategy, result in sorted(strategy_evals.items()):
+        gate = strategy_gates.get(strategy)
+        eligible = _is_eligible(strategy)
+        selected = strategy == selected_strategy
+        rows.append(
+            StrategySelectionRow(
+                strategy=strategy,
+                family=strategy_family(strategy),
+                eligible=eligible,
+                gate_failures=list(gate.violations) if gate is not None else [],
+                selection_score=_primary_score(result, task_mode),
+                selection_rank=rank_by_strategy.get(strategy),
+                selected=selected,
+                reason=selection_reason if selected else None,
+            )
+        )
+
+    for strategy, reason in sorted((unavailable_strategies or {}).items()):
+        if strategy in strategy_evals:
+            continue
+        rows.append(
+            StrategySelectionRow(
+                strategy=strategy,
+                family=strategy_family(strategy),
+                eligible=False,
+                gate_failures=[reason],
+                selection_score=None,
+                selection_rank=None,
+                selected=False,
+                reason=None,
+            )
+        )
+
+    return rows
+
+
 def build_strategy_comparison(
     baseline_eval: EvalResult | None,
     dbscan_eval: EvalResult | None,
@@ -177,6 +267,7 @@ def build_strategy_comparison(
     strategy_gates: dict[str, QualityGateResult] | None = None,
     strategy_prompt_tokens: dict[str, int] | None = None,
     baseline_strategy: str = "baseline",
+    unavailable_strategies: dict[str, str] | None = None,
 ) -> StrategyComparison:
     all_evals: dict[str, EvalResult] = dict(strategy_evals or {})
     if baseline_eval is not None:
@@ -206,6 +297,15 @@ def build_strategy_comparison(
         strategy_prompt_tokens=all_prompt_tokens,
         baseline_strategy=baseline_strategy,
     )
+    selection_table = build_selection_table(
+        task_mode=task_mode,
+        strategy_evals=all_evals,
+        strategy_gates=all_gates,
+        selected_strategy=selected,
+        selection_reason=reason,
+        baseline_strategy=baseline_strategy,
+        unavailable_strategies=unavailable_strategies,
+    )
     return StrategyComparison(
         baseline_eval=baseline_eval,
         dbscan_eval=dbscan_eval,
@@ -215,6 +315,7 @@ def build_strategy_comparison(
         strategy_evals=all_evals,
         strategy_gates=all_gates,
         strategy_prompt_tokens=all_prompt_tokens,
+        selection_table=selection_table,
         selected_strategy=selected,
         selection_reason=reason,
     )

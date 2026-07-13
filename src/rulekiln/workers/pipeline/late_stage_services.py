@@ -86,6 +86,7 @@ class FailureAnalysisService:
         await update_job_status(
             self._session, ctx.job_id, status="running", stage=PipelineStage.ANALYZING_FAILURES
         )
+        logger.info("stage_started", job_id=ctx.job_id, stage=PipelineStage.ANALYZING_FAILURES)
         failure_analysis_result: FailureAnalysisResult | None = None
         selected_eval = state.eval_map.get(selected_strategy)
         if selected_eval and selected_strategy in DISTILLED_STRATEGIES:
@@ -100,6 +101,16 @@ class FailureAnalysisService:
                 list(ctx.case_by_id.values()),
             )
         await mark_stage_complete(self._session, ctx.job_id, PipelineStage.ANALYZING_FAILURES)
+        logger.info(
+            "failure_analysis_done",
+            job_id=ctx.job_id,
+            ran=failure_analysis_result is not None,
+            fixed=len(failure_analysis_result.fixed) if failure_analysis_result else 0,
+            broken=len(failure_analysis_result.broken) if failure_analysis_result else 0,
+            unchanged_failing=(
+                len(failure_analysis_result.unchanged_failing) if failure_analysis_result else 0
+            ),
+        )
         return failure_analysis_result
 
 
@@ -146,13 +157,30 @@ class RefinementLoopService:
                 eval_split=eval_split,
                 reason=_refinement_blocked_reason,
             )
+        logger.info("stage_started", job_id=ctx.job_id, stage=PipelineStage.REFINING_RULES)
         _golden_cases_for_loop = [c for c in ctx.cases if c.split == "golden"]
-        if (
+        _should_run_loop = (
             ctx.task.enable_refinement_loop
             and failure_analysis_result is not None
             and selected_strategy in DISTILLED_STRATEGIES
             and _refinement_blocked_reason is None
-        ):
+        )
+        if not _should_run_loop and _refinement_blocked_reason is None:
+            skip_reason = (
+                "enable_refinement_loop=False"
+                if not ctx.task.enable_refinement_loop
+                else "no_failure_analysis"
+                if failure_analysis_result is None
+                else f"selected_strategy={selected_strategy!r}_not_distilled"
+            )
+            logger.info(
+                "refinement_loop_skipped",
+                job_id=ctx.job_id,
+                reason=skip_reason,
+                selected_strategy=selected_strategy,
+            )
+        if _should_run_loop:
+            assert failure_analysis_result is not None
             selected_eval_for_loop = state.eval_map.get(selected_strategy)
             if selected_eval_for_loop is not None:
                 _cr = ctx.settings.default_conflict_resolution
@@ -219,6 +247,7 @@ class RefinementLoopService:
                 if refined_eval is not None:
                     state.eval_map[selected_strategy] = refined_eval
         await mark_stage_complete(self._session, ctx.job_id, PipelineStage.REFINING_RULES)
+        logger.info("refinement_done", job_id=ctx.job_id, ran=_should_run_loop)
 
 
 class RuleAblationService:
@@ -236,6 +265,7 @@ class RuleAblationService:
     ) -> RuleAblationArtifact | None:
         if await is_stage_complete(self._session, ctx.job_id, PipelineStage.ABLATING_RULES):
             return None
+        logger.info("stage_started", job_id=ctx.job_id, stage=PipelineStage.ABLATING_RULES)
         ablation_artifact = await _run_rule_ablation(
             self._session,
             job_id=ctx.job_id,
@@ -254,6 +284,11 @@ class RuleAblationService:
             eval_map=state.eval_map,
         )
         await mark_stage_complete(self._session, ctx.job_id, PipelineStage.ABLATING_RULES)
+        logger.info(
+            "ablation_done",
+            job_id=ctx.job_id,
+            ran=ablation_artifact is not None,
+        )
         return ablation_artifact
 
 
@@ -273,6 +308,7 @@ class PruningOptimizationService:
     ) -> PruningModeComparison | None:
         if await is_stage_complete(self._session, ctx.job_id, PipelineStage.OPTIMIZING_PRUNING):
             return None
+        logger.info("stage_started", job_id=ctx.job_id, stage=PipelineStage.OPTIMIZING_PRUNING)
         pruning_mode_comparison = await _run_two_pass_optimizer(
             self._session,
             job_id=ctx.job_id,
@@ -292,4 +328,9 @@ class PruningOptimizationService:
             ablation_artifact=ablation_artifact,
         )
         await mark_stage_complete(self._session, ctx.job_id, PipelineStage.OPTIMIZING_PRUNING)
+        logger.info(
+            "pruning_optimization_done",
+            job_id=ctx.job_id,
+            ran=pruning_mode_comparison is not None,
+        )
         return pruning_mode_comparison

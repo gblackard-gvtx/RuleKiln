@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from rulekiln.pipeline.clustering import _cosine_distance_matrix, cluster_dbscan
+from rulekiln.pipeline.clustering import cluster_dbscan, cosine_distance_matrix
 
 
 def test_cosine_distance_matrix_is_non_negative_and_finite() -> None:
@@ -12,7 +12,7 @@ def test_cosine_distance_matrix_is_non_negative_and_finite() -> None:
         [0.5, -0.4, 0.0, 1.2],
     ]
 
-    dist = _cosine_distance_matrix(vectors)
+    dist = cosine_distance_matrix(vectors)
 
     assert np.isfinite(dist).all()
     assert (dist >= 0.0).all()

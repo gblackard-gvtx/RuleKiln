@@ -12,7 +12,8 @@ from rulekiln.db.repositories.eval_case_results import (
     get_eval_case_results,
     upsert_eval_case_result,
 )
-from rulekiln.db.repositories.jobs import is_stage_complete, mark_stage_complete
+from rulekiln.db.repositories.jobs import is_job_cancelled, is_stage_complete, mark_stage_complete
+from rulekiln.observability.logging import get_logger
 from rulekiln.pipeline.baseline_strategies import (
     BASELINE_FEW_SHOT_STRATEGY_TO_K,
     BASELINE_SCAFFOLD_STRATEGY,
@@ -25,10 +26,12 @@ from rulekiln.pipeline.baseline_strategies import (
     expected_label,
     predict_with_centroids,
     predict_with_knn,
+    render_few_shot_transition,
     select_deterministic_few_shot_examples,
     select_retrieval_examples,
 )
 from rulekiln.pipeline.evaluator import (
+    JobCancelledError,
     build_case_result_from_label_prediction,
     build_eval_result_from_case_results,
     evaluate_prompt,
@@ -56,6 +59,8 @@ from rulekiln.workers.pipeline.stage_guard import StageGuard
 
 BASELINE_STRATEGY = "baseline"
 
+_log = get_logger(__name__)
+
 
 async def _evaluate_strategy(
     session: AsyncSession,
@@ -67,6 +72,7 @@ async def _evaluate_strategy(
     system_prompt: str,
     ctx: PipelineContext,
     bundle: ProviderBundle,
+    user_message_prefix: str | None = None,
 ) -> EvalResult:
     existing_rows = await get_eval_case_results(
         session,
@@ -93,6 +99,9 @@ async def _evaluate_strategy(
         )
         await upsert_eval_case_result(session, payload_row)
 
+    async def _check_cancelled() -> bool:
+        return await is_job_cancelled(session, job_id)
+
     result = await evaluate_prompt(
         system_prompt,
         ctx.eval_cases,
@@ -103,8 +112,10 @@ async def _evaluate_strategy(
         split=split,
         completed_case_results=completed_case_results,
         on_case_result=_persist_case,
+        user_message_prefix=user_message_prefix,
         bootstrap_enabled=ctx.evaluation_bootstrap_enabled,
         bootstrap_iterations=ctx.evaluation_bootstrap_iterations,
+        check_cancelled=_check_cancelled,
         bootstrap_seed=_evaluation_bootstrap_seed(
             job_id=job_id,
             strategy=strategy,
@@ -114,6 +125,16 @@ async def _evaluate_strategy(
     )
     await _insert_eval_run_if_missing(
         session, job_id=job_id, split=split, strategy=strategy, result=result
+    )
+    _log.info(
+        "eval_complete",
+        job_id=job_id,
+        strategy=strategy,
+        split=split,
+        malformed_output_rate=result.malformed_output_rate,
+        accuracy=result.accuracy,
+        macro_f1=result.macro_f1,
+        weighted_case_score=result.weighted_case_score,
     )
     return result
 
@@ -237,6 +258,18 @@ class BaselineEvaluationService:
             strategy=BASELINE_SCAFFOLD_STRATEGY,
             result=baseline_scaffold_eval,
         )
+        # Persist per-case results under baseline_scaffold so the aggregate phase can
+        # load them for paired comparison. _evaluate_strategy stores under "baseline";
+        # _insert_eval_run_if_missing only writes the run header, not case rows.
+        await _persist_case_results(
+            self._session,
+            job_id=ctx.job_id,
+            student_id=eval_student_id,
+            strategy=BASELINE_SCAFFOLD_STRATEGY,
+            split=eval_split,
+            case_by_id=ctx.case_by_id,
+            case_results=baseline_eval.case_results,
+        )
 
         training_cases = _resolve_training_cases(ctx.extraction_cases, ctx.eval_cases)
 
@@ -274,11 +307,18 @@ class BaselineEvaluationService:
                 system_prompt=prompt_text,
                 ctx=ctx,
                 bundle=bundle,
+                user_message_prefix=render_few_shot_transition(len(used_examples)),
             )
             few_shot_eval.prompt_token_count = prompt_tokens
             baseline_variant_evals[strategy_name] = few_shot_eval
 
         labeled_train_cases = [c for c in training_cases if expected_label(c) is not None]
+        _log.info(
+            "embedding_baseline_setup",
+            job_id=ctx.job_id,
+            labeled_train_cases=len(labeled_train_cases),
+            eval_cases=len(ctx.eval_cases),
+        )
         if labeled_train_cases:
             train_texts = [case_text_for_embedding(c) for c in labeled_train_cases]
             train_labels = [
@@ -372,6 +412,15 @@ class BaselineEvaluationService:
                 "distance_metric": distance_metric,
                 "train_cases": len(labeled_train_cases),
             }
+            _log.info(
+                "eval_complete",
+                job_id=ctx.job_id,
+                strategy=EMBEDDING_CENTROID_STRATEGY,
+                split=eval_split,
+                accuracy=embedding_centroid_eval.accuracy,
+                macro_f1=embedding_centroid_eval.macro_f1,
+                weighted_case_score=embedding_centroid_eval.weighted_case_score,
+            )
 
             for strategy_name, k_value in EMBEDDING_KNN_STRATEGY_TO_K.items():
                 knn_predictions = predict_with_knn(
@@ -426,6 +475,15 @@ class BaselineEvaluationService:
                     "k": k_value,
                     "train_cases": len(labeled_train_cases),
                 }
+                _log.info(
+                    "eval_complete",
+                    job_id=ctx.job_id,
+                    strategy=strategy_name,
+                    split=eval_split,
+                    accuracy=knn_eval.accuracy,
+                    macro_f1=knn_eval.macro_f1,
+                    weighted_case_score=knn_eval.weighted_case_score,
+                )
 
             retrieval_case_rows = await get_eval_case_results(
                 self._session,
@@ -452,6 +510,11 @@ class BaselineEvaluationService:
             for case in ctx.eval_cases:
                 if case.id in retrieval_case_results:
                     continue
+
+                if await is_job_cancelled(self._session, ctx.job_id):
+                    raise JobCancelledError(
+                        f"Job cancelled during retrieval-few-shot evaluation (job_id={ctx.job_id})"
+                    )
 
                 try:
                     set_tracking_context(
@@ -636,6 +699,17 @@ class BaselineEvaluationService:
                 "retrieval_failures": retrieval_failure_count,
                 "model_failures": model_failure_count,
             }
+            _log.info(
+                "eval_complete",
+                job_id=ctx.job_id,
+                strategy=RETRIEVAL_FEW_SHOT_STRATEGY,
+                split=eval_split,
+                accuracy=retrieval_eval.accuracy,
+                macro_f1=retrieval_eval.macro_f1,
+                weighted_case_score=retrieval_eval.weighted_case_score,
+                retrieval_failures=retrieval_failure_count,
+                model_failures=model_failure_count,
+            )
         else:
             from rulekiln.observability.logging import get_logger  # noqa: PLC0415
 

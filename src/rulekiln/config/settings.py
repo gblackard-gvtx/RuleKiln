@@ -65,6 +65,10 @@ class QualityGateDefaults(BaseModel):
     max_malformed_output_rate: float = 0.01
     max_prompt_tokens: int = 8000
     require_human_approval: bool = True
+    # A candidate must fix at least as many cases as it breaks vs the baseline.
+    # Guards against promoting a strategy whose paired comparison is a net
+    # regression even when aggregate metrics look acceptable.
+    require_paired_net_improvement: bool = True
 
 
 class ConflictResolutionDefaults(BaseModel):

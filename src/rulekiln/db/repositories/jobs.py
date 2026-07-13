@@ -392,6 +392,19 @@ async def cancel_job(
     await session.commit()
 
 
+async def is_job_cancelled(session: AsyncSession, job_id: str) -> bool:
+    """Check whether a job has been externally marked cancelled/failed while running.
+
+    Used to let long-running per-case evaluation loops (a single DBOS step)
+    stop promptly instead of waiting for DBOS's step-boundary-only cancellation.
+    """
+    result = await session.execute(
+        select(DistillationJob.queue_status).where(DistillationJob.id == job_id)
+    )
+    queue_status = result.scalar_one_or_none()
+    return queue_status == "failed"
+
+
 async def fail_job(session: AsyncSession, job_id: str, error_message: str) -> None:
     """Mark a job as permanently failed in the queue."""
     await session.execute(

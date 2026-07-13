@@ -17,7 +17,7 @@ class PhaseTeacherConfig(BaseModel):
     model: str
     extra_params: dict[str, str | int | float | bool] = Field(default_factory=dict)
     batch_enabled: bool = False
-    batch_min_items: int = 10
+    batch_min_items: int = 5
 
 
 _TeacherPhase = Literal["instruction_extraction", "cluster_consolidation", "conflict_resolution"]
