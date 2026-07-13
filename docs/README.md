@@ -9,6 +9,20 @@ Use this index to find the right document quickly.
 - Closed-loop conflict resolution validation: [dev/loop_validation_report.md](dev/loop_validation_report.md)
 - Current documentation validation snapshot: [mvp_validation.md](mvp_validation.md)
 
+## Architecture
+
+- Clustering provenance (versioned params, hashes, `outputs/clustering/<algo>/`): [architecture/clustering_provenance.md](architecture/clustering_provenance.md)
+- Strategy promotion status and policy: [architecture/strategy_promotion.md](architecture/strategy_promotion.md)
+- Full file-by-file summary of the provenance/promotion change: [dev/clustering_provenance_promotion_changes.md](dev/clustering_provenance_promotion_changes.md)
+
+## Investigations
+
+- ContractNLI HDBSCAN malformed-output root cause (compound-label leakage): [investigations/contractnli_hdbscan_malformed_output.md](investigations/contractnli_hdbscan_malformed_output.md)
+- ContractNLI strategy-selection regression (selected strategy worse than baseline): [investigations/contractnli_strategy_selection_regression.md](investigations/contractnli_strategy_selection_regression.md)
+- ContractNLI HDBSCAN validation win, with provenance/promotion follow-up: [investigations/contractnli_hdbscan_validation_win.md](investigations/contractnli_hdbscan_validation_win.md)
+- Few-shot k=5 echo-failure investigation: [dev/few_shot_k5_investigation.md](dev/few_shot_k5_investigation.md)
+- Run 3 investigation: [dev/run3_investigation.md](dev/run3_investigation.md)
+
 ## Design Specs
 
 - Spec directory: [specs/](specs/)

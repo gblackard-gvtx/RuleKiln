@@ -228,7 +228,14 @@ class ExtractionStageService:
         fall back to sequential extraction; True in all other cases (already
         submitted or successfully submitted now).
         """
-        from rulekiln.db.repositories.jobs import is_stage_complete  # noqa: PLC0415
+        from rulekiln.db.repositories.jobs import (  # noqa: PLC0415
+            is_stage_complete,
+            update_job_status,
+        )
+
+        await update_job_status(
+            self._session, ctx.job_id, status="running", stage=PipelineStage.EXTRACTING_RULES
+        )
 
         if await is_stage_complete(
             self._session, ctx.job_id, PipelineStage.EXTRACTING_RULES_BATCH_SUBMITTED

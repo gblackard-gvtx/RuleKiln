@@ -47,6 +47,8 @@ The economic thesis is:
 
 For high-volume workflows, this can turn expensive runtime reasoning into a reusable, auditable prompt-building step.
 
+Teacher-side cost can be cut further: rule extraction can run through the OpenAI Batch API instead of synchronous calls, at [roughly half the per-token cost](https://platform.openai.com/docs/guides/batch) in exchange for asynchronous (up to 24h) turnaround — a good trade for the build-time distillation step, which isn't latency-sensitive. See [Batch processing](#batch-processing) below.
+
 ---
 
 ## Edge and On-Device Models
@@ -200,6 +202,7 @@ Copy `.env.example` to `.env` and adjust values. The key variables are:
 | `ENABLE_PGVECTOR` | Enable pgvector for embedding storage (default: `false`) |
 | `EXECUTION_BACKEND` | `dbos` (only supported value) — see [Execution backend](#execution-backend) |
 | `WORKER_POLL_INTERVAL_SECONDS` | How often the queue worker polls for new jobs (default: `2`) |
+| `BATCH_POLL_INTERVAL_SECONDS` | How often a submitted OpenAI Batch job is polled for completion (default: `60`) — see [Batch processing](#batch-processing) |
 | `WORKER_LEASE_SECONDS` | Job lease duration in seconds before a crashed worker's job is reclaimed (default: `1800`) |
 | `WORKER_RETRY_BACKOFF_SECONDS` | Backoff delay before retrying a retryable failed job (default: `30`) |
 | `WORKER_MAX_ATTEMPTS` | Maximum queue claim attempts before a retryable job is marked `failed_retryable` (default: `2`) |
@@ -297,6 +300,34 @@ PROVIDER_PROFILES__AZURE_DEFAULT__SUPPORTS_CHAT=true
 
 Stub providers raise `ProviderNotImplementedError` immediately — they never silently fall back to another provider.
 
+### Batch processing
+
+Rule extraction (the `instruction_extraction` phase) can run through the OpenAI Batch API instead of one synchronous call per case — typically ~50% cheaper per token, at the cost of asynchronous, delayed completion. It's opt-in at two levels, both of which must be enabled:
+
+```env
+# 1. Provider profile must opt in
+PROVIDER_PROFILES__OPENAI_DEFAULT__BATCH_ENABLED=true
+```
+
+```json
+// 2. Per job, via the optional `teacher_config` envelope (in addition to the flat `teacher` route)
+{
+  "teacher_config": {
+    "default": {"provider": "openai_default", "model": "gpt-4o"},
+    "instruction_extraction": {
+      "provider": "openai_default",
+      "model": "gpt-4o",
+      "batch_enabled": true,
+      "batch_min_items": 5
+    }
+  }
+}
+```
+
+When both are enabled and at least `batch_min_items` cases are pending extraction (default `5` — lowered from `10` so batch mode triggers more readily), the pipeline submits one OpenAI batch job for all pending cases, halts at the `extracting_rules_batch_submitted` stage, and resumes at `extracting_rules_batch_collected` once the batch completes; `BATCH_POLL_INTERVAL_SECONDS` (default `60`) controls how often it's polled. Below the threshold, extraction falls back to sequential per-case calls.
+
+Batch output is validated with a strict JSON schema (`additionalProperties: false` on every object node) so the API enforces output shape, and provider batch-item errors (malformed rows, non-200s without a body, truncated responses) are normalized into one consistent error message. If batch extraction yields zero rules because items *failed* — rather than a legitimate empty extraction — the stage hard-fails with the dominant error reason instead of silently proceeding with no rules.
+
 ### Default quality gates
 
 Override any gate threshold via environment:
@@ -308,7 +339,10 @@ DEFAULT_QUALITY_GATE__MAX_GOLDEN_FAILURES=0
 DEFAULT_QUALITY_GATE__MAX_MALFORMED_OUTPUT_RATE=0.01
 DEFAULT_QUALITY_GATE__MAX_PROMPT_TOKENS=8000
 DEFAULT_QUALITY_GATE__REQUIRE_HUMAN_APPROVAL=true
+DEFAULT_QUALITY_GATE__REQUIRE_PAIRED_NET_IMPROVEMENT=true
 ```
+
+`require_paired_net_improvement` fails a strategy whose paired case-level comparison against baseline is a net regression (more cases broken than fixed), even if its aggregate metrics look acceptable — this closes a bug where a strategy could be selected despite regressing against baseline when no candidate passed its quality gate.
 
 Per-task overrides in `task.quality_gates` take precedence. Per-task rule budget settings (`max_rules`, `max_prompt_tokens`, `min_rule_support_count`, `preserve_golden_rules`) are set inside the `task` object of the distillation request and override the corresponding `DEFAULT_*` environment values.
 
@@ -463,6 +497,23 @@ For implementation and operator details, see [docs/dev/phase2.md](docs/dev/phase
 
 ---
 
+## Clustering tuning & provenance
+
+DBSCAN/HDBSCAN parameters are now schema-driven (`task.clustering` in `task.yaml`, e.g. `min_cluster_size`, `min_samples`, `method`, `epsilon`) instead of hardcoded, and every clustered evaluation persists full provenance so results are reproducible and auditable — see [Artifact layout](#artifact-layout) above.
+
+To empirically tune clustering parameters against a completed job's micro-rules, offline and without further LLM calls:
+
+```bash
+uv run python -m rulekiln.benchmarks.cli clustering-sweep \
+  --job-id <job-id> \
+  --provider-profile <embedding-provider-profile> \
+  --embedding-model <embedding-model>
+```
+
+This re-embeds persisted micro-rules under one or more text variants and sweeps DBSCAN/HDBSCAN parameter grids, reporting k-distance percentiles, eps candidates, cluster-label/hypothesis entropy, and duplicate-rule rate in `clustering_sweep.json` (default path `.rulekiln/clustering_sweeps/<job-id>/clustering_sweep.json`; pass `--mlflow` to also log the sweep to MLflow). See [docs/architecture/clustering_provenance.md](docs/architecture/clustering_provenance.md).
+
+---
+
 ## Artifact layout
 
 Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
@@ -496,15 +547,37 @@ Each completed job writes its outputs under `.rulekiln/runs/{job_id}/`:
     failures_fixed.jsonl
     failures_broken.jsonl
     failures_unchanged.jsonl
+    clustering/
+      dbscan/
+      hdbscan/
+    debug/
+      <strategy>_raw_outputs.jsonl
+      <strategy>_parsed_outputs.jsonl
+      <strategy>_malformed_outputs.jsonl
+      <strategy>_baseline_passed_candidate_failed.jsonl
+      <strategy>_prompt_preview.txt
+      <strategy>_confusion_matrix.json
+      <strategy>_classification_report.json
   exports/
     promptfoo.yaml
     mlflow_run_id.txt
   metadata/
     settings_snapshot.json
     manifest.json
+    hashes.json
+    provenance_validation.json
+    promotion_status.json
 ```
 
-`strategy_comparison.json` is the source of truth for the evaluated strategy set (`strategy_evals`, `strategy_gates`, `strategy_prompt_tokens`, `strategy_metadata`) and selected winner.
+`strategy_comparison.json` is the source of truth for the evaluated strategy set (`strategy_evals`, `strategy_gates`, `strategy_prompt_tokens`, `strategy_metadata`) and selected winner. It also carries per-strategy `strategy_provenance`, `artifact_hashes`, `provenance_validation`, and `promotion_status` — all additive/defaulted, so older `strategy_comparison.json` files still parse; historical runs render as `provenance_status: incomplete` / `reproducibility_status: unverified` rather than being backfilled.
+
+- `outputs/clustering/<algo>/` — versioned clustering provenance captured at cluster time: requested vs. effective parameters, embedding model/dimension/normalization/metric, text variant, deterministic cluster assignments, and an `embedding_matrix_hash` (raw embedding vectors are never written to JSON).
+- `outputs/debug/` — per-strategy debug artifacts (raw/parsed/malformed outputs, baseline-passed/candidate-failed regressions, a truncated+hashed prompt preview, confusion matrix, and classification report), written for every evaluated strategy.
+- `metadata/hashes.json` — canonical SHA-256 job/clustering/strategy reproducibility hashes.
+- `metadata/provenance_validation.json` — structured findings for cross-job artifact/prompt-hash mismatches and config drift; errors block **promotion** but never change **selection**.
+- `metadata/promotion_status.json` — explicit `selected_strategy` / `promotion_candidate` / `promoted_strategy` status. RuleKiln never auto-promotes — `approved` means "ready for a human review," and `promoted_strategy` stays `null` until a human acts.
+
+See [docs/architecture/clustering_provenance.md](docs/architecture/clustering_provenance.md) and [docs/architecture/strategy_promotion.md](docs/architecture/strategy_promotion.md) for the full design.
 
 ---
 
