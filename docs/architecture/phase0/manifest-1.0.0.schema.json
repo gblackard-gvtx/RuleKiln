@@ -1,0 +1,385 @@
+{
+  "$id": "https://rulekiln.dev/schemas/prompt-package/manifest-1.0.0.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "lifecycle_status": {
+            "const": "released"
+          }
+        },
+        "required": [
+          "lifecycle_status"
+        ]
+      },
+      "then": {
+        "properties": {
+          "release": {
+            "type": "object"
+          }
+        },
+        "required": [
+          "release"
+        ]
+      }
+    }
+  ],
+  "properties": {
+    "artifacts": {
+      "additionalProperties": false,
+      "properties": {
+        "compatibility": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "evaluation_summary": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "output_schema": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "provenance": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "readme": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "regression_cases": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "runtime_defaults": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "semantic_rules": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "system_prompt": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "system_prompt",
+        "semantic_rules",
+        "output_schema",
+        "runtime_defaults",
+        "evaluation_summary",
+        "compatibility",
+        "provenance",
+        "regression_cases",
+        "readme"
+      ],
+      "type": "object"
+    },
+    "compatibility": {
+      "additionalProperties": true,
+      "properties": {
+        "validated_models": {
+          "items": {
+            "properties": {
+              "model_id": {
+                "type": "string"
+              },
+              "quantization": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "runtime": {
+                "type": "string"
+              },
+              "status": {
+                "enum": [
+                  "experimental",
+                  "validated"
+                ]
+              }
+            },
+            "required": [
+              "model_id",
+              "status"
+            ],
+            "type": "object"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "created_at": {
+      "format": "date-time",
+      "type": "string"
+    },
+    "created_by": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "description": {
+      "type": "string"
+    },
+    "evaluation": {
+      "additionalProperties": true,
+      "properties": {
+        "evaluation_case_count": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "malformed_count": {
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "malformed_rate": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "selected_strategy": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "strict_accuracy": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "strict_macro_f1": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "format": {
+      "const": "rulekiln.prompt-package"
+    },
+    "hashes": {
+      "additionalProperties": false,
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "files": {
+          "additionalProperties": {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "minProperties": 1,
+          "type": "object"
+        },
+        "prompt": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "semantic_rule_set": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "algorithm",
+        "files",
+        "prompt",
+        "semantic_rule_set"
+      ],
+      "type": "object"
+    },
+    "lifecycle_status": {
+      "enum": [
+        "experimental",
+        "candidate",
+        "validated",
+        "released"
+      ]
+    },
+    "name": {
+      "maxLength": 200,
+      "minLength": 1,
+      "type": "string"
+    },
+    "package_id": {
+      "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$",
+      "type": "string"
+    },
+    "package_version": {
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-[0-9A-Za-z.-]+)?$",
+      "type": "string"
+    },
+    "provenance": {
+      "additionalProperties": false,
+      "properties": {
+        "case_set_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "derived_from_splits": {
+          "items": {
+            "enum": [
+              "train",
+              "validation",
+              "golden",
+              "test"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "legacy_limitations": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "legacy_source": {
+          "default": false,
+          "type": "boolean"
+        },
+        "refined_using_splits": {
+          "items": {
+            "enum": [
+              "validation",
+              "golden"
+            ]
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "source_job_id": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "task_config_hash": {
+          "pattern": "^[a-f0-9]{64}$",
+          "type": "string"
+        },
+        "validation_tuned": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source_job_id",
+        "derived_from_splits",
+        "refined_using_splits",
+        "task_config_hash",
+        "case_set_hash"
+      ],
+      "type": "object"
+    },
+    "release": {
+      "additionalProperties": false,
+      "properties": {
+        "approved_at": {
+          "format": "date-time",
+          "type": "string"
+        },
+        "approved_by": {
+          "type": "string"
+        },
+        "decision_record": {
+          "type": "string"
+        }
+      },
+      "type": [
+        "object",
+        "null"
+      ]
+    },
+    "runtime": {
+      "additionalProperties": true,
+      "properties": {
+        "default_adapter": {
+          "type": "string"
+        },
+        "minimum_context_tokens": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "response_media_type": {
+          "const": "application/json"
+        }
+      },
+      "type": "object"
+    },
+    "schema_version": {
+      "pattern": "^1\\.\\d+\\.\\d+$",
+      "type": "string"
+    },
+    "task": {
+      "additionalProperties": false,
+      "properties": {
+        "input_schema_ref": {
+          "type": "string"
+        },
+        "labels": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 2,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "mode": {
+          "const": "classification"
+        },
+        "output_schema_ref": {
+          "type": "string"
+        },
+        "primary_metric": {
+          "const": "strict_macro_f1"
+        }
+      },
+      "required": [
+        "mode",
+        "labels",
+        "input_schema_ref",
+        "output_schema_ref"
+      ],
+      "type": "object"
+    }
+  },
+  "required": [
+    "format",
+    "schema_version",
+    "package_id",
+    "package_version",
+    "name",
+    "lifecycle_status",
+    "task",
+    "artifacts",
+    "hashes",
+    "provenance"
+  ],
+  "title": "RuleKiln Prompt Package Manifest",
+  "type": "object"
+}

@@ -32,6 +32,7 @@ def _cases() -> list[RuleKilnCase]:
     return [
         RuleKilnCase(
             id=f"c{i}",
+            split="validation",
             task_mode="classification",
             input={"text": f"sample {i}"},
             expected={"label": "travel"},

@@ -30,9 +30,13 @@ COPY migrations/ migrations/
 COPY alembic.ini ./
 COPY main.py ./
 
-# Non-root user for security
+# Non-root user for security. Only chown the dirs the app actually writes to
+# at runtime (everything else is world-readable, so no need to walk the full
+# tree — a recursive chown over the venv's ~48k files added several minutes
+# to the build).
 RUN adduser --disabled-password --gecos "" rulekiln && \
-    chown -R rulekiln:rulekiln /app
+    mkdir -p /app/.rulekiln /app/logs && \
+    chown rulekiln:rulekiln /app /app/.rulekiln /app/logs
 USER rulekiln
 
 EXPOSE 8000

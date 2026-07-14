@@ -168,7 +168,11 @@ class BaselineEvaluationService:
         baseline_prompt_text = state.baseline_prompt_text
         baseline_prompt_source = state.baseline_prompt_source
 
-        train_cases = _resolve_training_cases(ctx.extraction_cases, ctx.eval_cases)
+        train_cases = _resolve_training_cases(
+            ctx.extraction_cases,
+            ctx.eval_cases,
+            allow_eval_fallback=ctx.task.allow_few_shot_exemplars_from_eval_split,
+        )
         distance_metric = _resolve_distance_metric_from_task(ctx.task)
         state.baseline_prompt_tokens = count_tokens_approx(baseline_prompt_text)
         baseline_prompt_tokens = state.baseline_prompt_tokens
@@ -271,7 +275,11 @@ class BaselineEvaluationService:
             case_results=baseline_eval.case_results,
         )
 
-        training_cases = _resolve_training_cases(ctx.extraction_cases, ctx.eval_cases)
+        training_cases = _resolve_training_cases(
+            ctx.extraction_cases,
+            ctx.eval_cases,
+            allow_eval_fallback=ctx.task.allow_few_shot_exemplars_from_eval_split,
+        )
 
         for strategy_name, k_value in BASELINE_FEW_SHOT_STRATEGY_TO_K.items():
             selected_examples = select_deterministic_few_shot_examples(training_cases, k=k_value)

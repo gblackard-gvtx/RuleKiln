@@ -20,5 +20,6 @@ htmlcov/
 .headroom/memory_vectors.db
 .headroom*
 .serena
+.tokensave
 logs/rulekiln.log
 logs/rulekiln.log*

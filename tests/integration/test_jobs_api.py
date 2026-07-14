@@ -79,7 +79,9 @@ def _valid_payload() -> dict:
             "description": "desc",
             "input_template": "{{input}}",
         },
-        "cases": [{"id": "c1", "task_mode": "classification", "input": {"x": 1}}],
+        "cases": [
+            {"id": "c1", "split": "train", "task_mode": "classification", "input": {"x": 1}}
+        ],
         "teacher": {"provider_profile": "teacher", "model": "fake-model"},
         "student": {"provider_profile": "student", "model": "fake-model"},
         "embedding": {"provider_profile": "embedding", "model": "fake-embedding"},

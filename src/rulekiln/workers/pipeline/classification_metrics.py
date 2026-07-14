@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from rulekiln.pipeline.baseline_strategies import expected_label, resolve_distance_metric
+from rulekiln.pipeline.split_policy import resolve_few_shot_source_cases
 from rulekiln.pipeline.statistics import (
     PairedComparisonArtifacts,
     compute_classification_statistics,
@@ -157,7 +158,9 @@ def _resolve_distance_metric_from_task(task: RuleKilnTask) -> str:
 def _resolve_training_cases(
     extraction_cases: list[RuleKilnCase],
     eval_cases: list[RuleKilnCase],
+    *,
+    allow_eval_fallback: bool,
 ) -> list[RuleKilnCase]:
-    if extraction_cases:
-        return extraction_cases
-    return eval_cases
+    return resolve_few_shot_source_cases(
+        extraction_cases, eval_cases, allow_eval_fallback=allow_eval_fallback
+    )

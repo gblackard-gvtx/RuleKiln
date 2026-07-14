@@ -32,7 +32,9 @@ def _payload(teacher: str = "t", student: str = "s", embedding: str = "e") -> Di
                 "description": "desc",
                 "input_template": "{{input}}",
             },
-            "cases": [{"id": "c1", "task_mode": "classification", "input": {"x": 1}}],
+            "cases": [
+                    {"id": "c1", "split": "train", "task_mode": "classification", "input": {"x": 1}}
+                ],
             "teacher": {"provider_profile": teacher, "model": "m1"},
             "student": {"provider_profile": student, "model": "m2"},
             "embedding": {"provider_profile": embedding, "model": "m3"},

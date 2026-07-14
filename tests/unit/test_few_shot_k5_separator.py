@@ -79,6 +79,7 @@ def test_answer_cue_matches_example_output_label() -> None:
     examples = [
         RuleKilnCase(
             id="ex1",
+            split="train",
             task_mode="classification",
             input={"premise": _PREMISE, "hypothesis": _HYPOTHESIS},
             expected={"label": "entailment"},

@@ -52,6 +52,7 @@ def _rule(rule_id: str, outcome_label: str) -> SynthesizedRuleSchema:
 def _case(case_id: str, expected_label: str) -> RuleKilnCase:
     return RuleKilnCase(
         id=case_id,
+        split="train",
         task_mode="classification",
         input={"text": "sample text"},
         expected={"label": expected_label},

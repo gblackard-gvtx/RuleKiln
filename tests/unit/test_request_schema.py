@@ -19,6 +19,7 @@ def _base_task() -> dict:
 def _base_case() -> dict:
     return {
         "id": "case-1",
+        "split": "train",
         "task_mode": "classification",
         "input": {"text": "hello"},
         "expected": {"label": "positive"},

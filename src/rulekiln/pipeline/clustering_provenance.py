@@ -126,6 +126,7 @@ def build_cluster_assignments(
     label_by_rule: Mapping[str, str | None],
     source_case_by_rule: Mapping[str, str | None],
     hypothesis_by_rule: Mapping[str, str | None],
+    split_by_rule: Mapping[str, str] | None = None,
 ) -> list[ClusterAssignmentRecord]:
     """Deterministic per-rule assignment records (ordered by embedding row index)."""
     rule_to_cluster: dict[str, int] = {}
@@ -144,6 +145,7 @@ def build_cluster_assignments(
             ClusterAssignmentRecord(
                 rule_id=rule_id,
                 source_case_id=source_case_by_rule.get(rule_id),
+                source_split=(split_by_rule or {}).get(rule_id, "train"),
                 cluster_id=cluster_id if cluster_id is not None else -1,
                 is_noise=cluster_id is None,
                 label=label_by_rule.get(rule_id),
@@ -277,6 +279,7 @@ def capture_clustering_provenance(
     label_by_rule: Mapping[str, str | None],
     source_case_by_rule: Mapping[str, str | None],
     hypothesis_by_rule: Mapping[str, str | None],
+    split_by_rule: Mapping[str, str] | None = None,
     text_variant: str = "rule_only",
     task_config_path: str | None = None,
     job_task_snapshot_path: str | None = "task.yaml",
@@ -292,6 +295,7 @@ def capture_clustering_provenance(
         label_by_rule=label_by_rule,
         source_case_by_rule=source_case_by_rule,
         hypothesis_by_rule=hypothesis_by_rule,
+        split_by_rule=split_by_rule,
     )
     rule_count = len(rule_ids)
     summary = build_cluster_summary(

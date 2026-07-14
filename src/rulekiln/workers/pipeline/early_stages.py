@@ -686,12 +686,14 @@ class ClusteringStageService:
             label_by_rule: dict[str, str | None] = {}
             source_case_by_rule: dict[str, str | None] = {}
             hypothesis_by_rule: dict[str, str | None] = {}
+            split_by_rule: dict[str, str] = {}
             for rule in embedding_result.db_micro_rules:
                 payload_case_id = _payload_case_id_from_db_case_id(ctx.job_id, rule.case_id)
                 source_case_by_rule[rule.id] = payload_case_id
                 case = ctx.case_by_id.get(payload_case_id)
                 label_by_rule[rule.id] = _case_expected_label(case)
                 hypothesis_by_rule[rule.id] = _case_hypothesis_id(case)
+                split_by_rule[rule.id] = case.split if case is not None else "train"
 
             artifact_root = _artifact_root(ctx.settings.artifact_root, ctx.job_id)
             for algorithm, clusters, started_at, completed_at in runs:
@@ -709,6 +711,7 @@ class ClusteringStageService:
                     label_by_rule=label_by_rule,
                     source_case_by_rule=source_case_by_rule,
                     hypothesis_by_rule=hypothesis_by_rule,
+                    split_by_rule=split_by_rule,
                     started_at=started_at,
                     completed_at=completed_at,
                 )

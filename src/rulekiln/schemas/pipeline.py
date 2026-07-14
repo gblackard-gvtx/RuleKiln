@@ -24,6 +24,7 @@ class RuleProvenanceRecord(BaseModel):
 
     # Associative attribution (always present)
     source_case_ids: list[str] = Field(default_factory=list)
+    source_split: str = "train"
     cluster_id: str | None = None
     support_count: int = 0
     support_ratio: float = 0.0
@@ -185,6 +186,7 @@ class SynthesizedRuleSchema(BaseModel):
     tie_breakers: list[str] = Field(default_factory=list)
     priority: int = 100
     source_case_ids: list[str] = Field(default_factory=list)
+    source_split: str = "train"
     source_micro_rule_ids: list[str] = Field(default_factory=list)
 
     # ── Conflict fields ────────────────────────────────────────────────
@@ -405,6 +407,8 @@ class RefinementIterationArtifact(BaseModel):
     revised_rule_ids: list[str] = Field(default_factory=list)
     stop_reason: str | None = None
     golden_failures: int = 0
+    refined_using_split: str = "train"
+    validation_tuned: bool = False
 
 
 # ── Refinement ablation artifact (loop ON vs OFF) ─────────────────────────────

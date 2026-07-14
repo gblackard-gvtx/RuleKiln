@@ -95,6 +95,10 @@ from rulekiln.pipeline.rule_provenance import (
     build_cluster_id_by_micro_rule,
     build_provenance_records,
 )
+from rulekiln.pipeline.split_leakage_validation import (
+    validate_split_leakage,
+    write_split_leakage_validation,
+)
 from rulekiln.providers.chat import get_chat_client
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.providers.resolver import resolve_provider_config
@@ -466,7 +470,11 @@ class ArtifactExportService:
                 compiled_prompts[strategy] = prompt_text
             written_artifacts.append(write_prompt(artifact_root, strategy, prompt_text))
 
-        train_cases = _resolve_training_cases(ctx.extraction_cases, ctx.eval_cases)
+        train_cases = _resolve_training_cases(
+            ctx.extraction_cases,
+            ctx.eval_cases,
+            allow_eval_fallback=ctx.task.allow_few_shot_exemplars_from_eval_split,
+        )
         for strategy in _BASELINE_FEW_SHOT_STRATEGIES:
             prompt_text = compiled_prompts.get(strategy)
             if prompt_text is None:
@@ -696,11 +704,17 @@ class ArtifactExportService:
             comparison.provenance_validation = validation
             comparison.promotion_status = promotion
 
+            leakage_report = validate_split_leakage(
+                job_id=ctx.job_id,
+                artifact_root=artifact_root,
+            )
+
             return [
                 write_strategy_comparison(artifact_root, comparison),
                 write_artifact_hashes(artifact_root, artifact_hashes),
                 write_provenance_validation(artifact_root, validation),
                 write_promotion_status(artifact_root, promotion),
+                write_split_leakage_validation(artifact_root, leakage_report),
             ]
         except Exception as exc:  # noqa: BLE001 - provenance/promotion are side artifacts
             logger.warning(

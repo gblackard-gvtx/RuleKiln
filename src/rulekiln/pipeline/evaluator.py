@@ -472,6 +472,16 @@ async def evaluate_prompt(
     check_cancelled: CancellationCheckFn | None = None,
 ) -> EvalResult:
     """Run the student model against every case and return aggregate metrics."""
+    mismatched_ids = [case.id for case in cases if case.split != split]
+    if mismatched_ids:
+        shown = mismatched_ids[:5]
+        remainder = len(mismatched_ids) - len(shown)
+        suffix = f" and {remainder} more" if remainder > 0 else ""
+        raise ValueError(
+            f"evaluate_prompt called with split={split!r} (strategy={strategy!r}) but "
+            f"received cases from a different split: {shown}{suffix}"
+        )
+
     case_result_by_id: dict[str, CaseEvalResult] = {}
     if completed_case_results:
         case_result_by_id.update(completed_case_results)

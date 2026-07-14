@@ -54,6 +54,7 @@ def _task() -> RuleKilnTask:
 def _case(case_id: str, label: str) -> RuleKilnCase:
     return RuleKilnCase(
         id=case_id,
+        split="train",
         task_mode="classification",
         input={"premise": f"premise {case_id}", "hypothesis": f"hypothesis {case_id}"},
         expected={"label": label},
@@ -257,7 +258,7 @@ async def test_garbage_predictions_raise_malformed_rate_not_spurious_classes() -
         client,
         _config(),
         strategy="baseline_few_shot_k5",
-        split="validation",
+        split="train",
         bootstrap_enabled=False,
     )
 

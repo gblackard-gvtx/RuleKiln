@@ -135,6 +135,7 @@ class ClusterAssignmentRecord(BaseModel):
 
     rule_id: str
     source_case_id: str | None = None
+    source_split: str = "train"
     cluster_id: int
     is_noise: bool
     label: str | None = None

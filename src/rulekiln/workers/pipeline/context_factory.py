@@ -8,7 +8,7 @@ from typing import cast
 
 from rulekiln.config.settings import AppSettings
 from rulekiln.pipeline.evaluator import get_primary_metric
-from rulekiln.pipeline.split_policy import resolve_split_policy
+from rulekiln.pipeline.split_policy import resolve_few_shot_source_cases, resolve_split_policy
 from rulekiln.providers.tracking import ModelCallCollector
 from rulekiln.schemas.job import DistillationRequest
 from rulekiln.schemas.task_case import RuleKilnCase, TaskMode
@@ -43,6 +43,15 @@ class PipelineContextFactory:
         task = payload.task
         cases = list(payload.cases)
         split_policy = resolve_split_policy(cases)
+
+        # Fail fast at job-creation time rather than deep inside baseline
+        # evaluation: a case set with no train rows and no explicit opt-in
+        # would otherwise silently leak eval cases into few-shot exemplars.
+        resolve_few_shot_source_cases(
+            split_policy.extraction_cases,
+            split_policy.evaluation_cases,
+            allow_eval_fallback=task.allow_few_shot_exemplars_from_eval_split,
+        )
 
         primary_metric = _resolve_primary_metric(payload, task.task_mode)
         dataset_id = _build_dataset_id(cases)

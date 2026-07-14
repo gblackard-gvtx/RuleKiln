@@ -32,6 +32,7 @@ def _task() -> RuleKilnTask:
 def _case(case_id: str) -> RuleKilnCase:
     return RuleKilnCase(
         id=case_id,
+        split="train",
         task_mode="classification",
         input={"text": "hello"},
         expected={"label": "travel"},

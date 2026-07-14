@@ -13,6 +13,8 @@ Use this index to find the right document quickly.
 
 - Clustering provenance (versioned params, hashes, `outputs/clustering/<algo>/`): [architecture/clustering_provenance.md](architecture/clustering_provenance.md)
 - Strategy promotion status and policy: [architecture/strategy_promotion.md](architecture/strategy_promotion.md)
+- How RuleKiln implements the Prompt-Level Distillation paper, phase by phase: [architecture/pld-implementation-mapping.md](architecture/pld-implementation-mapping.md)
+- Gaps remaining to reach PLD paper-level empirical parity: [architecture/pld-gap-analysis.md](architecture/pld-gap-analysis.md)
 - Full file-by-file summary of the provenance/promotion change: [dev/clustering_provenance_promotion_changes.md](dev/clustering_provenance_promotion_changes.md)
 
 ## Investigations

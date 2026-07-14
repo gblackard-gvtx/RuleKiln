@@ -153,6 +153,7 @@ def _config() -> ProviderConfig:
 def _classification_case(case_id: str = "c1", label: str = "neutral") -> RuleKilnCase:
     return RuleKilnCase(
         id=case_id,
+        split="train",
         task_mode="classification",
         input={"premise": "No additional rights granted.", "hypothesis": "No rights granted."},
         expected={"label": label},

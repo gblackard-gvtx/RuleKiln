@@ -1,0 +1,78 @@
+{
+  "format": "rulekiln.prompt-package",
+  "schema_version": "1.0.0",
+  "package_id": "contractnli-gemma-local",
+  "package_version": "0.1.0",
+  "name": "ContractNLI local classification prompt",
+  "description": "Experimental classification package for a local Gemma-compatible runtime.",
+  "created_at": "2026-07-14T00:00:00Z",
+  "created_by": null,
+  "lifecycle_status": "experimental",
+  "task": {
+    "mode": "classification",
+    "labels": [
+      "contradiction",
+      "entailment",
+      "neutral"
+    ],
+    "input_schema_ref": "input_schema.json",
+    "output_schema_ref": "output_schema.json",
+    "primary_metric": "strict_macro_f1"
+  },
+  "artifacts": {
+    "system_prompt": "system_prompt.txt",
+    "semantic_rules": "semantic_rules.json",
+    "output_schema": "output_schema.json",
+    "runtime_defaults": "runtime_defaults.json",
+    "evaluation_summary": "evaluation_summary.json",
+    "compatibility": "compatibility.json",
+    "provenance": "provenance.json",
+    "regression_cases": "regression_cases.jsonl",
+    "readme": "README.md"
+  },
+  "hashes": {
+    "algorithm": "sha256",
+    "files": {
+      "system_prompt.txt": "0000000000000000000000000000000000000000000000000000000000000000",
+      "semantic_rules.json": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "prompt": "0000000000000000000000000000000000000000000000000000000000000000",
+    "semantic_rule_set": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "runtime": {
+    "default_adapter": "openai_compatible",
+    "minimum_context_tokens": 8192,
+    "response_media_type": "application/json"
+  },
+  "evaluation": {
+    "selected_strategy": null,
+    "strict_macro_f1": null,
+    "strict_accuracy": null,
+    "malformed_count": null,
+    "malformed_rate": null,
+    "evaluation_case_count": null
+  },
+  "provenance": {
+    "source_job_id": "replace-with-job-id",
+    "derived_from_splits": [
+      "train"
+    ],
+    "refined_using_splits": [],
+    "validation_tuned": false,
+    "task_config_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "case_set_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "legacy_source": false,
+    "legacy_limitations": []
+  },
+  "compatibility": {
+    "validated_models": [
+      {
+        "model_id": "replace-with-model-id",
+        "quantization": null,
+        "runtime": "llama.cpp",
+        "status": "experimental"
+      }
+    ]
+  },
+  "release": null
+}

@@ -87,6 +87,7 @@ def build_provenance_records(
                 rule_id=rule.id,
                 topic=rule.topic,
                 source_case_ids=sorted(rule_source_ids),
+                source_split=rule.source_split,
                 cluster_id=cluster_id,
                 support_count=rule.support_count,
                 support_ratio=rule.support_ratio,

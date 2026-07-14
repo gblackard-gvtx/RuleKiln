@@ -148,6 +148,12 @@ class RuleKilnTask(BaseModel):
     # split is available and the operator accepts the double-use risk.
     allow_refinement_on_train_split: bool = False
 
+    # Few-shot baseline exemplars must come from train-split cases. If no train
+    # cases are present, falling back to evaluation cases would leak the exact
+    # cases being scored into the prompt used to score them. False by default;
+    # opt-in when the operator accepts that risk.
+    allow_few_shot_exemplars_from_eval_split: bool = False
+
 
 AssertionType = Literal[
     "must_include",
@@ -184,7 +190,9 @@ class RuleKilnCase(BaseModel):
 
     schema_version: Literal["rulekiln.case.v1"] = "rulekiln.case.v1"
     id: str
-    split: Literal["train", "validation", "test", "golden"] = "train"
+    # Required, no default: a case file that omits split must fail to parse
+    # rather than silently being absorbed into train-split extraction.
+    split: Literal["train", "validation", "test", "golden"]
     task_mode: TaskMode
     input: dict[str, Any]
     expected: dict[str, Any] | str | None = None

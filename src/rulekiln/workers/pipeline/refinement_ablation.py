@@ -353,6 +353,8 @@ async def _run_refinement_loop(
             revised_rule_ids=revised_ids,
             stop_reason=stop_reason if stop_reason != "continue" else None,
             golden_failures=golden_failures_count,
+            refined_using_split=eval_split,
+            validation_tuned=eval_split == "validation",
         )
         iter_path.write_text(iter_artifact.model_dump_json())
 
@@ -401,6 +403,8 @@ async def _run_refinement_loop(
                     "new_metric": new_metric,
                     "golden_failures": golden_failures_count,
                     "stop_reason": stop_reason,
+                    "refined_using_split": eval_split,
+                    "validation_tuned": eval_split == "validation",
                 },
                 ensure_ascii=False,
             )

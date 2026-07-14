@@ -96,6 +96,7 @@ def _case_with_assertion(
 ) -> RuleKilnCase:
     return RuleKilnCase(
         id=case_id,
+        split="train",
         task_mode="classification",
         input={"text": "sample"},
         expected={"label": assertion_value},
