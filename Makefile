@@ -1,4 +1,4 @@
-.PHONY: lint format typecheck test test-ui ci-local docker-up docker-down benchmark-smoke
+.PHONY: lint format typecheck test test-ui test-cov test-cov-html badge ci-local docker-up docker-down benchmark-smoke
 
 lint:
 	uv run ruff check src/ tests/
@@ -14,6 +14,19 @@ test:
 
 test-ui:
 	DATABASE_URL="sqlite+aiosqlite://" MLFLOW_TRACKING_URI="file:///tmp/mlflow-ci" uv run pytest tests/ui/ -m "not external" --tb=short -q
+
+test-cov:
+	DATABASE_URL="sqlite+aiosqlite://" MLFLOW_TRACKING_URI="file:///tmp/mlflow-ci" uv run pytest -m "not external" --tb=short -q --cov --cov-report=term-missing
+
+test-cov-html:
+	DATABASE_URL="sqlite+aiosqlite://" MLFLOW_TRACKING_URI="file:///tmp/mlflow-ci" uv run pytest -m "not external" --tb=short -q --cov --cov-report=html
+	@echo "HTML report: htmlcov/index.html"
+
+badge:
+	DATABASE_URL="sqlite+aiosqlite://" MLFLOW_TRACKING_URI="file:///tmp/mlflow-ci" uv run pytest -m "not external" --tb=short -q --cov --cov-report=xml
+	uv run genbadge coverage -i coverage.xml -o docs/assets/coverage-badge.svg
+	@rm -f coverage.xml
+	@echo "Updated docs/assets/coverage-badge.svg — commit it to refresh the README badge."
 
 ci-local:
 	@status=0; \

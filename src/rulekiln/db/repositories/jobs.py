@@ -445,6 +445,7 @@ async def retry_job(
             lease_expires_at=None,
             next_run_at=datetime.now(tz=UTC),
             error_message=None,
+            attempt_count=0,
         )
     )
     await session.commit()

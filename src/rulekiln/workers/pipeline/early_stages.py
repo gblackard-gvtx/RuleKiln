@@ -531,8 +531,13 @@ class RuleEmbeddingStageService:
         rule_ids = [r.id for r in db_micro_rules]
         rule_texts = [f"{r.topic}: {r.condition} → {r.expected_outcome}" for r in db_micro_rules]
 
+        guard = StageGuard(self._session, ctx.job_id)
+        stage_already_complete = await guard.is_complete(PipelineStage.EMBEDDING_RULES)
+
         embeddings: list[list[float]] = []
         if rule_texts:
+            if not stage_already_complete:
+                await guard.start(PipelineStage.EMBEDDING_RULES)
             set_tracking_context(
                 ModelCallContext(
                     job_id=ctx.job_id,
@@ -549,9 +554,7 @@ class RuleEmbeddingStageService:
             )
             embeddings = embedding_result.embeddings
 
-        guard = StageGuard(self._session, ctx.job_id)
-        if not await guard.is_complete(PipelineStage.EMBEDDING_RULES):
-            await guard.start(PipelineStage.EMBEDDING_RULES)
+        if not stage_already_complete:
             await guard.complete(PipelineStage.EMBEDDING_RULES)
 
         embedding_provenance = build_embedding_provenance(
