@@ -10,15 +10,13 @@ from typing import Any
 from pydantic import BaseModel
 
 from rulekiln.observability.logging import get_logger
-from rulekiln.pipeline.statistics import compute_classification_statistics
-from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
-from rulekiln.schemas.pipeline import (
-    CaseEvalResult,
-    EvalResult,
-    MetricConfidenceInterval,
-    PerLabelMetricsRow,
-    TopConfusionRow,
+from rulekiln.pipeline.classification_alignment import (
+    build_classification_label_columns,
+    compute_strict_and_valid_output_statistics,
+    declared_label_vocabulary,
 )
+from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
+from rulekiln.schemas.pipeline import CaseEvalResult, EvalResult
 from rulekiln.schemas.task_case import AssertionType, RuleKilnCase, RuleKilnTask, TaskMode
 
 type CaseResultPersistFn = Callable[[CaseEvalResult], Awaitable[None]]
@@ -229,24 +227,6 @@ def _score_assertion(
             return 1.0
 
 
-def _allowed_labels_from_task(task: RuleKilnTask) -> frozenset[str] | None:
-    """Return the exact allowed label values for classification/routing tasks.
-
-    Derived from enum values in the task output schema. Returns None when the
-    task mode has no fixed label vocabulary or the schema declares no enums.
-    """
-    if task.task_mode not in ("classification", "routing") or not task.output_schema:
-        return None
-    enums: set[str] = set()
-    properties = task.output_schema.get("properties", {})
-    for prop_schema in properties.values():
-        if isinstance(prop_schema, dict):
-            enum_vals = prop_schema.get("enum", [])
-            if isinstance(enum_vals, list):
-                enums.update(str(v) for v in enum_vals)
-    return frozenset(enums) if enums else None
-
-
 def _extract_predicted_label(
     actual: dict[str, str | int | float | bool | None] | str,
 ) -> str:
@@ -349,7 +329,7 @@ def _score_case(
 def _compute_metrics(
     case_results: list[CaseEvalResult],
     cases: list[RuleKilnCase],
-    task_mode: TaskMode,
+    task: RuleKilnTask,
     strategy: str,
     model: str,
     split: str,
@@ -371,86 +351,55 @@ def _compute_metrics(
     weighted_sum = sum(r.score * weight_map.get(r.case_id, 1.0) for r in case_results)
     weighted_case_score = weighted_sum / total_weight if total_weight > 0 else 0.0
 
-    # For classification/routing: compute accuracy + macro F1 from expected labels
-    accuracy: float | None = None
-    macro_f1: float | None = None
-    accuracy_ci_95: MetricConfidenceInterval | None = None
-    macro_f1_ci_95: MetricConfidenceInterval | None = None
-    per_outcome_precision: dict[str, float] = {}
-    per_outcome_recall: dict[str, float] = {}
-    per_label_metrics: list[PerLabelMetricsRow] = []
-    confusion_matrix: dict[str, dict[str, int]] = {}
-    top_confusions: list[TopConfusionRow] = []
-
-    if task_mode in ("classification", "routing"):
-        case_map = {c.id: c for c in cases}
-        expected_labels: list[str] = []
-        predicted_labels: list[str] = []
-        case_ids: list[str] = []
-
-        for res in case_results:
-            if res.malformed:
-                continue
-            case = case_map.get(res.case_id)
-            if case is None or case.expected is None:
-                continue
-            expected_raw: str | int | float | bool | None
-            if isinstance(case.expected, dict):
-                expected_raw = case.expected.get("label", "")
-            else:
-                expected_raw = case.expected
-            expected_label = (
-                expected_raw if isinstance(expected_raw, str) else str(expected_raw or "")
-            )
-
-            actual_raw: str | int | float | bool | None
-            if isinstance(res.actual_output, dict):
-                actual_raw = res.actual_output.get("label", "")
-            elif isinstance(res.actual_output, str):
-                actual_raw = res.actual_output
-            else:
-                actual_raw = ""
-
-            actual_label = actual_raw if isinstance(actual_raw, str) else str(actual_raw)
-
-            expected_labels.append(expected_label)
-            predicted_labels.append(actual_label)
-            case_ids.append(res.case_id)
-
-        classification_stats = compute_classification_statistics(
-            actual_labels=expected_labels,
-            predicted_labels=predicted_labels,
-            case_ids=case_ids,
-            bootstrap_enabled=bootstrap_enabled,
-            bootstrap_iterations=bootstrap_iterations,
-            bootstrap_seed=bootstrap_seed,
-        )
-        accuracy = classification_stats.accuracy
-        macro_f1 = classification_stats.macro_f1
-        accuracy_ci_95 = classification_stats.accuracy_ci_95
-        macro_f1_ci_95 = classification_stats.macro_f1_ci_95
-        per_outcome_precision = classification_stats.per_outcome_precision
-        per_outcome_recall = classification_stats.per_outcome_recall
-        per_label_metrics = classification_stats.per_label_metrics
-        confusion_matrix = classification_stats.confusion_matrix
-        top_confusions = classification_stats.top_confusions
-
-    return EvalResult(
+    result = EvalResult(
         strategy=strategy,
         model=model,
         split=split,
-        accuracy=accuracy,
-        accuracy_ci_95=accuracy_ci_95,
-        macro_f1=macro_f1,
-        macro_f1_ci_95=macro_f1_ci_95,
         weighted_case_score=weighted_case_score,
         malformed_output_rate=malformed_output_rate,
-        per_outcome_precision=per_outcome_precision,
-        per_outcome_recall=per_outcome_recall,
-        per_label_metrics=per_label_metrics,
-        confusion_matrix=confusion_matrix,
-        top_confusions=top_confusions,
         case_results=case_results,
+    )
+
+    if task.task_mode not in ("classification", "routing"):
+        return result
+
+    case_ids, expected_labels, predicted_labels, malformed_flags = (
+        build_classification_label_columns(cases, case_results)
+    )
+    if not case_ids:
+        return result
+
+    vocabulary = declared_label_vocabulary(task)
+    stats = compute_strict_and_valid_output_statistics(
+        case_ids=case_ids,
+        expected_labels=expected_labels,
+        predicted_labels=predicted_labels,
+        malformed_flags=malformed_flags,
+        label_vocabulary=vocabulary,
+        bootstrap_enabled=bootstrap_enabled,
+        bootstrap_iterations=bootstrap_iterations,
+        bootstrap_seed=bootstrap_seed,
+    )
+    strict = stats.strict
+    valid_output = stats.valid_output
+
+    return result.model_copy(
+        update={
+            "accuracy": strict.accuracy,
+            "accuracy_ci_95": strict.accuracy_ci_95,
+            "macro_f1": strict.macro_f1,
+            "macro_f1_ci_95": strict.macro_f1_ci_95,
+            "valid_output_accuracy": valid_output.accuracy if valid_output else None,
+            "valid_output_accuracy_ci_95": valid_output.accuracy_ci_95 if valid_output else None,
+            "valid_output_macro_f1": valid_output.macro_f1 if valid_output else None,
+            "valid_output_macro_f1_ci_95": valid_output.macro_f1_ci_95 if valid_output else None,
+            "per_outcome_precision": strict.per_outcome_precision,
+            "per_outcome_recall": strict.per_outcome_recall,
+            "per_label_metrics": strict.per_label_metrics,
+            "confusion_matrix": strict.confusion_matrix,
+            "top_confusions": strict.top_confusions,
+            "declared_label_vocabulary": list(vocabulary) if vocabulary else None,
+        }
     )
 
 
@@ -486,7 +435,8 @@ async def evaluate_prompt(
     if completed_case_results:
         case_result_by_id.update(completed_case_results)
 
-    allowed_labels = _allowed_labels_from_task(task)
+    vocabulary = declared_label_vocabulary(task)
+    allowed_labels = frozenset(vocabulary) if vocabulary is not None else None
     for case in cases:
         if case.id in case_result_by_id:
             continue
@@ -517,7 +467,7 @@ async def evaluate_prompt(
     return _compute_metrics(
         case_results=case_results,
         cases=cases,
-        task_mode=task.task_mode,
+        task=task,
         strategy=strategy,
         model=config.model,
         split=split,
@@ -559,7 +509,7 @@ def build_eval_result_from_case_results(
     result = _compute_metrics(
         case_results=case_results,
         cases=cases,
-        task_mode=task.task_mode,
+        task=task,
         strategy=strategy,
         model=model,
         split=split,

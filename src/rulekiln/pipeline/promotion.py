@@ -15,12 +15,19 @@ auto-promotes — reaching ``approved`` means "ready for a human to promote", an
 Legacy runs (no persisted provenance) resolve to ``experimental`` with
 ``provenance_status='incomplete'`` / ``reproducibility_status='unverified'`` rather than
 fabricating a promotion decision.
+
+Only ``distilled``-family strategies are ever promotion candidates. When selection falls
+back to a baseline (no distilled strategy passed its quality gate), promotion resolves to
+``not_applicable`` with ``promotion_candidate=None`` rather than evaluating blockers that
+were designed for distilled-vs-baseline comparisons against the baseline itself — see
+``docs/investigations/promotion-baseline-fallback.md``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
+from rulekiln.pipeline.strategy_families import DISTILLED_FAMILY, strategy_family
 from rulekiln.schemas.pipeline import EvalResult, QualityGateResult
 from rulekiln.schemas.promotion import (
     ConfidenceStatus,
@@ -30,10 +37,13 @@ from rulekiln.schemas.promotion import (
     ProvenanceStatus,
     ProvenanceValidationReport,
     ReproducibilityStatus,
+    StaleArtifactStatus,
 )
+from rulekiln.schemas.stale_artifact import StaleArtifactValidationReport
 
 # Blocker codes, ordered for deterministic emission.
 BLOCKER_ORDER: tuple[str, ...] = (
+    "NO_ELIGIBLE_DISTILLED_STRATEGY",
     "SELECTED_STRATEGY_NOT_ELIGIBLE",
     "CONFIG_NOT_PROMOTED_CONFIG",
     "METRIC_DELTA_INSUFFICIENT",
@@ -43,6 +53,7 @@ BLOCKER_ORDER: tuple[str, ...] = (
     "MINORITY_LABEL_REGRESSION",
     "STATISTICAL_CONFIDENCE_INSUFFICIENT",
     "PROVENANCE_INVALID",
+    "STALE_ARTIFACT_DETECTED",
     "REPRODUCIBILITY_UNVERIFIED",
 )
 
@@ -61,6 +72,22 @@ def provenance_status_from_report(
         return "invalid"
     if report.has_warnings:
         return "incomplete"
+    return "valid"
+
+
+def stale_artifact_status_from_report(
+    report: StaleArtifactValidationReport | None,
+) -> StaleArtifactStatus:
+    """Map a stale-artifact validation report onto a promotion status.
+
+    ``None`` (no report at all) → ``missing``; a report with error findings → ``invalid``;
+    a clean report → ``valid``. Unlike provenance, stale-artifact findings are all
+    severity ``error``, so there is no ``incomplete`` state.
+    """
+    if report is None:
+        return "missing"
+    if report.has_errors:
+        return "invalid"
     return "valid"
 
 
@@ -109,6 +136,7 @@ def evaluate_promotion(
     runtime_config_hash: str | None,
     approved_config_hash: str | None,
     provenance_report: ProvenanceValidationReport | None,
+    stale_artifact_report: StaleArtifactValidationReport | None = None,
     reproducibility_status: ReproducibilityStatus = "unverified",
     confidence_status: ConfidenceStatus = "not_computed",
     repeat_run_count: int = 1,
@@ -121,15 +149,21 @@ def evaluate_promotion(
     then skipped rather than treated as a failure.
     """
     provenance_status = provenance_status_from_report(provenance_report)
+    stale_artifact_status = stale_artifact_status_from_report(stale_artifact_report)
+    selected_strategy_family = (
+        strategy_family(selected_strategy) if selected_strategy is not None else None
+    )
 
     status = PromotionStatus(
         selected_strategy=selected_strategy,
+        selected_strategy_family=selected_strategy_family,
         promotion_candidate=selected_strategy,
         promoted_strategy=None,
         promotion_policy_version=policy.policy_version,
         reproducibility_status=reproducibility_status,
         confidence_status=confidence_status,
         provenance_status=provenance_status,
+        stale_artifact_status=stale_artifact_status,
         evaluated_at=evaluated_at,
     )
 
@@ -139,6 +173,25 @@ def evaluate_promotion(
 
     if selected_strategy is None:
         status.promotion_status = "not_evaluated"
+        return status
+
+    # Only distilled-family strategies are ever promotion candidates; baseline families
+    # (comparators, not deployable results) short-circuit here before any blocker below
+    # is evaluated against them — see docs/investigations/promotion-baseline-fallback.md.
+    if selected_strategy_family != DISTILLED_FAMILY:
+        status.promotion_status = "not_applicable"
+        status.promotion_candidate = None
+        status.promotion_blockers = [
+            PromotionBlocker(
+                code="NO_ELIGIBLE_DISTILLED_STRATEGY",
+                message=(
+                    f"Selected strategy '{selected_strategy}' belongs to family "
+                    f"'{selected_strategy_family}', not '{DISTILLED_FAMILY}'; there is no "
+                    "eligible distilled strategy to promote for this job."
+                ),
+                details={"selected_strategy_family": selected_strategy_family},
+            )
+        ]
         return status
 
     blockers: list[PromotionBlocker] = []
@@ -243,6 +296,15 @@ def evaluate_promotion(
                 code="PROVENANCE_INVALID",
                 message="Provenance validation reported errors or provenance is missing.",
                 details={"provenance_status": provenance_status},
+            )
+        )
+
+    if policy.require_no_stale_artifacts and stale_artifact_status in ("invalid", "missing"):
+        blockers.append(
+            PromotionBlocker(
+                code="STALE_ARTIFACT_DETECTED",
+                message="Stale-artifact validation reported errors or is missing.",
+                details={"stale_artifact_status": stale_artifact_status},
             )
         )
 

@@ -22,6 +22,7 @@ from rulekiln.artifacts.canonical_hash import ALGORITHM, CANONICALIZATION_VERSIO
 
 type PromotionStatusValue = Literal[
     "not_evaluated",
+    "not_applicable",
     "experimental",
     "candidate",
     "blocked",
@@ -43,6 +44,7 @@ type ConfidenceStatus = Literal[
     "significant",
 ]
 type ProvenanceStatus = Literal["missing", "incomplete", "valid", "invalid"]
+type StaleArtifactStatus = Literal["missing", "valid", "invalid"]
 type FindingSeverity = Literal["error", "warning"]
 
 
@@ -122,6 +124,7 @@ class PromotionPolicy(BaseModel):
     required_repeat_count: int = 3
 
     require_valid_provenance: bool = True
+    require_no_stale_artifacts: bool = True
     require_matching_approved_config: bool = True
 
     # Off by default: do not require statistical significance without a product review.
@@ -185,6 +188,7 @@ class PromotionStatus(BaseModel):
 
     schema_version: Literal["rulekiln.promotion_status.v1"] = "rulekiln.promotion_status.v1"
     selected_strategy: str | None = None
+    selected_strategy_family: str | None = None
     promotion_candidate: str | None = None
     promoted_strategy: str | None = None
     promotion_status: PromotionStatusValue = "not_evaluated"
@@ -193,5 +197,6 @@ class PromotionStatus(BaseModel):
     reproducibility_status: ReproducibilityStatus = "unknown"
     confidence_status: ConfidenceStatus = "not_computed"
     provenance_status: ProvenanceStatus = "missing"
+    stale_artifact_status: StaleArtifactStatus = "missing"
     evaluated_at: str | None = None
     promoted_at: str | None = None

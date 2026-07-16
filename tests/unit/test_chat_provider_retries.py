@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from pydantic import BaseModel
 
@@ -29,9 +31,7 @@ class _FakeRunResult:
     """Minimal pydantic-ai run result shape expected by adapters."""
 
     output: BaseModel = _DummyOutput()
-
-    def usage(self) -> _FakeUsage:
-        return _FakeUsage()
+    usage: _FakeUsage = _FakeUsage()
 
 
 @pytest.mark.asyncio
@@ -49,12 +49,10 @@ async def test_openai_chat_uses_configured_retry_budget(monkeypatch: pytest.Monk
             output_type: type[BaseModel],
             system_prompt: str,
             retries: int,
-            output_retries: int,
         ) -> None:
             assert output_type is _DummyOutput
             assert system_prompt == "sys"
             captured["retries"] = retries
-            captured["output_retries"] = output_retries
 
         async def run(self, _user_prompt: str) -> _FakeRunResult:
             return _FakeRunResult()
@@ -69,7 +67,7 @@ async def test_openai_chat_uses_configured_retry_budget(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(module, "Agent", _FakeAgent)
     monkeypatch.setattr(module, "OpenAIProvider", _FakeProvider)
-    monkeypatch.setattr(module, "OpenAIModel", _FakeModel)
+    monkeypatch.setattr(module, "OpenAIChatModel", _FakeModel)
 
     client = OpenAIChatClient()
     result = await client.complete_structured(
@@ -85,7 +83,7 @@ async def test_openai_chat_uses_configured_retry_budget(monkeypatch: pytest.Monk
         ),
     )
 
-    assert captured == {"retries": 5, "output_retries": 5}
+    assert captured == {"retries": 5}
     assert isinstance(result.parsed, _DummyOutput)
 
 
@@ -100,9 +98,7 @@ async def test_openai_compatible_chat_uses_configured_retry_budget(
 
     class _FakeRunResult:
         output: BaseModel = _DummyOutput()
-
-        def usage(self) -> _FakeUsage:
-            return _FakeUsage()
+        usage: _FakeUsage = _FakeUsage()
 
         def new_messages(self) -> list[object]:
             return []  # no TextPart messages → content=""
@@ -115,12 +111,10 @@ async def test_openai_compatible_chat_uses_configured_retry_budget(
             output_type: type[BaseModel],
             system_prompt: str,
             retries: int,
-            output_retries: int,
         ) -> None:
             assert output_type is _DummyOutput
             assert system_prompt == "sys"
             captured["retries"] = retries
-            captured["output_retries"] = output_retries
 
         async def run(self, _user_prompt: str) -> _FakeRunResult:
             return _FakeRunResult()
@@ -137,7 +131,7 @@ async def test_openai_compatible_chat_uses_configured_retry_budget(
 
     monkeypatch.setattr(module, "Agent", _FakeAgent)
     monkeypatch.setattr(module, "OpenAIProvider", _FakeProvider)
-    monkeypatch.setattr(module, "OpenAIModel", _FakeModel)
+    monkeypatch.setattr(module, "OpenAIChatModel", _FakeModel)
 
     client = OpenAICompatibleChatClient()
     result = await client.complete_structured(
@@ -155,11 +149,10 @@ async def test_openai_compatible_chat_uses_configured_retry_budget(
     )
 
     assert captured["retries"] == 4
-    assert captured["output_retries"] == 4
-    # Verify we're using the native-mode profile (not the default tool-calling mode)
-    from pydantic_ai.models.openai import OpenAIModelProfile
-    assert isinstance(captured["profile"], OpenAIModelProfile)
-    assert captured["profile"].default_structured_output_mode == "native"  # type: ignore[union-attr]
+    # Verify we're using the native-mode profile (not the default tool-calling mode).
+    # OpenAIModelProfile is a TypedDict, so it's a plain dict at runtime (no isinstance check).
+    profile = cast("dict[str, object]", captured["profile"])
+    assert profile["default_structured_output_mode"] == "native"
     assert isinstance(result.parsed, _DummyOutput)
     assert result.content == ""  # no TextPart messages in stub
 
@@ -179,12 +172,10 @@ async def test_bedrock_chat_uses_configured_retry_budget(monkeypatch: pytest.Mon
             output_type: type[BaseModel],
             system_prompt: str,
             retries: int,
-            output_retries: int,
         ) -> None:
             assert output_type is _DummyOutput
             assert system_prompt == "sys"
             captured["retries"] = retries
-            captured["output_retries"] = output_retries
 
         async def run(self, _user_prompt: str) -> _FakeRunResult:
             return _FakeRunResult()
@@ -210,5 +201,5 @@ async def test_bedrock_chat_uses_configured_retry_budget(monkeypatch: pytest.Mon
         ),
     )
 
-    assert captured == {"retries": 6, "output_retries": 6}
+    assert captured == {"retries": 6}
     assert isinstance(result.parsed, _DummyOutput)

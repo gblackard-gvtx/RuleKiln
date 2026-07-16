@@ -39,9 +39,15 @@ def expected_label(case: RuleKilnCase) -> str | None:
     return None
 
 
+# Nomic embedding models (nomic-embed-text-v1.5) require a task-instruction prefix
+# for correct embedding quality. All callers compare case embeddings symmetrically
+# (centroid, kNN, retrieval), so "classification: " applies uniformly to every case.
+_EMBEDDING_TASK_PREFIX = "classification: "
+
+
 def case_text_for_embedding(case: RuleKilnCase) -> str:
     """Build stable embedding text from case input."""
-    return json.dumps(case.input, ensure_ascii=False, sort_keys=True)
+    return _EMBEDDING_TASK_PREFIX + json.dumps(case.input, ensure_ascii=False, sort_keys=True)
 
 
 def select_deterministic_few_shot_examples(

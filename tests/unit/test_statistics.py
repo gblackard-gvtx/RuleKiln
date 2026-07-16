@@ -140,6 +140,71 @@ def test_top_confusions_non_diagonal_and_limited() -> None:
     assert rows[1].actual_label != rows[1].predicted_label
 
 
+def test_per_label_metrics_uses_declared_vocabulary_including_zero_support() -> None:
+    actual = ["a", "a", "b"]
+    predicted = ["a", "a", "b"]
+
+    per_label = compute_per_label_metrics(actual, predicted, label_vocabulary=["a", "b", "c"])
+
+    assert [row.label for row in per_label] == ["a", "b", "c"]
+    zero_support_row = per_label[2]
+    assert zero_support_row.label == "c"
+    assert zero_support_row.support == 0
+    assert zero_support_row.precision == 0.0
+    assert zero_support_row.recall == 0.0
+    assert zero_support_row.f1 == 0.0
+
+
+def test_per_label_metrics_declared_vocabulary_ignores_out_of_vocabulary_predictions() -> None:
+    """A predicted value outside the declared vocabulary (e.g. a malformed
+    placeholder) never becomes its own class — it simply never matches."""
+    actual = ["a", "b"]
+    predicted = ["a", "garbage-echoed-text"]
+
+    per_label = compute_per_label_metrics(actual, predicted, label_vocabulary=["a", "b"])
+
+    assert [row.label for row in per_label] == ["a", "b"]
+    b_row = per_label[1]
+    assert b_row.support == 1
+    assert b_row.recall == 0.0
+
+
+def test_classification_statistics_respects_label_vocabulary_on_point_estimate() -> None:
+    stats = compute_classification_statistics(
+        actual_labels=["a", "a", "b"],
+        predicted_labels=["a", "a", "b"],
+        case_ids=["c1", "c2", "c3"],
+        bootstrap_enabled=False,
+        bootstrap_iterations=100,
+        bootstrap_seed=1,
+        label_vocabulary=["a", "b", "c"],
+    )
+
+    assert [row.label for row in stats.per_label_metrics] == ["a", "b", "c"]
+    assert stats.per_label_metrics[2].support == 0
+
+
+def test_classification_statistics_bootstrap_uses_fixed_label_vocabulary() -> None:
+    """Every bootstrap resample must score against the same declared vocabulary,
+    not whatever subset of labels happens to appear in a given resample."""
+    actual_labels = ["a", "a", "a", "b", "b", "b"]
+    predicted_labels = ["a", "a", "a", "b", "b", "b"]
+    case_ids = [f"case_{i}" for i in range(len(actual_labels))]
+
+    stats = compute_classification_statistics(
+        actual_labels=actual_labels,
+        predicted_labels=predicted_labels,
+        case_ids=case_ids,
+        bootstrap_enabled=True,
+        bootstrap_iterations=50,
+        bootstrap_seed=7,
+        label_vocabulary=["a", "b", "c"],
+    )
+
+    assert [row.label for row in stats.per_label_metrics] == ["a", "b", "c"]
+    assert stats.macro_f1_ci_95 is not None
+
+
 def test_regressed_labels_use_recall_delta() -> None:
     rows = compute_regressed_labels(
         case_ids=["c1", "c2", "c3", "c4", "c5", "c6"],

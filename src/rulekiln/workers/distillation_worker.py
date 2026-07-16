@@ -327,30 +327,6 @@ async def _run(
             if loaded is not None:
                 eval_map[strategy] = loaded
 
-        if _is_classification_task_mode(task.task_mode):
-            refreshed_eval_map: dict[str, EvalResult] = {}
-            for strategy_name, strategy_eval in eval_map.items():
-                refreshed_eval_map[strategy_name] = _refresh_eval_classification_statistics(
-                    eval_result=strategy_eval,
-                    eval_cases=eval_cases,
-                    bootstrap_enabled=evaluation_bootstrap_enabled,
-                    bootstrap_iterations=evaluation_bootstrap_iterations,
-                    bootstrap_seed=_evaluation_bootstrap_seed(
-                        job_id=job_id,
-                        strategy=strategy_name,
-                        split=eval_split,
-                        seed_offset=evaluation_bootstrap_seed_offset,
-                    ),
-                )
-            state.eval_map = refreshed_eval_map
-            eval_map = state.eval_map
-            if baseline_eval is not None and BASELINE_STRATEGY in eval_map:
-                baseline_eval = eval_map[BASELINE_STRATEGY]
-                state.baseline_eval = baseline_eval
-            if baseline_scaffold_eval is not None and BASELINE_SCAFFOLD_STRATEGY in eval_map:
-                baseline_scaffold_eval = eval_map[BASELINE_SCAFFOLD_STRATEGY]
-                state.baseline_scaffold_eval = baseline_scaffold_eval
-
         if RETRIEVAL_FEW_SHOT_STRATEGY not in eval_map:
             loaded_retrieval = await _load_eval_result_from_db(
                 session,
@@ -401,6 +377,31 @@ async def _run(
                     "prompt_token_count": prompt_tokens,
                     "synthesized_rules_count": len(schemas),
                 }
+
+        if _is_classification_task_mode(task.task_mode):
+            refreshed_eval_map: dict[str, EvalResult] = {}
+            for strategy_name, strategy_eval in eval_map.items():
+                refreshed_eval_map[strategy_name] = _refresh_eval_classification_statistics(
+                    eval_result=strategy_eval,
+                    eval_cases=eval_cases,
+                    task=task,
+                    bootstrap_enabled=evaluation_bootstrap_enabled,
+                    bootstrap_iterations=evaluation_bootstrap_iterations,
+                    bootstrap_seed=_evaluation_bootstrap_seed(
+                        job_id=job_id,
+                        strategy=strategy_name,
+                        split=eval_split,
+                        seed_offset=evaluation_bootstrap_seed_offset,
+                    ),
+                )
+            state.eval_map = refreshed_eval_map
+            eval_map = state.eval_map
+            if baseline_eval is not None and BASELINE_STRATEGY in eval_map:
+                baseline_eval = eval_map[BASELINE_STRATEGY]
+                state.baseline_eval = baseline_eval
+            if baseline_scaffold_eval is not None and BASELINE_SCAFFOLD_STRATEGY in eval_map:
+                baseline_scaffold_eval = eval_map[BASELINE_SCAFFOLD_STRATEGY]
+                state.baseline_scaffold_eval = baseline_scaffold_eval
 
         # ── Stage: checking_quality_gates ─────────────────────────────────
         gate_map = state.gate_map

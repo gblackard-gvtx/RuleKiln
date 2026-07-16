@@ -5,7 +5,7 @@ from __future__ import annotations
 from pydantic import BaseModel
 from pydantic_ai import Agent
 from pydantic_ai.messages import ModelResponse, TextPart
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.profiles.openai import OpenAIModelProfile
 from pydantic_ai.providers.openai import OpenAIProvider
 
@@ -48,14 +48,13 @@ class OpenAICompatibleChatClient(ChatModelClient):
 
         async def _call() -> ChatCompletionResult:
             provider = OpenAIProvider(base_url=config.base_url, api_key=api_key)
-            model = OpenAIModel(config.model, provider=provider, profile=_LOCAL_MODEL_PROFILE)  # pyright: ignore[reportArgumentType]
+            model = OpenAIChatModel(config.model, provider=provider, profile=_LOCAL_MODEL_PROFILE)  # pyright: ignore[reportArgumentType]
             retry_budget = max(0, config.max_retries)
             agent: Agent[None, BaseModel] = Agent(  # pyright: ignore[reportUnknownVariableType,reportCallIssue,reportAssignmentType]
                 model,
                 output_type=output_schema,  # pyright: ignore[reportArgumentType]
                 system_prompt=system_prompt,
                 retries=retry_budget,
-                output_retries=retry_budget,
             )
             result = await agent.run(user_prompt)
 
@@ -69,7 +68,7 @@ class OpenAICompatibleChatClient(ChatModelClient):
                         if isinstance(part, TextPart):
                             raw_text += part.content
 
-            pai_usage = result.usage()
+            pai_usage = result.usage
             in_tok = pai_usage.input_tokens
             out_tok = pai_usage.output_tokens
             has_usage = in_tok > 0 or out_tok > 0

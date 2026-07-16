@@ -17,6 +17,21 @@ promotion differs from quality gates.
 **Selected does not mean production-ready.** A strategy can be the top-ranked eligible result
 and still be blocked from promotion.
 
+### Selection can fall back to a baseline; promotion cannot
+
+Selection is family-agnostic by design: when no distilled strategy (`dbscan`/`hdbscan`) passes
+its quality gate, selection correctly falls back to the best eligible baseline (e.g.
+`baseline_scaffold`) so exploratory analysis still has a result to report. Promotion, however,
+is scoped to `distilled`-family strategies only — a baseline is a comparator used to measure a
+distilled strategy's improvement, never itself a deployable result. `evaluate_promotion()`
+checks `strategy_family(selected_strategy)` (`pipeline/strategy_families.py`) before evaluating
+any blocker; when the selected strategy is not in the `distilled` family, promotion resolves to
+`not_applicable` with `promotion_candidate=None` and a single `NO_ELIGIBLE_DISTILLED_STRATEGY`
+blocker, instead of running distilled-vs-baseline blockers (`METRIC_DELTA_INSUFFICIENT`,
+`PAIRED_FIXED_NOT_GT_BROKEN`, ...) against a strategy that has no baseline to compare against.
+The resolved family is persisted as `selected_strategy_family` on `PromotionStatus` so the fact
+is self-describing on the artifact rather than re-derived from `strategy_family()` on read.
+
 ### Why provenance errors block promotion but not selection
 
 Selection must still work for older or partially-instrumented runs, so provenance validation
@@ -34,6 +49,7 @@ provenance axis — but the approved-config check is a separate promotion blocke
 | Status | Meaning |
 |---|---|
 | `not_evaluated` | No selected strategy, or policy disabled. |
+| `not_applicable` | Selected strategy is not `distilled`-family (e.g. a baseline fallback) — there is nothing eligible to promote. |
 | `experimental` | Selected but not put through promotion (e.g. legacy run). |
 | `candidate` | Under review. |
 | `blocked` | One or more promotion blockers present. |
@@ -54,6 +70,7 @@ Blockers are emitted deterministically in this order (`promotion.BLOCKER_ORDER`)
 
 | Code | Raised when |
 |---|---|
+| `NO_ELIGIBLE_DISTILLED_STRATEGY` | Selected strategy is not `distilled`-family (short-circuits before any other blocker below is evaluated). |
 | `SELECTED_STRATEGY_NOT_ELIGIBLE` | Selected strategy failed its quality gate. |
 | `CONFIG_NOT_PROMOTED_CONFIG` | Runtime clustering config hash ≠ approved config hash. |
 | `METRIC_DELTA_INSUFFICIENT` | Metric delta below `min_metric_delta`. |
@@ -115,6 +132,20 @@ Under the default policy, the investigated HDBSCAN run resolves to `blocked` wit
 with `provenance_status: incomplete`, `reproducibility_status: unverified`,
 `confidence_status: insufficient`. It remains the **selected** strategy for analysis but is
 **not** promoted — exactly the distinction the review asked for.
+
+## Example: baseline fallback (no distilled strategy passed its quality gate)
+
+When neither `dbscan` nor `hdbscan` passes its quality gate, selection falls back to the best
+eligible baseline — say `baseline_scaffold`. Promotion resolves to:
+
+* `promotion_status: not_applicable`
+* `promotion_candidate: null`
+* `selected_strategy: "baseline_scaffold"`, `selected_strategy_family: "baseline"`
+* Blockers: `NO_ELIGIBLE_DISTILLED_STRATEGY` only.
+
+No `METRIC_DELTA_INSUFFICIENT`, `PAIRED_FIXED_NOT_GT_BROKEN`, or
+`SELECTED_STRATEGY_NOT_ELIGIBLE` blockers are evaluated, since they carry no meaningful signal
+for a strategy with no baseline to compare against.
 
 ## How promotion differs from quality gates
 

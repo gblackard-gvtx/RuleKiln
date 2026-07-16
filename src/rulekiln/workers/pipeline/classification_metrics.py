@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 
 from rulekiln.pipeline.baseline_strategies import expected_label, resolve_distance_metric
+from rulekiln.pipeline.classification_alignment import (
+    build_classification_label_columns,
+    compute_strict_and_valid_output_statistics,
+    declared_label_vocabulary,
+)
 from rulekiln.pipeline.split_policy import resolve_few_shot_source_cases
 from rulekiln.pipeline.statistics import (
     PairedComparisonArtifacts,
-    compute_classification_statistics,
     compute_paired_comparison,
     compute_regressed_labels,
 )
@@ -73,37 +77,64 @@ def _refresh_eval_classification_statistics(
     *,
     eval_result: EvalResult,
     eval_cases: list[RuleKilnCase],
+    task: RuleKilnTask,
     bootstrap_enabled: bool,
     bootstrap_iterations: int,
     bootstrap_seed: int,
 ) -> EvalResult:
-    case_ids, expected_labels, predicted_labels, _ = _aligned_classification_columns(
-        eval_cases=eval_cases,
-        eval_result=eval_result,
+    """Rebuild classification-derived fields from the always-authoritative ``case_results``.
+
+    A DB-loaded row with ``metric_semantics_version < 2`` predates strict/valid-output
+    metric semantics (Work Package 1). When ``case_results`` is available it is
+    recomputed and stamped ``recomputed_legacy``; when it is empty (data predates the
+    ``EvalCaseResultRecord`` table itself), the row is left unmodified but stamped
+    ``incomplete_legacy`` so callers don't display stale or fabricated numbers as current.
+    """
+    is_legacy = eval_result.metric_semantics_version < 2
+    case_ids, expected_labels, predicted_labels, malformed_flags = (
+        build_classification_label_columns(eval_cases, eval_result.case_results)
     )
     if not case_ids:
+        if is_legacy:
+            return eval_result.model_copy(
+                update={"metric_semantics_status": "incomplete_legacy"}
+            )
         return eval_result
 
-    classification_stats = compute_classification_statistics(
-        actual_labels=expected_labels,
-        predicted_labels=predicted_labels,
+    vocabulary = declared_label_vocabulary(task)
+    stats = compute_strict_and_valid_output_statistics(
         case_ids=case_ids,
+        expected_labels=expected_labels,
+        predicted_labels=predicted_labels,
+        malformed_flags=malformed_flags,
+        label_vocabulary=vocabulary,
         bootstrap_enabled=bootstrap_enabled,
         bootstrap_iterations=bootstrap_iterations,
         bootstrap_seed=bootstrap_seed,
     )
+    strict = stats.strict
+    valid_output = stats.valid_output
 
     return eval_result.model_copy(
         update={
-            "accuracy": classification_stats.accuracy,
-            "accuracy_ci_95": classification_stats.accuracy_ci_95,
-            "macro_f1": classification_stats.macro_f1,
-            "macro_f1_ci_95": classification_stats.macro_f1_ci_95,
-            "per_label_metrics": classification_stats.per_label_metrics,
-            "per_outcome_precision": classification_stats.per_outcome_precision,
-            "per_outcome_recall": classification_stats.per_outcome_recall,
-            "confusion_matrix": classification_stats.confusion_matrix,
-            "top_confusions": classification_stats.top_confusions,
+            "accuracy": strict.accuracy,
+            "accuracy_ci_95": strict.accuracy_ci_95,
+            "macro_f1": strict.macro_f1,
+            "macro_f1_ci_95": strict.macro_f1_ci_95,
+            "valid_output_accuracy": valid_output.accuracy if valid_output else None,
+            "valid_output_accuracy_ci_95": valid_output.accuracy_ci_95 if valid_output else None,
+            "valid_output_macro_f1": valid_output.macro_f1 if valid_output else None,
+            "valid_output_macro_f1_ci_95": (
+                valid_output.macro_f1_ci_95 if valid_output else None
+            ),
+            "per_label_metrics": strict.per_label_metrics,
+            "per_outcome_precision": strict.per_outcome_precision,
+            "per_outcome_recall": strict.per_outcome_recall,
+            "confusion_matrix": strict.confusion_matrix,
+            "top_confusions": strict.top_confusions,
+            "declared_label_vocabulary": list(vocabulary) if vocabulary else None,
+            "metric_semantics_version": 2,
+            "metric_semantics_status": "recomputed_legacy" if is_legacy else "current",
         }
     )
 

@@ -515,6 +515,11 @@ class ExtractionStageService:
 
 # ── RuleEmbeddingStageService ───────────────────────────────────────────────
 
+# Nomic embedding models require a task-instruction prefix. Rule embeddings feed
+# unsupervised DBSCAN/HDBSCAN clustering (grouping similar rules), not label
+# prediction, so this uses Nomic's "clustering" prefix rather than "classification".
+_RULE_EMBEDDING_TASK_PREFIX = "clustering: "
+
 
 class RuleEmbeddingStageService:
     __slots__ = ("_session",)
@@ -529,7 +534,10 @@ class RuleEmbeddingStageService:
     ) -> RuleEmbeddingResult:
         db_micro_rules = await get_micro_rules_for_job(self._session, ctx.job_id)
         rule_ids = [r.id for r in db_micro_rules]
+        # rule_texts stays unprefixed: it's persisted verbatim into clustering
+        # provenance (display text + content hashes), not just used for embedding.
         rule_texts = [f"{r.topic}: {r.condition} → {r.expected_outcome}" for r in db_micro_rules]
+        embedding_texts = [_RULE_EMBEDDING_TASK_PREFIX + text for text in rule_texts]
 
         guard = StageGuard(self._session, ctx.job_id)
         stage_already_complete = await guard.is_complete(PipelineStage.EMBEDDING_RULES)
@@ -550,7 +558,7 @@ class RuleEmbeddingStageService:
                 ctx.collector,
             )
             embedding_result = await bundle.embedding_client.embed_texts(
-                texts=rule_texts, config=bundle.embedding_config
+                texts=embedding_texts, config=bundle.embedding_config
             )
             embeddings = embedding_result.embeddings
 

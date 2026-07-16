@@ -59,11 +59,25 @@ def compute_accuracy(actual_labels: Sequence[str], predicted_labels: Sequence[st
 def compute_per_label_metrics(
     actual_labels: Sequence[str],
     predicted_labels: Sequence[str],
+    *,
+    label_vocabulary: Sequence[str] | None = None,
 ) -> list[PerLabelMetricsRow]:
-    """Compute deterministic per-label precision, recall, and F1 rows."""
+    """Compute deterministic per-label precision, recall, and F1 rows.
+
+    When ``label_vocabulary`` is provided, it is iterated exactly as given (labels
+    with zero observed support still get a row) instead of deriving the label set
+    from observed actual/predicted values. A predicted value outside the vocabulary
+    (e.g. a malformed-output placeholder) simply never matches any scored label, so
+    it naturally counts as a false negative against the true label with no separate
+    exclusion logic required.
+    """
     _validate_aligned_inputs(actual_labels, predicted_labels)
 
-    label_set = sorted(set(actual_labels) | set(predicted_labels))
+    label_set = (
+        list(label_vocabulary)
+        if label_vocabulary is not None
+        else sorted(set(actual_labels) | set(predicted_labels))
+    )
     rows: list[PerLabelMetricsRow] = []
 
     for label in label_set:
@@ -181,12 +195,15 @@ def compute_classification_statistics(
     bootstrap_iterations: int,
     bootstrap_seed: int,
     top_confusion_limit: int = 20,
+    label_vocabulary: Sequence[str] | None = None,
 ) -> ClassificationStatistics:
     """Compute all shared classification statistics for artifacts and summaries."""
     _validate_aligned_inputs(actual_labels, predicted_labels)
     _validate_aligned_inputs(actual_labels, case_ids)
 
-    per_label_metrics = compute_per_label_metrics(actual_labels, predicted_labels)
+    per_label_metrics = compute_per_label_metrics(
+        actual_labels, predicted_labels, label_vocabulary=label_vocabulary
+    )
     accuracy = compute_accuracy(actual_labels, predicted_labels)
     macro_f1 = compute_macro_f1(per_label_metrics)
 
@@ -198,6 +215,7 @@ def compute_classification_statistics(
             predicted_labels=predicted_labels,
             iterations=bootstrap_iterations,
             seed=bootstrap_seed,
+            label_vocabulary=label_vocabulary,
         )
 
     return ClassificationStatistics(
@@ -398,6 +416,7 @@ def _bootstrap_confidence_intervals(
     predicted_labels: Sequence[str],
     iterations: int,
     seed: int,
+    label_vocabulary: Sequence[str] | None = None,
 ) -> tuple[MetricConfidenceInterval | None, MetricConfidenceInterval | None]:
     """Compute deterministic 95% bootstrap confidence intervals for accuracy and macro F1."""
     _validate_aligned_inputs(actual_labels, predicted_labels)
@@ -417,7 +436,9 @@ def _bootstrap_confidence_intervals(
         sample_actual = [actual_labels[index] for index in sampled_indices]
         sample_predicted = [predicted_labels[index] for index in sampled_indices]
 
-        sample_rows = compute_per_label_metrics(sample_actual, sample_predicted)
+        sample_rows = compute_per_label_metrics(
+            sample_actual, sample_predicted, label_vocabulary=label_vocabulary
+        )
         accuracy_samples.append(compute_accuracy(sample_actual, sample_predicted))
         macro_f1_samples.append(compute_macro_f1(sample_rows))
 

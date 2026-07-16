@@ -4,6 +4,7 @@ from rulekiln.pipeline.promotion import (
     BLOCKER_ORDER,
     evaluate_promotion,
     provenance_status_from_report,
+    stale_artifact_status_from_report,
 )
 from rulekiln.schemas.pipeline import EvalResult, QualityGateResult, RegressedLabelRow
 from rulekiln.schemas.promotion import (
@@ -12,6 +13,7 @@ from rulekiln.schemas.promotion import (
     ProvenanceFinding,
     ProvenanceValidationReport,
 )
+from rulekiln.schemas.stale_artifact import StaleArtifactFinding, StaleArtifactValidationReport
 
 
 def _eval(strategy: str = "hdbscan", **kwargs: object) -> EvalResult:
@@ -24,6 +26,10 @@ def _gate(passed: bool = True, **kwargs: object) -> QualityGateResult:
 
 def _clean_report() -> ProvenanceValidationReport:
     return ProvenanceValidationReport(job_id="job-1", findings=[])
+
+
+def _clean_stale_artifact_report() -> StaleArtifactValidationReport:
+    return StaleArtifactValidationReport(job_id="job-1", findings=[])
 
 
 def _healthy_kwargs() -> dict[str, object]:
@@ -42,6 +48,7 @@ def _healthy_kwargs() -> dict[str, object]:
         "runtime_config_hash": "abc",
         "approved_config_hash": "abc",
         "provenance_report": _clean_report(),
+        "stale_artifact_report": _clean_stale_artifact_report(),
         "reproducibility_status": "reproducible",
     }
 
@@ -66,6 +73,29 @@ def test_invalid_provenance_blocks_promotion() -> None:
     assert status.promotion_status == "blocked"
     assert status.provenance_status == "invalid"
     assert any(b.code == "PROVENANCE_INVALID" for b in status.promotion_blockers)
+
+
+def test_stale_artifact_detected_blocks_promotion() -> None:
+    kwargs = _healthy_kwargs()
+    kwargs["stale_artifact_report"] = StaleArtifactValidationReport(
+        job_id="job-1",
+        findings=[
+            StaleArtifactFinding(code="EVALUATION_HASH_MISMATCH", severity="error", message="bad")
+        ],
+    )
+    status = evaluate_promotion(**kwargs)  # type: ignore[arg-type]
+    assert status.promotion_status == "blocked"
+    assert status.stale_artifact_status == "invalid"
+    assert any(b.code == "STALE_ARTIFACT_DETECTED" for b in status.promotion_blockers)
+
+
+def test_missing_stale_artifact_report_blocks_promotion_by_default() -> None:
+    kwargs = _healthy_kwargs()
+    del kwargs["stale_artifact_report"]
+    status = evaluate_promotion(**kwargs)  # type: ignore[arg-type]
+    assert status.promotion_status == "blocked"
+    assert status.stale_artifact_status == "missing"
+    assert any(b.code == "STALE_ARTIFACT_DETECTED" for b in status.promotion_blockers)
 
 
 def test_missing_repeat_runs_blocks_promotion() -> None:
@@ -190,6 +220,40 @@ def test_provenance_status_mapping() -> None:
         findings=[ProvenanceFinding(code="E", severity="error", message="e")]
     )
     assert provenance_status_from_report(err) == "invalid"
+
+
+def test_stale_artifact_status_mapping() -> None:
+    assert stale_artifact_status_from_report(None) == "missing"
+    assert stale_artifact_status_from_report(_clean_stale_artifact_report()) == "valid"
+    err = StaleArtifactValidationReport(
+        findings=[StaleArtifactFinding(code="X", severity="error", message="e")]
+    )
+    assert stale_artifact_status_from_report(err) == "invalid"
+
+
+def test_baseline_family_selection_is_not_applicable() -> None:
+    # Baseline-fallback selection (no distilled strategy passed its quality gate) must not
+    # be evaluated as a promotion candidate: see
+    # docs/investigations/promotion-baseline-fallback.md.
+    kwargs = _healthy_kwargs()
+    kwargs["selected_strategy"] = "baseline_scaffold"
+    kwargs["selected_gate"] = None
+    kwargs["metric_delta"] = None
+    kwargs["paired_fixed"] = None
+    kwargs["paired_broken"] = None
+    status = evaluate_promotion(**kwargs)  # type: ignore[arg-type]
+    assert status.promotion_status == "not_applicable"
+    assert status.promotion_candidate is None
+    assert status.selected_strategy == "baseline_scaffold"
+    assert status.selected_strategy_family == "baseline"
+    codes = [blocker.code for blocker in status.promotion_blockers]
+    assert codes == ["NO_ELIGIBLE_DISTILLED_STRATEGY"]
+
+
+def test_distilled_family_selection_sets_family_and_evaluates_normally() -> None:
+    status = evaluate_promotion(**_healthy_kwargs())  # type: ignore[arg-type]
+    assert status.selected_strategy_family == "distilled"
+    assert status.promotion_status == "approved"
 
 
 def test_no_selected_strategy_is_not_evaluated() -> None:

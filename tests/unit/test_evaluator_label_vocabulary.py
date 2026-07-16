@@ -16,8 +16,8 @@ from __future__ import annotations
 
 import pytest
 
+from rulekiln.pipeline.classification_alignment import declared_label_vocabulary
 from rulekiln.pipeline.evaluator import (
-    _allowed_labels_from_task,  # pyright: ignore[reportPrivateUsage]
     _score_case,  # pyright: ignore[reportPrivateUsage]
     _try_recover_label,  # pyright: ignore[reportPrivateUsage]
     evaluate_prompt,
@@ -70,17 +70,19 @@ def _case(case_id: str, label: str) -> RuleKilnCase:
 
 
 def test_allowed_labels_extracted_from_output_schema_enum() -> None:
-    assert _allowed_labels_from_task(_task()) == _LABELS
+    vocabulary = declared_label_vocabulary(_task())
+    assert vocabulary is not None
+    assert frozenset(vocabulary) == _LABELS
 
 
 def test_allowed_labels_none_without_enum() -> None:
     task = _task().model_copy(update={"output_schema": {"properties": {"label": {}}}})
-    assert _allowed_labels_from_task(task) is None
+    assert declared_label_vocabulary(task) is None
 
 
 def test_allowed_labels_none_for_non_classification_mode() -> None:
     task = _task().model_copy(update={"task_mode": "summarization"})
-    assert _allowed_labels_from_task(task) is None
+    assert declared_label_vocabulary(task) is None
 
 
 # ── _score_case vocabulary enforcement ────────────────────────────────────────
@@ -263,9 +265,44 @@ async def test_garbage_predictions_raise_malformed_rate_not_spurious_classes() -
     )
 
     assert result.malformed_output_rate == pytest.approx(0.4)
-    # Metrics computed over the 3 non-malformed predictions only
-    assert result.accuracy == pytest.approx(2 / 3)
-    # Label space is the union of gold + predicted VALID labels — no spurious
-    # garbage classes diluting the mean.
+    # Strict (ADR-0002): all 5 assigned cases, malformed counted as incorrect.
+    assert result.accuracy == pytest.approx(2 / 5)
+    # Valid-output (diagnostic only): the 3 non-malformed predictions.
+    assert result.valid_output_accuracy == pytest.approx(2 / 3)
+    # Label space is the task's declared vocabulary — no spurious garbage
+    # classes diluting the mean, regardless of how many distinct echoed
+    # strings were produced.
     observed_labels = {row.label for row in result.per_label_metrics}
     assert observed_labels <= _LABELS
+    assert len(result.per_label_metrics) == len(result.declared_label_vocabulary or [])
+
+
+@pytest.mark.asyncio
+async def test_malformed_never_becomes_extra_label_class() -> None:
+    """Regression lock: per_label_metrics rows always match the declared
+    vocabulary exactly, never the union of gold + echoed garbage strings."""
+    cases = [
+        _case("c1", "entailment"),
+        _case("c2", "neutral"),
+    ]
+    client = _ScriptedClient(
+        [
+            '{"label": "entailment"}',  # correct
+            '"totally unrelated echoed prose"',  # malformed
+        ]
+    )
+    result = await evaluate_prompt(
+        "system prompt",
+        cases,
+        _task(),
+        client,
+        _config(),
+        strategy="baseline_few_shot_k5",
+        split="train",
+        bootstrap_enabled=False,
+    )
+
+    assert result.declared_label_vocabulary == sorted(_LABELS)
+    observed_labels = {row.label for row in result.per_label_metrics}
+    assert observed_labels == _LABELS
+    assert len(result.per_label_metrics) == len(_LABELS)

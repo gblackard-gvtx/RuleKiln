@@ -341,26 +341,36 @@ class CaseEvalResult(BaseModel):
 
 
 class EvalResult(BaseModel):
-    """Aggregate evaluation result for a prompt version on a split."""
+    """Aggregate evaluation result for a prompt version on a split.
+
+    ``accuracy``/``macro_f1`` (and their CIs) are strict metrics per ADR-0002:
+    computed over all assigned cases, with malformed predictions counted as
+    incorrect. The ``valid_output_*`` fields are diagnostic-only metrics
+    computed over the subset of cases with a well-formed prediction, and are
+    ``None`` when there are zero valid-output cases (never a misleading 0.0).
+    Both views share ``declared_label_vocabulary`` so a label's disappearance
+    from the valid-output subset can't be mistaken for a genuine score change.
+    """
 
     strategy: str
     model: str
     split: str
+    metric_semantics_version: int = 2
     accuracy: float | None = None
-    accuracy_ci_95: MetricConfidenceInterval | None = None
     accuracy_ci_95: MetricConfidenceInterval | None = None
     macro_f1: float | None = None
     macro_f1_ci_95: MetricConfidenceInterval | None = None
-    macro_f1_ci_95: MetricConfidenceInterval | None = None
+    valid_output_accuracy: float | None = None
+    valid_output_accuracy_ci_95: MetricConfidenceInterval | None = None
+    valid_output_macro_f1: float | None = None
+    valid_output_macro_f1_ci_95: MetricConfidenceInterval | None = None
+    declared_label_vocabulary: list[str] | None = None
     weighted_case_score: float | None = None
     malformed_output_rate: float = 0.0
     per_outcome_precision: dict[str, float] = Field(default_factory=dict)
     per_outcome_recall: dict[str, float] = Field(default_factory=dict)
     per_label_metrics: list[PerLabelMetricsRow] = Field(default_factory=list)
-    per_label_metrics: list[PerLabelMetricsRow] = Field(default_factory=list)
     confusion_matrix: dict[str, dict[str, int]] = Field(default_factory=dict)
-    top_confusions: list[TopConfusionRow] = Field(default_factory=list)
-    regressed_labels: list[RegressedLabelRow] = Field(default_factory=list)
     top_confusions: list[TopConfusionRow] = Field(default_factory=list)
     regressed_labels: list[RegressedLabelRow] = Field(default_factory=list)
     case_results: list[CaseEvalResult] = Field(default_factory=list)
@@ -370,9 +380,9 @@ class EvalResult(BaseModel):
     prompt_token_count: int | None = None
     retrieval_failure_count: int = 0
     model_failure_count: int = 0
-    prompt_token_count: int | None = None
-    retrieval_failure_count: int = 0
-    model_failure_count: int = 0
+    metric_semantics_status: Literal["current", "recomputed_legacy", "incomplete_legacy"] = (
+        "current"
+    )
 
 
 # ── Eval-to-rule failure mapping ───────────────────────────────────────────

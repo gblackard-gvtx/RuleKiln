@@ -63,8 +63,13 @@ async def _load_eval_result_from_db(
         strategy=run.strategy,
         model=run.model,
         split=run.split,
+        metric_semantics_version=(
+            run.metric_semantics_version if run.metric_semantics_version is not None else 1
+        ),
         accuracy=run.accuracy,
         macro_f1=run.macro_f1,
+        valid_output_accuracy=run.valid_output_accuracy,
+        valid_output_macro_f1=run.valid_output_macro_f1,
         weighted_case_score=run.weighted_case_score,
         malformed_output_rate=run.malformed_output_rate or 0.0,
         per_outcome_precision=dict(run.per_outcome_precision or {}),

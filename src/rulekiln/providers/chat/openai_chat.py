@@ -10,7 +10,7 @@ from typing import cast
 
 from pydantic import BaseModel
 from pydantic_ai import Agent
-from pydantic_ai.models.openai import OpenAIModel
+from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from rulekiln.providers.batch_schema_registry import get_schema_class
@@ -153,17 +153,16 @@ class OpenAIChatClient(BatchChatModelClient):
 
         async def _call() -> ChatCompletionResult:
             provider = OpenAIProvider(api_key=config.api_key)
-            model = OpenAIModel(config.model, provider=provider)
+            model = OpenAIChatModel(config.model, provider=provider)
             retry_budget = max(0, config.max_retries)
             agent: Agent[None, BaseModel] = Agent(  # pyright: ignore[reportUnknownVariableType,reportCallIssue,reportAssignmentType]
                 model,
                 output_type=output_schema,  # pyright: ignore[reportArgumentType]
                 system_prompt=system_prompt,
                 retries=retry_budget,
-                output_retries=retry_budget,
             )
             result = await agent.run(user_prompt)
-            pai_usage = result.usage()
+            pai_usage = result.usage
             usage = build_usage_from_provider(
                 input_tokens=pai_usage.input_tokens,
                 output_tokens=pai_usage.output_tokens,

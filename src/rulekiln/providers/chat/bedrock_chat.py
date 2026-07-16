@@ -45,10 +45,9 @@ class BedrockChatClient(ChatModelClient):
                 output_type=output_schema,  # pyright: ignore[reportArgumentType]
                 system_prompt=system_prompt,
                 retries=retry_budget,
-                output_retries=retry_budget,
             )
             result = await agent.run(user_prompt)
-            pai_usage = result.usage()
+            pai_usage = result.usage
             usage = build_usage_from_provider(
                 input_tokens=pai_usage.input_tokens,
                 output_tokens=pai_usage.output_tokens,

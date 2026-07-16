@@ -224,8 +224,11 @@ class EvalRun(Base):
     strategy: Mapped[str] = mapped_column(String, nullable=False)
     model: Mapped[str] = mapped_column(String, nullable=False)
     split: Mapped[str] = mapped_column(String, nullable=False)
+    metric_semantics_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
     accuracy: Mapped[float | None] = mapped_column(Double, nullable=True)
     macro_f1: Mapped[float | None] = mapped_column(Double, nullable=True)
+    valid_output_accuracy: Mapped[float | None] = mapped_column(Double, nullable=True)
+    valid_output_macro_f1: Mapped[float | None] = mapped_column(Double, nullable=True)
     weighted_case_score: Mapped[float | None] = mapped_column(Double, nullable=True)
     per_outcome_precision: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # pyright: ignore[reportArgumentType]
     per_outcome_recall: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # pyright: ignore[reportArgumentType]

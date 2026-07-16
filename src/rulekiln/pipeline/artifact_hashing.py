@@ -76,6 +76,9 @@ def evaluation_hash(eval_result: EvalResult) -> str:
         "split": eval_result.split,
         "accuracy": eval_result.accuracy,
         "macro_f1": eval_result.macro_f1,
+        "valid_output_accuracy": eval_result.valid_output_accuracy,
+        "valid_output_macro_f1": eval_result.valid_output_macro_f1,
+        "declared_label_vocabulary": eval_result.declared_label_vocabulary,
         "malformed_output_rate": eval_result.malformed_output_rate,
         "per_label_f1": {row.label: row.f1 for row in eval_result.per_label_metrics},
     }

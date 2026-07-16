@@ -22,6 +22,7 @@ from rulekiln.artifacts.writer import (
     write_cases_normalized,
     write_confusion_matrix_csv,
     write_eval_report,
+    write_integrity_check_failures,
     write_manifest,
     write_mlflow_run_id,
     write_paired_comparison_artifacts,
@@ -99,15 +100,29 @@ from rulekiln.pipeline.split_leakage_validation import (
     validate_split_leakage,
     write_split_leakage_validation,
 )
+from rulekiln.pipeline.stale_artifact_validation import (
+    validate_stale_artifacts,
+    write_stale_artifact_validation,
+)
 from rulekiln.providers.chat import get_chat_client
 from rulekiln.providers.contracts import ChatModelClient, ProviderConfig
 from rulekiln.providers.resolver import resolve_provider_config
 from rulekiln.schemas.classroom import StudentConfig
+from rulekiln.schemas.integrity_check_failure import (
+    IntegrityCheckFailure,
+    IntegrityCheckFailuresReport,
+)
 from rulekiln.schemas.pipeline import (
     RuleAblationArtifact,
     StrategyComparison,
 )
-from rulekiln.schemas.promotion import PromotionPolicy
+from rulekiln.schemas.promotion import (
+    PromotionPolicy,
+    PromotionStatus,
+    ProvenanceValidationReport,
+)
+from rulekiln.schemas.split_leakage import SplitLeakageValidationReport
+from rulekiln.schemas.stale_artifact import StaleArtifactValidationReport
 from rulekiln.workers.pipeline.artifacts_state import PipelineArtifactsState
 from rulekiln.workers.pipeline.classification_metrics import (
     _resolve_training_cases,
@@ -588,9 +603,25 @@ class ArtifactExportService:
         """Compute + persist reproducibility hashes, provenance validation, promotion.
 
         Enriches ``comparison`` in place and re-writes strategy_comparison.json so the UI
-        can read provenance rows and promotion status from a single artifact. Never raises:
-        provenance/promotion are side artifacts and must not fail an otherwise-good job.
+        can read provenance rows and promotion status from a single artifact. Each check
+        (hash/provenance-row construction, provenance validation, promotion evaluation,
+        split-leakage validation) runs in its own try/except so one failing check never
+        silently discards the others; every failure is persisted to
+        metadata/integrity_check_failures.json instead of only a backend log line.
         """
+        failures: list[IntegrityCheckFailure] = []
+
+        def _record_failure(stage: str, exc: Exception) -> None:
+            logger.error("integrity_check_failed", job_id=ctx.job_id, stage=stage, error=str(exc))
+            failures.append(
+                IntegrityCheckFailure(
+                    stage=stage,
+                    error=str(exc),
+                    error_type=type(exc).__name__,
+                    timestamp=datetime.now(UTC).isoformat(),
+                )
+            )
+
         try:
             # Job-level hashes (safe subsets only — no secrets).
             ordered_case_ids = [case.id for case in ctx.eval_cases]
@@ -644,18 +675,22 @@ class ArtifactExportService:
                 strategy_rows=strategy_rows,
                 selected_strategy=selected_strategy,
             )
+        except Exception as exc:  # noqa: BLE001 - recorded as a reviewable artifact below
+            _record_failure("hash_and_provenance_row_construction", exc)
+            report = IntegrityCheckFailuresReport(job_id=ctx.job_id, failures=failures)
+            return [write_integrity_check_failures(artifact_root, report)]
 
-            # Provenance validation. Case-set check uses sorted id sets so evaluation
-            # order does not cause false positives; a strategy missing/adding cases still
-            # fails. The reference is the selected strategy's set.
-            prediction_case_ids = {
-                strategy: sorted(case.case_id for case in ev.case_results)
-                for strategy, ev in comparison.strategy_evals.items()
-            }
-            reference_case_ids = prediction_case_ids.get(selected_strategy, ordered_case_ids)
-            prompt_hash_by_strategy = {
-                row.strategy: row.compiled_prompt_hash for row in strategy_rows
-            }
+        # Provenance validation. Case-set check uses sorted id sets so evaluation
+        # order does not cause false positives; a strategy missing/adding cases still
+        # fails. The reference is the selected strategy's set.
+        prediction_case_ids = {
+            strategy: sorted(case.case_id for case in ev.case_results)
+            for strategy, ev in comparison.strategy_evals.items()
+        }
+        reference_case_ids = prediction_case_ids.get(selected_strategy, ordered_case_ids)
+        prompt_hash_by_strategy = {row.strategy: row.compiled_prompt_hash for row in strategy_rows}
+        validation: ProvenanceValidationReport | None
+        try:
             validation = validate_provenance(
                 job_id=ctx.job_id,
                 artifact_root=artifact_root,
@@ -664,13 +699,31 @@ class ArtifactExportService:
                 prompt_hash_by_strategy=prompt_hash_by_strategy,
                 prediction_case_ids_by_strategy=prediction_case_ids,
             )
+        except Exception as exc:  # noqa: BLE001 - fail-closed: provenance_status_from_report(None) == "missing"
+            _record_failure("provenance_validation", exc)
+            validation = None
 
-            # Promotion evaluation for the selected strategy.
-            selected_gate = comparison.strategy_gates.get(selected_strategy)
-            selected_eval = comparison.strategy_evals.get(selected_strategy)
-            paired = comparison.paired_comparison
-            selected_prov = provenance_by_strategy.get(selected_strategy)
-            approved = load_approved_config(selected_strategy)
+        # Stale-artifact validation. Checks freshly recomputed hashes against whatever a
+        # prior invocation of this job persisted to strategy_comparison.json/manifest.json.
+        stale_artifact_report: StaleArtifactValidationReport | None
+        try:
+            stale_artifact_report = validate_stale_artifacts(
+                job_id=ctx.job_id,
+                artifact_root=artifact_root,
+                eval_results_by_strategy=comparison.strategy_evals,
+            )
+        except Exception as exc:  # noqa: BLE001 - fail-closed: stale_artifact_status_from_report(None) == "missing"
+            _record_failure("stale_artifact_validation", exc)
+            stale_artifact_report = None
+
+        # Promotion evaluation for the selected strategy.
+        selected_gate = comparison.strategy_gates.get(selected_strategy)
+        selected_eval = comparison.strategy_evals.get(selected_strategy)
+        paired = comparison.paired_comparison
+        selected_prov = provenance_by_strategy.get(selected_strategy)
+        approved = load_approved_config(selected_strategy)
+        promotion: PromotionStatus
+        try:
             promotion = evaluate_promotion(
                 policy=PromotionPolicy(),
                 selected_strategy=selected_strategy,
@@ -693,31 +746,45 @@ class ArtifactExportService:
                 ),
                 approved_config_hash=approved.config_hash if approved else None,
                 provenance_report=validation,
+                stale_artifact_report=stale_artifact_report,
                 reproducibility_status="unverified",
                 confidence_status="not_computed",
                 repeat_run_count=1,
                 evaluated_at=datetime.now(UTC).isoformat(),
             )
+        except Exception as exc:  # noqa: BLE001 - promotion is a side artifact, not job-failing
+            _record_failure("promotion_evaluation", exc)
+            promotion = PromotionStatus(
+                selected_strategy=selected_strategy, promotion_status="not_evaluated"
+            )
 
-            comparison.strategy_provenance = strategy_rows
-            comparison.artifact_hashes = artifact_hashes
-            comparison.provenance_validation = validation
-            comparison.promotion_status = promotion
+        comparison.strategy_provenance = strategy_rows
+        comparison.artifact_hashes = artifact_hashes
+        comparison.provenance_validation = validation
+        comparison.promotion_status = promotion
 
+        leakage_report: SplitLeakageValidationReport | None
+        try:
             leakage_report = validate_split_leakage(
                 job_id=ctx.job_id,
                 artifact_root=artifact_root,
             )
+        except Exception as exc:  # noqa: BLE001 - recorded as a reviewable artifact below
+            _record_failure("split_leakage_validation", exc)
+            leakage_report = None
 
-            return [
-                write_strategy_comparison(artifact_root, comparison),
-                write_artifact_hashes(artifact_root, artifact_hashes),
-                write_provenance_validation(artifact_root, validation),
-                write_promotion_status(artifact_root, promotion),
-                write_split_leakage_validation(artifact_root, leakage_report),
-            ]
-        except Exception as exc:  # noqa: BLE001 - provenance/promotion are side artifacts
-            logger.warning(
-                "provenance_promotion_capture_failed", job_id=ctx.job_id, error=str(exc)
-            )
-            return []
+        written = [
+            write_strategy_comparison(artifact_root, comparison),
+            write_artifact_hashes(artifact_root, artifact_hashes),
+            write_promotion_status(artifact_root, promotion),
+        ]
+        if validation is not None:
+            written.append(write_provenance_validation(artifact_root, validation))
+        if stale_artifact_report is not None:
+            written.append(write_stale_artifact_validation(artifact_root, stale_artifact_report))
+        if leakage_report is not None:
+            written.append(write_split_leakage_validation(artifact_root, leakage_report))
+        if failures:
+            report = IntegrityCheckFailuresReport(job_id=ctx.job_id, failures=failures)
+            written.append(write_integrity_check_failures(artifact_root, report))
+        return written

@@ -10,6 +10,7 @@ import yaml
 
 from rulekiln.artifacts.manifest import ManifestEntry
 from rulekiln.pipeline.statistics import PairedComparisonArtifacts
+from rulekiln.schemas.integrity_check_failure import IntegrityCheckFailuresReport
 from rulekiln.schemas.pipeline import (
     EvalResult,
     PerLabelMetricsRow,
@@ -113,6 +114,18 @@ def write_promotion_status(root: Path, status: PromotionStatus) -> Path:
     path = metadata / "promotion_status.json"
     path.write_text(
         json.dumps(status.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def write_integrity_check_failures(root: Path, report: IntegrityCheckFailuresReport) -> Path:
+    """Write metadata/integrity_check_failures.json."""
+    metadata = root / "metadata"
+    metadata.mkdir(parents=True, exist_ok=True)
+    path = metadata / "integrity_check_failures.json"
+    path.write_text(
+        json.dumps(report.model_dump(mode="json"), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
     return path
