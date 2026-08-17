@@ -21,7 +21,7 @@ dependencies = [
     "hdbscan>=0.8,<1",
     "numpy>=1.26,<3",
     # MLflow
-    "mlflow>=3.5,<4",
+    "mlflow>=3.15.0,<4",
     # Templating / static files
     "jinja2>=3.1,<4",
     "aiofiles>=23.0,<25",
